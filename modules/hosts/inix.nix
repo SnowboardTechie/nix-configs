@@ -61,6 +61,11 @@
       # See: https://github.com/t2linux/nixos-overlay
       boot.blacklistedKernelModules = [ "b43" "bcma" ];
 
+      # Broadcom association fix — firmware is slow to complete WPA2 handshake.
+      # MAC randomization and power saving cause association timeouts.
+      networking.networkmanager.wifi.scanRandMacAddress = false;
+      networking.networkmanager.wifi.powersave = false;
+
       # === Localization ===
 
       time.timeZone = "America/Los_Angeles";
