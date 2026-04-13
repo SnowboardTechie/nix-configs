@@ -55,11 +55,11 @@
         networkmanager.enable = true;
       };
 
-      # Broadcom WiFi — 2017 iMac Pro uses Broadcom BCM43xx family
-      # b43 open-source driver is recommended. If WiFi doesn't work, check your chip with
-      # 'lspci | grep -i network' and see: https://nixos.wiki/wiki/Broadcom_WiFi
-      networking.enableB43Firmware = true;
-      boot.blacklistedKernelModules = [ "brcmfmac" "brcmsmac" "bcma" ];
+      # === Broadcom WiFi (BCM4364 B2, codename "ekans") ===
+      # The iMac Pro 2017 needs Apple-specific firmware not included in linux-firmware.
+      # Firmware source: t2linux project (pre-extracted from macOS Big Sur).
+      # See: https://github.com/t2linux/nixos-overlay
+      boot.blacklistedKernelModules = [ "b43" "bcma" ];
 
       # === Localization ===
 
@@ -101,6 +101,54 @@
       # Broadcom WiFi + Bluetooth firmware (also includes FaceTime HD camera firmware)
       hardware.enableAllFirmware = true;
       hardware.bluetooth.enable = true;
+
+      # Apple BCM4364 B2 WiFi firmware — not in linux-firmware, must be sourced separately.
+      # Uses ekans variant from Big Sur (iMac Pro 2017 codename).
+      # Source: https://d0.ee/apple/ (same as t2linux/nixos-overlay)
+      hardware.firmware = [
+        (pkgs.stdenvNoCC.mkDerivation {
+          pname = "apple-bcm4364-firmware";
+          version = "big-sur-1620854225";
+
+          src = pkgs.fetchurl {
+            url = "https://d0.ee/apple/big-sur-wifi-fw-1620854225.tar.xz";
+            sha256 = "sha256-YMeC8q+eccGkOUYR5hnNolKStpmcr6E4RVLdaHOiN2w=";
+          };
+
+          dontBuild = true;
+
+          # Tarball extracts to ./firmware/ — Nix unpack cd's into it
+          installPhase = ''
+            mkdir -p $out/lib/firmware/brcm
+            local fw=C-4364__s-B2
+            local dst=$out/lib/firmware/brcm
+
+            # iMac Pro 2017 "ekans" firmware + regulatory (BCM4364 B2)
+            for base in brcmfmac4364-pcie brcmfmac4364b2-pcie; do
+              cp $fw/ekans.trx       "$dst/$base.bin"
+              cp $fw/ekans-X3.clmb   "$dst/$base.clm_blob"
+            done
+
+            # NVRAM — two board type variants exist (V-u=0x081d, V-m=0x07bf).
+            # Provide BOTH under Apple platform naming so the kernel OTP reader finds the right one.
+            # Also provide every fallback name the kernel tries.
+            local nvram_u="$fw/P-ekans_M-HRPN_V-u__m-7.5.txt"
+            local nvram_m="$fw/P-ekans_M-HRPN_V-m__m-7.5.txt"
+
+            for base in brcmfmac4364-pcie brcmfmac4364b2-pcie; do
+              # Apple OTP platform names (kernel tries these first)
+              cp "$nvram_u" "$dst/$base.apple,ekans-HRPN-u.txt"
+              cp "$nvram_m" "$dst/$base.apple,ekans-HRPN-m.txt"
+              # DMI/SMBIOS model name fallback
+              cp "$nvram_u" "$dst/$base.Apple Inc.-iMacPro1,1.txt"
+              # Generic fallback (no suffix)
+              cp "$nvram_u" "$dst/$base.txt"
+            done
+          '';
+
+          meta.license = lib.licenses.unfree;
+        })
+      ];
 
       # === Programs ===
 
@@ -164,6 +212,9 @@
 
         # Notes and project plans
         obsidian
+
+        # Diagnostics
+        pciutils
       ];
 
       # === System State ===
