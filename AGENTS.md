@@ -4,7 +4,7 @@
 
 ## Overview
 
-Declarative system configs for 3 macOS hosts (nix-darwin) + 1 NixOS desktop. Uses **flake-parts** + **import-tree** for automatic module discovery.
+Declarative system configs for 3 macOS hosts (nix-darwin) + 2 NixOS desktops. Uses **flake-parts** + **import-tree** for automatic module discovery.
 
 ### Dendritic Architecture
 
@@ -36,7 +36,7 @@ nix-configs/
 │   ├── dev/               # Dev tools: cli-tools, editors, git
 │   ├── desktop/           # NixOS-only: gnome, gaming, audio
 │   ├── services/          # Daemons: ollama, open-webui, monitoring, smb-mount, syncthing, icloud-backup
-│   ├── hosts/             # Host compositions: a6mbp, mbp, studio, gnarbox
+│   ├── hosts/             # Host compositions: a6mbp, mbp, studio, gnarbox, inix
 │   └── dev-envs/          # VA project shells (see dev-envs/AGENTS.md)
 ├── overlays/              # Single overlay: nixpkgs-unstable → pkgs.unstable
 └── hardware-configs/      # Auto-generated NixOS hardware config
@@ -91,6 +91,7 @@ Is this a host-specific setting (only one host needs it)?
 darwin-rebuild switch --flake '.#mbp'     # or a6mbp, studio
 # NixOS
 sudo nixos-rebuild switch --flake '.#gnarbox'
+sudo nixos-rebuild switch --flake '.#inix'
 # Validate
 nix flake check
 # Format
@@ -166,7 +167,7 @@ README.md is kept **high-level** — it describes architecture and host purposes
 | Change | README Section |
 |--------|----------------|
 | Service module in `modules/services/` | Architecture tree + host sections |
-| Host packages in `modules/hosts/*.nix` | Host section (mbp, a6mbp, studio, gnarbox) |
+| Host packages in `modules/hosts/*.nix` | Host section (mbp, a6mbp, studio, gnarbox, inix) |
 | Dev-env versions in `modules/dev-envs/*.nix` | "Development Environments" |
 
 Verify with:
@@ -178,6 +179,7 @@ grep -E "services\." modules/hosts/*.nix
 
 - `_options.nix` must exist — declares the `flake.modules` option type that import-tree merges into
 - gnarbox hardware config lives outside `modules/` because import-tree can't handle `modulesPath`
+- `hardware-configs/inix.nix` is a placeholder — run `nixos-generate-config` on the iMac Pro and copy the output to replace it, or use: `scp inix:/etc/nixos/hardware-configuration.nix hardware-configs/inix.nix`
 - Darwin services require the tool installed via Homebrew first (Nix packages alone aren't enough for launchd)
 - NixOS stubs exist in service modules (`# TODO: Implement NixOS equivalent`) — these are intentional placeholders
 - oh-my-opencode auto-installs on activation if not present (see `activation.nix`)

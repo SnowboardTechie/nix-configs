@@ -72,6 +72,14 @@
           };
           modules = [ inputs.self.modules.nixos.gnarbox ];
         };
+        inix = inputs.nixpkgs.lib.nixosSystem {
+          specialArgs = {
+            inherit inputs;
+            outputs = inputs.self;
+            meta = { hostname = "inix"; };
+          };
+          modules = [ inputs.self.modules.nixos.inix ];
+        };
       };
     };
   };

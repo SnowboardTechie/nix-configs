@@ -39,6 +39,7 @@ Host-specific configurations:
 - `a6mbp.nix` - Work MacBook Pro
 - `studio.nix` - Media server Mac
 - `gnarbox.nix` - NixOS desktop
+- `inix.nix` - Garage/shop iMac Pro (NixOS)
 
 Each host module imports and composes the feature modules above.
 

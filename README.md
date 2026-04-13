@@ -12,7 +12,7 @@ modules/
 ├── dev/        # Development: cli-tools, editors, git
 ├── desktop/    # GUI: gnome, gaming, audio (NixOS)
 ├── services/   # Daemons: ollama, open-webui, monitoring, smb-mount, syncthing, icloud-backup (Darwin)
-├── hosts/      # Host-specific: a6mbp, gnarbox, mbp, studio
+├── hosts/      # Host-specific: a6mbp, gnarbox, inix, mbp, studio
 └── dev-envs/   # VA project environments
 ```
 
@@ -39,6 +39,11 @@ Media server Mac running the full service stack: ollama, open-webui, monitoring 
 
 NixOS desktop with GNOME, gaming (Steam + Proton GE), and PipeWire audio. Uses the unstable overlay for select packages.
 **Location:** [`modules/hosts/gnarbox.nix`](modules/hosts/gnarbox.nix)
+
+### iNix (NixOS desktop)
+
+Garage and shop machine for reading manuals, project plans, and occasional remote work. Runs on a 2017 iMac Pro (Intel Xeon W, AMD Vega, 5K display) with GNOME, PipeWire audio, and syncthing.
+**Location:** [`modules/hosts/inix.nix`](modules/hosts/inix.nix)
 
 ### Shared Configuration
 
@@ -83,6 +88,7 @@ darwin-rebuild switch --flake '.#mbp'  # or '.#a6mbp', '.#studio'
 
 ```bash
 sudo nixos-rebuild switch --flake '.#gnarbox' --extra-experimental-features 'nix-command flakes'
+sudo nixos-rebuild switch --flake '.#inix' --extra-experimental-features 'nix-command flakes'
 ```
 
 ## Usage
@@ -99,6 +105,7 @@ darwin-rebuild switch --flake '~/code/nix-configs#mbp'
 
 ```bash
 sudo nixos-rebuild switch --flake '~/code/nix-configs#gnarbox'
+sudo nixos-rebuild switch --flake '~/code/nix-configs#inix'
 ```
 
 ### Update Dependencies
