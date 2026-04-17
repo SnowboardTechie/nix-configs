@@ -14,6 +14,7 @@
       git
       cli-tools
       activation
+      openchamber
       # Service modules
       syncthing
     ];

@@ -15,6 +15,7 @@
       cli-tools
       rust
       activation
+      openchamber
       # Desktop features
       gaming
       reaper
