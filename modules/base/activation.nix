@@ -18,7 +18,7 @@
         # --- oh-my-opencode plugin ---
         if ! grep -q "oh-my-opencode" ~/.config/opencode/opencode.json 2>/dev/null; then
           echo "Installing oh-my-opencode plugin..."
-          ${pkgs.bun}/bin/bunx oh-my-opencode install --no-tui --claude=yes --chatgpt=no --gemini=no || true
+          ${pkgs.bun}/bin/bunx oh-my-opencode install --no-tui --claude=no --copilot=no --gemini=no || true
           echo "oh-my-opencode installed!"
           echo "Next steps:"
           echo "  1. Authenticate with providers: opencode auth login"
@@ -44,7 +44,7 @@
         # --- oh-my-opencode plugin ---
         if ! grep -q "oh-my-opencode" ~/.config/opencode/opencode.json 2>/dev/null; then
           echo "Installing oh-my-opencode plugin..."
-          ${pkgs.bun}/bin/bunx oh-my-opencode install --no-tui --claude=yes --chatgpt=no --gemini=no || true
+          ${pkgs.bun}/bin/bunx oh-my-opencode install --no-tui --claude=no --copilot=no --gemini=no || true
           echo "oh-my-opencode installed!"
         fi
       '
