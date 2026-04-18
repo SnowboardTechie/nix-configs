@@ -33,6 +33,11 @@
       # === Nixpkgs Configuration ===
 
       nixpkgs = {
+        # Add overlays from flake exports
+        overlays = [
+          outputs.overlays.unstable
+          outputs.overlays.zen-browser
+        ];
         hostPlatform = "x86_64-linux";
         config.allowUnfree = true;
       };
@@ -44,8 +49,8 @@
           systemd-boot.enable = true;
           efi.canTouchEfiVariables = true;
         };
-        # REPLACE: update with actual swap partition UUID from 'blkid' on iNix
-        resumeDevice = "/dev/disk/by-uuid/00000000-0000-0000-0000-000000000003";
+
+        resumeDevice = "/dev/disk/by-uuid/286b02d6-dc62-4328-9378-2a576fcf6163";
       };
 
       # === Networking ===
@@ -212,15 +217,45 @@
         # GPG (GNOME-specific pinentry)
         pinentry-gnome3
 
+        # Communication
+        slack
+
         # Media
         vlc
 
         # Notes and project plans
         obsidian
 
+        # Web Browsers
+        vivaldi
+        zen-browser
+
+        # AI tools
+        claude-code
+
         # Diagnostics
         pciutils
       ];
+
+      # === GPG pinentry override ===
+      # Dotfiles ship gpg-agent.conf with macOS pinentry-mac path.
+      # On NixOS, replace with pinentry-gnome3.
+      system.activationScripts.gpgPinentry = ''
+        ${pkgs.util-linux}/bin/runuser -u bryan -- /bin/sh -c '
+          GPG_CONF="$HOME/.gnupg/gpg-agent.conf"
+          if [ -f "$GPG_CONF" ] && grep -q "pinentry-mac" "$GPG_CONF" 2>/dev/null; then
+            rm -f "$GPG_CONF"
+            cat > "$GPG_CONF" <<GPGEOF
+# Managed by NixOS activation — overrides dotfiles macOS default.
+pinentry-program ${pkgs.pinentry-gnome3}/bin/pinentry-gnome3
+
+# Cache settings
+default-cache-ttl 600
+max-cache-ttl 7200
+GPGEOF
+          fi
+        '
+      '';
 
       # === System State ===
 
