@@ -159,6 +159,7 @@ Every `.nix` file under `modules/` is auto-imported by import-tree. Each module 
 - Insecure `openssl-1.1.1w` is permitted on gnarbox only (for sublime4) — tracked upstream issue
 - gnarbox uses LTS kernel 6.6 — latest (6.18) breaks xpad-noone driver
 - npm lifecycle scripts disabled by default (`npm_config_ignore_scripts=true`) for security
+- **NEVER** install Claude Code via `homebrew.casks` — the brew-owned path blocks `claude update` (silent no-op), and the cask lags Anthropic's releases by several versions. Use the native installer (`curl -fsSL https://claude.ai/install.sh | bash`) which installs to `~/.local/bin/claude` where the self-updater can write.
 
 ## Documentation Sync
 

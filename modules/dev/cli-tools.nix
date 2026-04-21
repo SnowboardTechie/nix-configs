@@ -37,11 +37,6 @@
       "zoxide"
     ];
 
-    # Homebrew casks for macOS CLI tools
-    homebrew.casks = [
-      "claude-code"
-    ];
-
     # Nix-only packages (no homebrew equivalent)
     environment.systemPackages = with pkgs; [
       alacritty
