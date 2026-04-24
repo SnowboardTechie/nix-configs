@@ -52,23 +52,20 @@
         };
       };
 
-      # Firewall rules for Syncthing
-      system.activationScripts.syncthing-firewall.text = ''
+      # Firewall rules + setup-info echo, folded into extraActivation because
+      # nix-darwin's system.activationScripts only composes a fixed set of
+      # named phases (custom names like `syncthing-firewall` are silently
+      # dropped). See services/AGENTS.md.
+      system.activationScripts.extraActivation.text = lib.mkAfter ''
+        # === syncthing firewall ===
         /usr/libexec/ApplicationFirewall/socketfilterfw --add /opt/homebrew/bin/syncthing >/dev/null 2>&1 || true
         /usr/libexec/ApplicationFirewall/socketfilterfw --unblock /opt/homebrew/bin/syncthing >/dev/null 2>&1 || true
-      '';
 
-      # Setup instructions
-      system.activationScripts.syncthing-setup.text = ''
+        # === syncthing setup info ===
         echo ""
         echo "=== Syncthing Setup ==="
         echo "Web UI: http://${cfg.guiAddress}"
         echo "Log file: ${cfg.logFile}"
-        echo ""
-        echo "First-time setup:"
-        echo "  1. Open http://${cfg.guiAddress} in browser"
-        echo "  2. Add remote devices by exchanging Device IDs"
-        echo "  3. Create shared folders pointing to ~/notes"
         echo ""
       '';
     };

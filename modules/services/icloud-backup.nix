@@ -96,17 +96,13 @@
         };
       };
 
-      # Setup instructions
-      system.activationScripts.icloud-backup-setup.text = ''
-        echo ""
-        echo "=== iCloud Backup Setup ==="
-        echo "Source: ${cfg.sourceDir}"
-        echo "Destination: ${cfg.destDir}"
-        echo "Schedule: Daily at ${toString cfg.hour}:${if cfg.minute < 10 then "0" else ""}${toString cfg.minute}"
-        echo ""
-        echo "Manual backup: launchctl kickstart gui/$(id -u)/org.nixos.icloud-backup"
-        echo "Check status: cat /tmp/icloud-backup.log"
-        echo ""
+      # Setup-info echo, folded into extraActivation because nix-darwin's
+      # system.activationScripts only composes a fixed set of named phases
+      # (custom names like `icloud-backup-setup` are silently dropped).
+      # See services/AGENTS.md.
+      system.activationScripts.extraActivation.text = lib.mkAfter ''
+        # === icloud-backup info ===
+        echo "icloud-backup scheduled daily at ${toString cfg.hour}:${if cfg.minute < 10 then "0" else ""}${toString cfg.minute} (${cfg.sourceDir} -> iCloud)"
       '';
     };
   };

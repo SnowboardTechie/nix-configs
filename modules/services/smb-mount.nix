@@ -147,19 +147,22 @@
         };
       };
 
-      # Setup instructions
-      system.activationScripts.smb-mount-setup.text = ''
-        echo ""
-        echo "=== SMB Mount Setup ==="
-        echo "For automatic mounting to work, create ${cfg.credentialsFile} with:"
-        echo "  USERNAME=username"
-        echo "  PASSWORD=your_password"
-        echo "  SERVER=192.168.1.x"
-        echo "  SHARE=media"
-        echo ""
-        echo "Then restart or run: launchctl kickstart -k gui/\$(id -u)/org.nixos.smb-mount"
-        echo "Check mount status: cat /tmp/smb-mount.log"
-        echo ""
+      # Setup-info echo, folded into extraActivation because nix-darwin's
+      # system.activationScripts only composes a fixed set of named phases
+      # (custom names like `smb-mount-setup` are silently dropped).
+      # See services/AGENTS.md.
+      system.activationScripts.extraActivation.text = lib.mkAfter ''
+        # === smb-mount setup info ===
+        if [ ! -f "${cfg.credentialsFile}" ]; then
+          echo ""
+          echo "=== SMB Mount Setup ==="
+          echo "Create ${cfg.credentialsFile} with:"
+          echo "  USERNAME=username"
+          echo "  PASSWORD=your_password"
+          echo "  SERVER=192.168.1.x"
+          echo "  SHARE=media"
+          echo ""
+        fi
       '';
     };
   };
