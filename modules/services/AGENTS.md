@@ -86,7 +86,7 @@ but does not execute.
 |---------|---------|--------|------------|-------|
 | ollama | 11434 | `/opt/homebrew/bin/ollama` | Always-on | Flash attention, q8_0 KV cache. Auto-restarts on rebuild to pick up brew upgrades. |
 | open-webui | 8080 | uv tool venv `~/.local/bin/open-webui` | Always-on + daily updater | Installed via `uv tool install`. Updater has an import probe — refuses to kickstart a broken install. |
-| monitoring | 9090, 9100, 3000, 3100, 12345, 9115 | prometheus, node_exporter, grafana, loki, alloy, blackbox_exporter | Always-on | Binds 0.0.0.0; 6 agents; SMTP via smtp2go; blackbox_exporter via nixpkgs derivation; alloy replaced promtail (EOL March 2026). Alerts route to Grafana's embedded Alertmanager → email. |
+| monitoring | 9090, 9093, 9100, 3000, 3100, 12345, 9115 | prometheus, alertmanager, node_exporter, grafana, loki, alloy, blackbox_exporter | Always-on | Binds 0.0.0.0; 7 agents; SMTP via smtp2go; alertmanager + blackbox_exporter via nixpkgs derivations; alloy replaced promtail (EOL March 2026). Alerts: Prometheus → Alertmanager → email. |
 | syncthing | 8384, 22000 | `/opt/homebrew/bin/syncthing` | Always-on | NixOS uses native module directly |
 | smb-mount | — | mount_smbfs | Event-driven (WatchPaths) | Soft mount, no polling |
 | icloud-backup | — | /usr/bin/rsync | Calendar (2:00 AM) | Excludes .stversions/.syncthing* |
@@ -104,23 +104,28 @@ All darwin hosts enable **syncthing**.
 
 ## Alerting (monitoring module)
 
-Prometheus evaluates rules and POSTs firing alerts to Grafana's embedded
-Alertmanager at `http://localhost:3000/api/alertmanager/grafana/api/v2/alerts`.
-Grafana routes them via provisioned contact points (email via smtp2go) and a
-root notification policy.
+Pipeline: **Prometheus (rule eval) → Alertmanager (dedup/group/route) → smtp2go → email**
 
 Host must set `services.monitoring.alertEmail = "you@example.com"` and must
-have two secrets on disk:
+have the SMTP password on disk:
 
 ```
-~/.secrets/grafana-smtp-password   # smtp2go API password
-~/.secrets/grafana-admin-password  # Grafana admin password (also used for
-                                   # Prometheus basic_auth to the embedded AM)
+~/.secrets/grafana-smtp-password   # smtp2go API password (reused by
+                                   # Alertmanager via smtp_auth_password_file)
 ```
 
-Alert rules themselves live in Prometheus (`monitoring.nix`), not in Grafana YAML —
-they remain declarative PromQL under version control. Grafana's Alerting UI
-shows them as read-only "external" rules you can silence but not edit.
+Alert rules live in Prometheus (`monitoring.nix`) as declarative PromQL under
+version control. Alertmanager handles delivery via a simple declarative
+receiver config.
+
+Grafana is kept as pure visualization — it gets Alertmanager added as a
+datasource so you can view alert state in its UI, but notifications go
+through Alertmanager directly, not through Grafana. This avoids a real
+incompatibility in Grafana 12.4's embedded Alertmanager: its `/api/v2/alerts`
+endpoint expects a non-spec wrapped payload (`{alerts: [...]}`) while
+Prometheus's client sends the canonical bare array per AM v2, causing 400
+"cannot unmarshal array into PostableAlerts" on every real alert. Real
+Alertmanager speaks canonical AM v2.
 
 ## Scheduling Patterns
 

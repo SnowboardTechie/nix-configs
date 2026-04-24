@@ -1,16 +1,16 @@
-# Monitoring stack service (Prometheus + Grafana + node_exporter + Loki + Alloy + blackbox_exporter)
+# Monitoring stack service
+#   Prometheus + Alertmanager + Grafana + node_exporter + Loki + Alloy + blackbox_exporter
 #
-# Provides metrics collection, log aggregation, and visualization. Grafana, node_exporter,
-# Loki, and Alloy use Homebrew. Prometheus and blackbox_exporter use nixpkgs derivations
-# (Homebrew Prometheus builds with netgo which breaks multi-interface routing on macOS).
-# All services bind to 0.0.0.0 for network access.
-# Configuration is fully declarative: prometheus.yml, Loki config, and Grafana provisioning
-# are generated from Nix attrsets.
+# Provides metrics collection, log aggregation, visualization, and alerting. Grafana,
+# node_exporter, Loki, and Alloy use Homebrew. Prometheus, Alertmanager, and
+# blackbox_exporter use nixpkgs derivations (Homebrew Prometheus builds with netgo which
+# breaks multi-interface routing on macOS; Alertmanager isn't in Homebrew). All services
+# bind to 0.0.0.0 for network access. Configuration is fully declarative.
 #
-# Alerting: Prometheus evaluates rules and POSTs firing alerts to Grafana's embedded
-# Alertmanager. Grafana routes via provisioned contact points + notification policies
-# (email via the already-wired smtp2go SMTP). Set services.monitoring.alertEmail in the
-# host config to receive notifications.
+# Alerting pipeline:
+#   Prometheus (rule eval) → Alertmanager (dedup/group/route) → smtp2go → email
+# Grafana stays as pure visualization (Alertmanager added as datasource for alert-state
+# view in UI). Set services.monitoring.alertEmail in the host config to enable.
 { inputs, ... }:
 {
   # Darwin aspect - full configuration from modules/darwin/services/monitoring.nix
@@ -140,13 +140,13 @@
     } // lib.optionalAttrs alertingEnabled {
       alerting = {
         alertmanagers = [{
-          static_configs = [{ targets = [ "localhost:${toString cfg.grafana.port}" ]; }];
-          path_prefix = "/api/alertmanager/grafana/";
-          scheme = "http";
-          basic_auth = {
-            username = "admin";
-            password_file = "${homeDir}/.secrets/grafana-admin-password";
-          };
+          # Real Prometheus Alertmanager running on localhost. We do NOT use
+          # Grafana's embedded AM — as of Grafana 12.4 its /api/v2/alerts
+          # endpoint expects a non-spec wrapped payload ({alerts: [...]}) while
+          # Prometheus's client sends the standard bare-array AM v2 format,
+          # causing 400 "cannot unmarshal array into PostableAlerts" on every
+          # real alert. Real Alertmanager speaks canonical AM v2.
+          static_configs = [{ targets = [ "localhost:${toString cfg.alertmanager.port}" ]; }];
         }];
       };
     }));
@@ -160,12 +160,13 @@
       cp ${./grafana/dashboards/studio-logs.json} $out/studio-logs.json
     '';
 
-    # Grafana datasource config (Prometheus + Loki)
+    # Grafana datasource config (Prometheus + Loki + Alertmanager when alerting is on)
     datasourceConfig = pkgs.writeText "datasources.yml" (builtins.toJSON {
       apiVersion = 1;
       deleteDatasources = [
         { name = "Prometheus"; orgId = 1; }
         { name = "Loki"; orgId = 1; }
+        { name = "Alertmanager"; orgId = 1; }
       ];
       datasources = [
         {
@@ -185,7 +186,18 @@
           url = "http://localhost:${toString cfg.loki.port}";
           editable = false;
         }
-      ];
+      ] ++ lib.optional alertingEnabled {
+        name = "Alertmanager";
+        uid = "Alertmanager";
+        type = "alertmanager";
+        access = "proxy";
+        url = "http://localhost:${toString cfg.alertmanager.port}";
+        jsonData = {
+          implementation = "prometheus";
+          handleGrafanaManagedAlerts = false;
+        };
+        editable = false;
+      };
     });
 
     # Grafana dashboard provider config
@@ -205,33 +217,29 @@
       }];
     });
 
-    # Grafana contact points (email via already-configured smtp2go)
-    contactPointsFile = pkgs.writeText "contact-points.yml" (builtins.toJSON {
-      apiVersion = 1;
-      contactPoints = [{
-        orgId = 1;
-        name = "email-primary";
-        receivers = [{
-          uid = "email-primary-1";
-          type = "email";
-          settings = {
-            addresses = cfg.alertEmail;
-            singleEmail = false;
-          };
-        }];
-      }];
-    });
-
-    # Grafana notification policies (root policy routes all alerts to email-primary)
-    notificationPoliciesFile = pkgs.writeText "policies.yml" (builtins.toJSON {
-      apiVersion = 1;
-      policies = [{
-        orgId = 1;
+    # Alertmanager config — SMTP via smtp2go (reuses the same password file
+    # Grafana uses for its own SMTP integration).
+    alertmanagerConfigFile = pkgs.writeText "alertmanager.yml" (builtins.toJSON {
+      global = {
+        smtp_smarthost = "mail.smtp2go.com:2525";
+        smtp_from = "grafana@snowboardtechie.com";
+        smtp_auth_username = "snowboardtechie.com";
+        smtp_auth_password_file = "${homeDir}/.secrets/grafana-smtp-password";
+        smtp_require_tls = true;
+      };
+      route = {
         receiver = "email-primary";
         group_by = [ "alertname" "instance" ];
         group_wait = "30s";
         group_interval = "5m";
         repeat_interval = "4h";
+      };
+      receivers = [{
+        name = "email-primary";
+        email_configs = [{
+          to = cfg.alertEmail;
+          send_resolved = true;
+        }];
       }];
     });
 
@@ -356,16 +364,13 @@
       };
     });
 
-    # Grafana provisioning directory (assembled from configs above)
-    # Includes datasources, dashboards, and (optionally) alerting contact points + policies.
-    grafanaProvisioning = pkgs.runCommand "grafana-provisioning" {} (''
-      mkdir -p $out/datasources $out/dashboards $out/alerting
+    # Grafana provisioning directory (datasources + dashboards only).
+    # Alerting lives in Alertmanager, not Grafana.
+    grafanaProvisioning = pkgs.runCommand "grafana-provisioning" {} ''
+      mkdir -p $out/datasources $out/dashboards
       cp ${datasourceConfig} $out/datasources/prometheus.yml
       cp ${dashboardProviderConfig} $out/dashboards/default.yml
-    '' + lib.optionalString alertingEnabled ''
-      cp ${contactPointsFile}        $out/alerting/contact-points.yml
-      cp ${notificationPoliciesFile} $out/alerting/policies.yml
-    '');
+    '';
   in
   {
     options.services.monitoring = {
@@ -376,13 +381,18 @@
         default = null;
         example = "bryan@snowboardtechie.com";
         description = ''
-          Email address to deliver alert notifications to. Null disables Grafana
-          Alerting wiring entirely (Prometheus will still evaluate rules but alerts
-          will go nowhere).
+          Email address to deliver alert notifications to. Null disables
+          Alertmanager entirely (Prometheus still evaluates rules but has no
+          AM to send to).
 
-          Requires ~/.secrets/grafana-admin-password to exist — used as the Grafana
-          admin password (via GF_SECURITY_ADMIN_PASSWORD__FILE) and for Prometheus
-          to basic-auth-POST alerts to Grafana's embedded Alertmanager.
+          Wiring: Prometheus (rule eval) → Alertmanager (dedup/route/group) →
+          smtp2go → this address. Grafana is kept as pure visualization; it
+          gets Alertmanager added as a datasource so you can view alert state
+          in its UI.
+
+          Requires ~/.secrets/grafana-smtp-password (already used for
+          Grafana's own SMTP integration — Alertmanager reuses it via
+          smtp_auth_password_file).
         '';
       };
 
@@ -466,6 +476,19 @@
         };
       };
 
+      alertmanager = {
+        port = lib.mkOption {
+          type = lib.types.port;
+          default = 9093;
+          description = "Port for Alertmanager HTTP API / Web UI";
+        };
+        storagePath = lib.mkOption {
+          type = lib.types.str;
+          default = "${homeDir}/.alertmanager/data";
+          description = "Path for Alertmanager data (silences, notification log)";
+        };
+      };
+
       extraScrapeConfigs = lib.mkOption {
         type = lib.types.listOf lib.types.attrs;
         default = [];
@@ -501,11 +524,14 @@
         /usr/libexec/ApplicationFirewall/socketfilterfw --unblock ${pkgs.prometheus-blackbox-exporter}/bin/blackbox_exporter >/dev/null 2>&1 || true
       '' + lib.optionalString alertingEnabled ''
 
-        # === monitoring: alerting preflight ===
-        if [ ! -s "${homeDir}/.secrets/grafana-admin-password" ]; then
-          echo "WARNING: services.monitoring.alertEmail is set but ${homeDir}/.secrets/grafana-admin-password" >&2
-          echo "         is missing or empty. Alerts will not be delivered until you create it:" >&2
-          echo "         echo '<password>' > ${homeDir}/.secrets/grafana-admin-password && chmod 600 $_" >&2
+        # === alertmanager: storage + firewall + preflight ===
+        mkdir -p "${cfg.alertmanager.storagePath}"
+        /usr/libexec/ApplicationFirewall/socketfilterfw --add ${pkgs.prometheus-alertmanager}/bin/alertmanager >/dev/null 2>&1 || true
+        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock ${pkgs.prometheus-alertmanager}/bin/alertmanager >/dev/null 2>&1 || true
+
+        if [ ! -s "${homeDir}/.secrets/grafana-smtp-password" ]; then
+          echo "WARNING: services.monitoring.alertEmail is set but ${homeDir}/.secrets/grafana-smtp-password" >&2
+          echo "         is missing. Alertmanager will start but email delivery will fail." >&2
         fi
       '');
 
@@ -553,11 +579,10 @@
             GF_SMTP_HOST = "mail.smtp2go.com:2525";
             GF_SMTP_FROM_ADDRESS = "grafana@snowboardtechie.com";
             GF_SMTP_FROM_NAME = "Studio Grafana";
-          } // lib.optionalAttrs alertingEnabled {
-            # Admin password file — used by Prometheus to basic-auth-POST alerts
-            # to Grafana's embedded Alertmanager. Kept secret via file indirection.
-            GF_SECURITY_ADMIN_PASSWORD__FILE = "${homeDir}/.secrets/grafana-admin-password";
           };
+          # Note: we deliberately do NOT set GF_SECURITY_ADMIN_PASSWORD__FILE.
+          # Prometheus authenticates to Grafana's embedded AM with a dedicated
+          # service account token, so the personal admin login stays untouched.
         };
       };
 
@@ -619,6 +644,26 @@
           KeepAlive = true;
           StandardOutPath = "/tmp/blackbox_exporter.log";
           StandardErrorPath = "/tmp/blackbox_exporter.error.log";
+        };
+      };
+
+      # Alertmanager — receives alerts from Prometheus, dedups/groups/routes
+      # and delivers via SMTP. Only started when alertEmail is configured.
+      # `--cluster.listen-address=` intentionally empty: single-node, skip
+      # gossip/HA which would otherwise bind on UDP:9094.
+      launchd.user.agents.alertmanager = lib.mkIf alertingEnabled {
+        serviceConfig = {
+          ProgramArguments = [
+            "${pkgs.prometheus-alertmanager}/bin/alertmanager"
+            "--config.file=${alertmanagerConfigFile}"
+            "--storage.path=${cfg.alertmanager.storagePath}"
+            "--web.listen-address=0.0.0.0:${toString cfg.alertmanager.port}"
+            "--cluster.listen-address="
+          ];
+          RunAtLoad = true;
+          KeepAlive = true;
+          StandardOutPath = "/tmp/alertmanager.log";
+          StandardErrorPath = "/tmp/alertmanager.error.log";
         };
       };
     };
