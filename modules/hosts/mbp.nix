@@ -55,6 +55,7 @@
         "pandoc"   # For converting documents
         "texlive"  # For converting MD to PDF
         "pinentry-mac" # GPG pinentry for macOS
+        "podman"   # Container runtime
         "syncthing"
         "ykman"    # YubiKey Manager CLI
       ];

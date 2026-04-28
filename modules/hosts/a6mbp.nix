@@ -62,6 +62,7 @@
         "ddev/ddev/ddev"
         "libfido2"     # FIDO2/U2F tools
         "pinentry-mac" # GPG pinentry for macOS
+        "podman"       # Container runtime
         "syncthing"
         "ykman"    # YubiKey Manager CLI
       ];
