@@ -21,7 +21,8 @@
       "just"
       "lazydocker"
       "libpq"
-      "marksman"
+      # marksman: delivered via nixpkgs because Homebrew has no x86_64-darwin bottle
+      # (formula only provides ARM macOS bottles); building from source needs dotnet@9.
       "ncurses"
       "opencode"
       "pinentry-mac"
@@ -37,12 +38,13 @@
       "zoxide"
     ];
 
-    # Nix-only packages (no homebrew equivalent)
+    # Nix-only packages (no homebrew equivalent, or no x86_64-darwin bottle)
     environment.systemPackages = with pkgs; [
       alacritty
       bun
       fd
       htop
+      marksman # Homebrew has no x86_64-darwin bottle; nixpkgs supports all four platforms
       nix-direnv
       nixd
       ripgrep

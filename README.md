@@ -71,6 +71,12 @@ curl -fsSL https://install.determinate.systems/nix | sh -s -- install --determin
 curl -L https://nixos.org/nix/install | sh
 ```
 
+**All macOS hosts also need Homebrew installed first.** nix-darwin's `homebrew` module manages your Brewfile; it does not install Homebrew itself. If `brew` isn't already on the machine:
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
 **NixOS:** Nix comes pre-installed.
 
 ## Installation
