@@ -100,23 +100,23 @@ darwin-rebuild switch --flake '.#mbp'
 
 **macOS — Intel (`inix`):**
 
-The upstream Nix installer doesn't enable flakes by default, so do that first (one-time):
+The upstream Nix installer doesn't enable flakes by default, and `modules/base/nix-settings.nix` keeps `nix.enable = false` on darwin (defers Nix config to Determinate, which inix doesn't have). Enable flakes system-wide in `/etc/nix/nix.conf` so both your user and `sudo` invocations see them:
 
 ```bash
-mkdir -p ~/.config/nix
-echo "experimental-features = nix-command flakes" >> ~/.config/nix/nix.conf
+echo "experimental-features = nix-command flakes" | sudo tee -a /etc/nix/nix.conf
 ```
 
-Then bootstrap nix-darwin:
+Bootstrap nix-darwin (this is the step that creates the `darwin-rebuild` command):
 
 ```bash
+cd ~/code/nix-configs
 sudo nix run nix-darwin/master#darwin-rebuild -- switch --flake '.#inix'
 ```
 
-Subsequent rebuilds:
+Open a new shell, then subsequent rebuilds:
 
 ```bash
-darwin-rebuild switch --flake '.#inix'
+sudo darwin-rebuild switch --flake '.#inix'
 ```
 
 **NixOS** (first build requires experimental features flag):
