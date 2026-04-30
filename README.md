@@ -84,10 +84,39 @@ cd ~/code/nix-configs
 
 Build and activate:
 
-**macOS:**
+**macOS — Apple Silicon (`mbp`, `a6mbp`, `studio`):**
+
+First-time bootstrap of nix-darwin (Determinate has flakes enabled already):
 
 ```bash
-darwin-rebuild switch --flake '.#mbp'  # or '.#a6mbp', '.#studio', '.#inix'
+sudo nix run nix-darwin/master#darwin-rebuild -- switch --flake '.#mbp'  # or '.#a6mbp', '.#studio'
+```
+
+Subsequent rebuilds:
+
+```bash
+darwin-rebuild switch --flake '.#mbp'
+```
+
+**macOS — Intel (`inix`):**
+
+The upstream Nix installer doesn't enable flakes by default, so do that first (one-time):
+
+```bash
+mkdir -p ~/.config/nix
+echo "experimental-features = nix-command flakes" >> ~/.config/nix/nix.conf
+```
+
+Then bootstrap nix-darwin:
+
+```bash
+sudo nix run nix-darwin/master#darwin-rebuild -- switch --flake '.#inix'
+```
+
+Subsequent rebuilds:
+
+```bash
+darwin-rebuild switch --flake '.#inix'
 ```
 
 **NixOS** (first build requires experimental features flag):
