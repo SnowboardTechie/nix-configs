@@ -59,10 +59,16 @@ Feature modules own both platform aspects: darwin uses `homebrew.brews`/`homebre
 
 ## Prerequisites
 
-**macOS only:** Install [Determinate Nix Installer](https://github.com/DeterminateSystems/nix-installer):
+**Apple Silicon Macs (`mbp`, `a6mbp`, `studio`):** Install [Determinate Nix Installer](https://github.com/DeterminateSystems/nix-installer):
 
 ```bash
 curl -fsSL https://install.determinate.systems/nix | sh -s -- install --determinate
+```
+
+**Intel Mac (`inix`):** Determinate Systems lists `x86_64-darwin` as unsupported. Use the official upstream multi-user Nix installer instead:
+
+```bash
+sh <(curl -L https://nixos.org/nix/install) --daemon
 ```
 
 **NixOS:** Nix comes pre-installed.
