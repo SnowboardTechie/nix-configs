@@ -12,7 +12,7 @@ modules/
 ├── dev/        # Development: cli-tools, editors, git
 ├── desktop/    # GUI: gnome, gaming, audio (NixOS)
 ├── services/   # Daemons: ollama, open-webui, monitoring, smb-mount, syncthing, icloud-backup (Darwin)
-├── hosts/      # Host-specific: a6mbp, gnarbox, inix, mbp, studio
+├── hosts/      # Host-specific: a6mbp, gnarbox, inix, mbp, studio (mbp/a6mbp/studio/inix darwin, gnarbox NixOS)
 └── dev-envs/   # VA project environments
 ```
 
@@ -35,15 +35,15 @@ Work MacBook Pro with syncthing and work tools (AWS, Docker, DDEV, Slack, Zoom).
 Media server Mac running the full service stack: ollama, open-webui, monitoring (Prometheus + Grafana), SMB mount, syncthing, and iCloud backup.
 **Location:** [`modules/hosts/studio.nix`](modules/hosts/studio.nix)
 
+### iNix (Intel macOS)
+
+Garage and shop machine for reading manuals, project plans, and occasional remote work. Runs on a 2017 iMac Pro (Intel Xeon W) with macOS + nix-darwin. Includes syncthing.
+**Location:** [`modules/hosts/inix.nix`](modules/hosts/inix.nix)
+
 ### gnarbox (NixOS desktop)
 
 NixOS desktop with GNOME, gaming (Steam + Proton GE), and PipeWire audio. Uses the unstable overlay for select packages.
 **Location:** [`modules/hosts/gnarbox.nix`](modules/hosts/gnarbox.nix)
-
-### iNix (NixOS desktop)
-
-Garage and shop machine for reading manuals, project plans, and occasional remote work. Runs on a 2017 iMac Pro (Intel Xeon W, AMD Vega, 5K display) with GNOME, PipeWire audio, and syncthing.
-**Location:** [`modules/hosts/inix.nix`](modules/hosts/inix.nix)
 
 ### Shared Configuration
 
@@ -81,14 +81,13 @@ Build and activate:
 **macOS:**
 
 ```bash
-darwin-rebuild switch --flake '.#mbp'  # or '.#a6mbp', '.#studio'
+darwin-rebuild switch --flake '.#mbp'  # or '.#a6mbp', '.#studio', '.#inix'
 ```
 
 **NixOS** (first build requires experimental features flag):
 
 ```bash
 sudo nixos-rebuild switch --flake '.#gnarbox' --extra-experimental-features 'nix-command flakes'
-sudo nixos-rebuild switch --flake '.#inix' --extra-experimental-features 'nix-command flakes'
 ```
 
 ## Usage
@@ -105,7 +104,6 @@ darwin-rebuild switch --flake '~/code/nix-configs#mbp'
 
 ```bash
 sudo nixos-rebuild switch --flake '~/code/nix-configs#gnarbox'
-sudo nixos-rebuild switch --flake '~/code/nix-configs#inix'
 ```
 
 ### Update Dependencies

@@ -37,7 +37,7 @@
       (inputs.import-tree ./modules)
     ];
 
-    systems = [ "aarch64-darwin" "x86_64-linux" ];
+    systems = [ "aarch64-darwin" "x86_64-darwin" "x86_64-linux" ];
 
     flake = {
       # Export overlays for use in system configurations
@@ -60,6 +60,11 @@
           specialArgs = { inherit inputs; };
           modules = [ inputs.self.modules.darwin.studio ];
         };
+        inix = inputs.nix-darwin.lib.darwinSystem {
+          system = "x86_64-darwin";
+          specialArgs = { inherit inputs; };
+          modules = [ inputs.self.modules.darwin.inix ];
+        };
       };
 
       # NixOS configurations
@@ -71,14 +76,6 @@
             meta = { hostname = "gnarbox"; };
           };
           modules = [ inputs.self.modules.nixos.gnarbox ];
-        };
-        inix = inputs.nixpkgs.lib.nixosSystem {
-          specialArgs = {
-            inherit inputs;
-            outputs = inputs.self;
-            meta = { hostname = "inix"; };
-          };
-          modules = [ inputs.self.modules.nixos.inix ];
         };
       };
     };

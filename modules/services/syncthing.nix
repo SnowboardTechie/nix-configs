@@ -36,7 +36,7 @@
       launchd.user.agents.syncthing = {
         serviceConfig = {
           ProgramArguments = [
-            "/opt/homebrew/bin/syncthing"
+            "${config.homebrew.prefix}/bin/syncthing"
             "serve"
             "--no-browser"
             "--no-restart"
@@ -54,8 +54,8 @@
 
       # Firewall rules for Syncthing
       system.activationScripts.syncthing-firewall.text = ''
-        /usr/libexec/ApplicationFirewall/socketfilterfw --add /opt/homebrew/bin/syncthing >/dev/null 2>&1 || true
-        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock /opt/homebrew/bin/syncthing >/dev/null 2>&1 || true
+        /usr/libexec/ApplicationFirewall/socketfilterfw --add ${config.homebrew.prefix}/bin/syncthing >/dev/null 2>&1 || true
+        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock ${config.homebrew.prefix}/bin/syncthing >/dev/null 2>&1 || true
       '';
 
       # Setup instructions
