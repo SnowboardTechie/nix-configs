@@ -51,6 +51,7 @@
       casks = [
         "slack"
         "vlc"
+        "zen" # Zen Browser (host-level since not in base homebrew)
       ];
     };
   };

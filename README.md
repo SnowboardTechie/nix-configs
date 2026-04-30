@@ -65,10 +65,10 @@ Feature modules own both platform aspects: darwin uses `homebrew.brews`/`homebre
 curl -fsSL https://install.determinate.systems/nix | sh -s -- install --determinate
 ```
 
-**Intel Mac (`inix`):** Determinate Systems lists `x86_64-darwin` as unsupported. Use the official upstream multi-user Nix installer instead:
+**Intel Mac (`inix`):** Determinate Systems lists `x86_64-darwin` as unsupported. Use the official upstream Nix installer instead (multi-user is the default on macOS):
 
 ```bash
-sh <(curl -L https://nixos.org/nix/install) --daemon
+curl -L https://nixos.org/nix/install | sh
 ```
 
 **NixOS:** Nix comes pre-installed.
