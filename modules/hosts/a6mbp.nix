@@ -63,6 +63,7 @@
         "libfido2"     # FIDO2/U2F tools
         "pinentry-mac" # GPG pinentry for macOS
         "podman"       # Container runtime
+        "podman-compose" # Compose for podman
         "syncthing"
         "ykman"    # YubiKey Manager CLI
       ];

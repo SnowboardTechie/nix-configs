@@ -6,6 +6,11 @@
 {
   # Darwin aspect - hybrid delivery
   flake.modules.darwin.cli-tools = { pkgs, ... }: {
+    # Homebrew casks for tools distributed as installer bundles
+    homebrew.casks = [
+      "google-cloud-sdk"
+    ];
+
     # Homebrew brews for macOS compatibility
     homebrew.brews = [
       "bat"
@@ -17,6 +22,7 @@
       "fzf"
       "git-lfs"
       "gnupg"
+      "googleworkspace-cli"
       "jq"
       "just"
       "lazydocker"
@@ -78,6 +84,7 @@
       fzf
       gh-dash
       gnupg
+      google-cloud-sdk
       htop
       jq
       just
@@ -113,6 +120,7 @@
       yaml-language-server
     ]) ++ [
       # External flake inputs (not in nixpkgs)
+      inputs.googleworkspace-cli.packages.${pkgs.stdenv.hostPlatform.system}.default
       inputs.worktrunk.packages.${pkgs.stdenv.hostPlatform.system}.default
     ];
   };

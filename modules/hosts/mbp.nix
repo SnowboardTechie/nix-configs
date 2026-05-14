@@ -56,6 +56,7 @@
         "texlive"  # For converting MD to PDF
         "pinentry-mac" # GPG pinentry for macOS
         "podman"   # Container runtime
+        "podman-compose" # Compose for podman
         "syncthing"
         "ykman"    # YubiKey Manager CLI
       ];
