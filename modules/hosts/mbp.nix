@@ -65,6 +65,7 @@
       casks = [
         "bambu-studio"
         "claude"
+        "finicky" # Browser/URL router — github.com/johnste/finicky
         "monal"
         "qobuz"
         "rectangle-pro"
