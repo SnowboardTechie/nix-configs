@@ -8,7 +8,7 @@
   flake.modules.darwin.cli-tools = { pkgs, ... }: {
     # Homebrew casks for tools distributed as installer bundles
     homebrew.casks = [
-      "google-cloud-sdk"
+      "gcloud-cli"
     ];
 
     # Homebrew brews for macOS compatibility
@@ -84,7 +84,7 @@
       fzf
       gh-dash
       gnupg
-      google-cloud-sdk
+      gcloud-cli
       htop
       jq
       just
