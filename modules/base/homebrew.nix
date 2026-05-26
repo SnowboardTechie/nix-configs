@@ -33,5 +33,18 @@
         "yaak"
       ];
     };
+
+    # Sol registers its own "Open at Login" via SMAppService, but that
+    # registration is tied to the app bundle and gets dropped whenever
+    # `onActivation.upgrade = true` makes Homebrew replace Sol.app on a
+    # rebuild — so it stops auto-starting after upgrades. Drive autostart
+    # from launchd instead so it survives every upgrade.
+    launchd.user.agents.sol = {
+      serviceConfig = {
+        ProgramArguments = [ "/usr/bin/open" "/Applications/Sol.app" ];
+        RunAtLoad = true;
+        KeepAlive = false;
+      };
+    };
   };
 }
