@@ -62,14 +62,18 @@
           systemd-boot.enable = true;
           efi.canTouchEfiVariables = true;
         };
-        # Use LTS kernel (6.6) - linuxPackages_latest (6.18) breaks xpad-noone driver
-        kernelPackages = pkgs.linuxPackages_6_6;
+        kernelPackages = pkgs.linuxPackages_latest;
         # LUKS device configuration
-        initrd.luks.devices."luks-5b933bbd-d285-4b20-8b90-0d18947e77f6".device =
-          "/dev/disk/by-uuid/5b933bbd-d285-4b20-8b90-0d18947e77f6";
+        initrd.luks.devices."luks-2fdf3d82-e78b-42dc-9d5a-a37303f79531" = {
+          device = "/dev/disk/by-uuid/2fdf3d82-e78b-42dc-9d5a-a37303f79531";
+        };
         # Hibernation support - configure resume device for power button hibernation
         resumeDevice = "/dev/disk/by-uuid/84deb268-57ba-4cfe-ab1a-85a971db89ce";
       };
+
+      swapDevices = [{
+        device = "/dev/disk/by-uuid/84deb268-57ba-4cfe-ab1a-85a971db89ce";
+      }];
 
       # === Networking ===
 
@@ -128,17 +132,6 @@
         printing.enable = true;
         # Disable upower - not needed on desktop without batteries
         upower.enable = lib.mkForce false;
-        # DualShock controller touchpad disable
-        udev.extraRules = ''
-          # DualShock 4 touchpad (USB)
-          SUBSYSTEM=="input", ATTRS{name}=="Sony Interactive Entertainment Wireless Controller Touchpad", ENV{LIBINPUT_IGNORE_DEVICE}="1"
-          # DualShock 4 touchpad (Bluetooth)
-          SUBSYSTEM=="input", ATTRS{name}=="Wireless Controller Touchpad", ENV{LIBINPUT_IGNORE_DEVICE}="1"
-          # DualSense touchpad (USB)
-          SUBSYSTEM=="input", ATTRS{name}=="Sony Interactive Entertainment DualSense Wireless Controller Touchpad", ENV{LIBINPUT_IGNORE_DEVICE}="1"
-          # DualSense touchpad (Bluetooth)
-          SUBSYSTEM=="input", ATTRS{name}=="DualSense Wireless Controller Touchpad", ENV{LIBINPUT_IGNORE_DEVICE}="1"
-        '';
         # Power management - prevent auto-sleep for Steam streaming
         logind = {
           settings.Login = {

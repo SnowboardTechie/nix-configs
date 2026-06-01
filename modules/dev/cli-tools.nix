@@ -76,6 +76,7 @@
       bat
       biome
       bun
+      claude-code
       direnv
       dnsutils # dig, nslookup (brew: bind)
       eza
@@ -84,7 +85,6 @@
       fzf
       gh-dash
       gnupg
-      gcloud-cli
       htop
       jq
       just
@@ -95,9 +95,9 @@
       nix-direnv
       nixd
       opencode
-      pipx
-      poetry
-      python3 # (brew: python)
+      #pipx
+      #poetry
+      #python3 # (brew: python)
       redis
       ripgrep
       shellcheck
@@ -120,7 +120,7 @@
       yaml-language-server
     ]) ++ [
       # External flake inputs (not in nixpkgs)
-      inputs.googleworkspace-cli.packages.${pkgs.stdenv.hostPlatform.system}.default
+      #inputs.googleworkspace-cli.packages.${pkgs.stdenv.hostPlatform.system}.default
       inputs.worktrunk.packages.${pkgs.stdenv.hostPlatform.system}.default
     ];
   };
