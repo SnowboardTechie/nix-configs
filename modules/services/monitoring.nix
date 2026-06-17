@@ -88,7 +88,8 @@
     });
 
     # Declarative prometheus.yml generated from Nix attrset
-    # Alerting block sends to Grafana's embedded Alertmanager when alertEmail is set.
+    # Alerting block points Prometheus at the real Alertmanager (localhost:9093)
+    # when alertEmail is set.
     prometheusConfigFile = pkgs.writeText "prometheus.yml" (builtins.toJSON ({
       global = {
         scrape_interval = "15s";
@@ -524,10 +525,9 @@
         /usr/libexec/ApplicationFirewall/socketfilterfw --unblock ${pkgs.prometheus-blackbox-exporter}/bin/blackbox_exporter >/dev/null 2>&1 || true
       '' + lib.optionalString alertingEnabled ''
 
-        # === alertmanager: storage + firewall + preflight ===
+        # === alertmanager: storage + preflight ===
+        # No app-firewall rule: AM binds 127.0.0.1, and loopback isn't filtered.
         mkdir -p "${cfg.alertmanager.storagePath}"
-        /usr/libexec/ApplicationFirewall/socketfilterfw --add ${pkgs.prometheus-alertmanager}/bin/alertmanager >/dev/null 2>&1 || true
-        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock ${pkgs.prometheus-alertmanager}/bin/alertmanager >/dev/null 2>&1 || true
 
         if [ ! -s "${homeDir}/.secrets/grafana-smtp-password" ]; then
           echo "WARNING: services.monitoring.alertEmail is set but ${homeDir}/.secrets/grafana-smtp-password" >&2
@@ -554,10 +554,8 @@
 
       # Grafana service configuration
       # SMTP password: read via $__file{} in grafanaCustomIni from ~/.secrets/grafana-smtp-password
-      # Admin password (for alerting): ~/.secrets/grafana-admin-password via GF_SECURITY_ADMIN_PASSWORD__FILE
-      # Create the secrets files:
+      # Create the secret file:
       #   echo '<smtp-password>' > ~/.secrets/grafana-smtp-password && chmod 600 $_
-      #   echo '<admin-password>' > ~/.secrets/grafana-admin-password && chmod 600 $_
       launchd.user.agents.grafana = {
         serviceConfig = {
           ProgramArguments = [
@@ -580,9 +578,9 @@
             GF_SMTP_FROM_ADDRESS = "grafana@snowboardtechie.com";
             GF_SMTP_FROM_NAME = "Studio Grafana";
           };
-          # Note: we deliberately do NOT set GF_SECURITY_ADMIN_PASSWORD__FILE.
-          # Prometheus authenticates to Grafana's embedded AM with a dedicated
-          # service account token, so the personal admin login stays untouched.
+          # Note: Grafana is visualization-only here — alerting runs through the
+          # real Alertmanager, not Grafana's embedded one — so there's no reason to
+          # set GF_SECURITY_ADMIN_PASSWORD__FILE; the default admin login is untouched.
         };
       };
 
@@ -649,6 +647,11 @@
 
       # Alertmanager — receives alerts from Prometheus, dedups/groups/routes
       # and delivers via SMTP. Only started when alertEmail is configured.
+      # Bound to 127.0.0.1 (unlike the other 0.0.0.0 agents): AM's web UI and
+      # /api/v2/silences are unauthenticated, so anyone who can reach the port
+      # could suppress every alert. All consumers are local (Prometheus, the
+      # activation preflight, and Grafana's datasource all use localhost:9093),
+      # so loopback-only closes that hole with no functional loss.
       # `--cluster.listen-address=` intentionally empty: single-node, skip
       # gossip/HA which would otherwise bind on UDP:9094.
       launchd.user.agents.alertmanager = lib.mkIf alertingEnabled {
@@ -657,7 +660,7 @@
             "${pkgs.prometheus-alertmanager}/bin/alertmanager"
             "--config.file=${alertmanagerConfigFile}"
             "--storage.path=${cfg.alertmanager.storagePath}"
-            "--web.listen-address=0.0.0.0:${toString cfg.alertmanager.port}"
+            "--web.listen-address=127.0.0.1:${toString cfg.alertmanager.port}"
             "--cluster.listen-address="
           ];
           RunAtLoad = true;

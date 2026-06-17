@@ -53,10 +53,9 @@
 
     # === Service Health & UNRAID NAS Monitoring ===
 
-    # Alert delivery: Prometheus evaluates rules → POSTs to Grafana's embedded
-    # Alertmanager → email via smtp2go. Requires both secret files:
-    #   ~/.secrets/grafana-smtp-password   (smtp2go password)
-    #   ~/.secrets/grafana-admin-password  (Grafana admin + Prom basic_auth)
+    # Alert delivery: Prometheus evaluates rules → Alertmanager (real, on
+    # localhost:9093) dedups/routes → email via smtp2go. Requires one secret:
+    #   ~/.secrets/grafana-smtp-password   (smtp2go password, shared with Grafana)
     services.monitoring.alertEmail = "bryan@snowboardtechie.com";
 
     services.monitoring.blackbox.targets = [
