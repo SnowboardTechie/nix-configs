@@ -4,7 +4,7 @@
 
 ## Overview
 
-Declarative system configs for 3 macOS hosts (nix-darwin) + 2 NixOS desktops. Uses **flake-parts** + **import-tree** for automatic module discovery.
+Declarative system configs for 4 macOS hosts (nix-darwin) + 1 NixOS desktop. Uses **flake-parts** + **import-tree** for automatic module discovery.
 
 ### Dendritic Architecture
 
@@ -88,10 +88,9 @@ Is this a host-specific setting (only one host needs it)?
 
 ```bash
 # macOS
-darwin-rebuild switch --flake '.#mbp'     # or a6mbp, studio
+darwin-rebuild switch --flake '.#mbp'     # or a6mbp, studio, inix
 # NixOS
 sudo nixos-rebuild switch --flake '.#gnarbox'
-sudo nixos-rebuild switch --flake '.#inix'
 # Validate
 nix flake check
 # Format
@@ -180,7 +179,7 @@ grep -E "services\." modules/hosts/*.nix
 
 - `_options.nix` must exist — declares the `flake.modules` option type that import-tree merges into
 - gnarbox hardware config lives outside `modules/` because import-tree can't handle `modulesPath`
-- `hardware-configs/inix.nix` is a placeholder — run `nixos-generate-config` on the iMac Pro and copy the output to replace it, or use: `scp inix:/etc/nixos/hardware-configuration.nix hardware-configs/inix.nix`
+- inix is the only Intel Mac (`x86_64-darwin`) — Homebrew prefix is `/usr/local`, not `/opt/homebrew`. Darwin services that reference Homebrew binaries should use `${config.homebrew.prefix}/bin/{tool}` (see `services/syncthing.nix`) rather than hardcoding the aarch64 path
 - Darwin services require the tool installed via Homebrew first (Nix packages alone aren't enough for launchd)
 - NixOS stubs exist in service modules (`# TODO: Implement NixOS equivalent`) — these are intentional placeholders
 - oh-my-opencode auto-installs on activation if not present (see `activation.nix`)

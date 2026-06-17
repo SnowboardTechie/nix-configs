@@ -73,7 +73,7 @@
         "claude"
         "docker-desktop"
         "notion"
-        "rectangle-pro"
+        "rectangle"
         "slack"
         "superwhisper"
         "yubico-authenticator"

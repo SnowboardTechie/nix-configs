@@ -12,7 +12,7 @@ modules/
 ├── dev/        # Development: cli-tools, editors, git
 ├── desktop/    # GUI: gnome, gaming, audio (NixOS)
 ├── services/   # Daemons: ollama, open-webui, monitoring, smb-mount, syncthing, icloud-backup (Darwin)
-├── hosts/      # Host-specific: a6mbp, gnarbox, inix, mbp, studio
+├── hosts/      # Host-specific: a6mbp, gnarbox, inix, mbp, studio (mbp/a6mbp/studio/inix darwin, gnarbox NixOS)
 └── dev-envs/   # VA project environments
 ```
 
@@ -35,15 +35,15 @@ Work MacBook Pro with syncthing and work tools (AWS, Docker, DDEV, Slack, Zoom).
 Media server Mac running the full service stack: ollama, open-webui, monitoring (Prometheus + Grafana), SMB mount, syncthing, and iCloud backup.
 **Location:** [`modules/hosts/studio.nix`](modules/hosts/studio.nix)
 
+### iNix (Intel macOS)
+
+Garage and shop machine for reading manuals, project plans, and occasional remote work. Runs on a 2017 iMac Pro (Intel Xeon W) with macOS + nix-darwin. Includes syncthing.
+**Location:** [`modules/hosts/inix.nix`](modules/hosts/inix.nix)
+
 ### gnarbox (NixOS desktop)
 
 NixOS desktop with GNOME, gaming (Steam + Proton GE), and PipeWire audio. Uses the unstable overlay for select packages.
 **Location:** [`modules/hosts/gnarbox.nix`](modules/hosts/gnarbox.nix)
-
-### iNix (NixOS desktop)
-
-Garage and shop machine for reading manuals, project plans, and occasional remote work. Runs on a 2017 iMac Pro (Intel Xeon W, AMD Vega, 5K display) with GNOME, PipeWire audio, and syncthing.
-**Location:** [`modules/hosts/inix.nix`](modules/hosts/inix.nix)
 
 ### Shared Configuration
 
@@ -59,10 +59,22 @@ Feature modules own both platform aspects: darwin uses `homebrew.brews`/`homebre
 
 ## Prerequisites
 
-**macOS only:** Install [Determinate Nix Installer](https://github.com/DeterminateSystems/nix-installer):
+**Apple Silicon Macs (`mbp`, `a6mbp`, `studio`):** Install [Determinate Nix Installer](https://github.com/DeterminateSystems/nix-installer):
 
 ```bash
 curl -fsSL https://install.determinate.systems/nix | sh -s -- install --determinate
+```
+
+**Intel Mac (`inix`):** Determinate Systems lists `x86_64-darwin` as unsupported. Use the official upstream Nix installer instead (multi-user is the default on macOS):
+
+```bash
+curl -L https://nixos.org/nix/install | sh
+```
+
+**All macOS hosts also need Homebrew installed first.** nix-darwin's `homebrew` module manages your Brewfile; it does not install Homebrew itself. If `brew` isn't already on the machine:
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 ```
 
 **NixOS:** Nix comes pre-installed.
@@ -78,17 +90,45 @@ cd ~/code/nix-configs
 
 Build and activate:
 
-**macOS:**
+**macOS — Apple Silicon (`mbp`, `a6mbp`, `studio`):**
+
+First-time bootstrap of nix-darwin (Determinate has flakes enabled already):
 
 ```bash
-darwin-rebuild switch --flake '.#mbp'  # or '.#a6mbp', '.#studio'
+sudo nix run nix-darwin/master#darwin-rebuild -- switch --flake '.#mbp'  # or '.#a6mbp', '.#studio'
+```
+
+Subsequent rebuilds:
+
+```bash
+darwin-rebuild switch --flake '.#mbp'
+```
+
+**macOS — Intel (`inix`):**
+
+The upstream Nix installer doesn't enable flakes by default, and `modules/base/nix-settings.nix` keeps `nix.enable = false` on darwin (defers Nix config to Determinate, which inix doesn't have). Enable flakes system-wide in `/etc/nix/nix.conf` so both your user and `sudo` invocations see them:
+
+```bash
+echo "experimental-features = nix-command flakes" | sudo tee -a /etc/nix/nix.conf
+```
+
+Bootstrap nix-darwin (this is the step that creates the `darwin-rebuild` command):
+
+```bash
+cd ~/code/nix-configs
+sudo nix run nix-darwin/master#darwin-rebuild -- switch --flake '.#inix'
+```
+
+Open a new shell, then subsequent rebuilds:
+
+```bash
+sudo darwin-rebuild switch --flake '.#inix'
 ```
 
 **NixOS** (first build requires experimental features flag):
 
 ```bash
 sudo nixos-rebuild switch --flake '.#gnarbox' --extra-experimental-features 'nix-command flakes'
-sudo nixos-rebuild switch --flake '.#inix' --extra-experimental-features 'nix-command flakes'
 ```
 
 ## Usage
@@ -105,7 +145,6 @@ darwin-rebuild switch --flake '~/code/nix-configs#mbp'
 
 ```bash
 sudo nixos-rebuild switch --flake '~/code/nix-configs#gnarbox'
-sudo nixos-rebuild switch --flake '~/code/nix-configs#inix'
 ```
 
 ### Update Dependencies
