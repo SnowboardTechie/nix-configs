@@ -53,6 +53,11 @@
 
     # === Service Health & UNRAID NAS Monitoring ===
 
+    # Alert delivery: Prometheus evaluates rules → Alertmanager (real, on
+    # localhost:9093) dedups/routes → email via smtp2go. Requires one secret:
+    #   ~/.secrets/grafana-smtp-password   (smtp2go password, shared with Grafana)
+    services.monitoring.alertEmail = "bryan@snowboardtechie.com";
+
     services.monitoring.blackbox.targets = [
       "http://localhost:11434/api/tags"   # Ollama
       "http://localhost:8080/health"       # Open-WebUI
@@ -90,7 +95,8 @@
         "ollama"
 
         "grafana-alloy"
-        "python@3.11"  # For Open WebUI
+        "python@3.11"  # Kept for legacy use; open-webui now lives in a uv tool venv
+        "uv"           # Isolated venvs + lockfiles for python tools (open-webui)
         "syncthing"
       ];
       casks = [

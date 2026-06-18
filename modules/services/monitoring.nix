@@ -1,11 +1,16 @@
-# Monitoring stack service (Prometheus + Grafana + node_exporter + Loki + Alloy + blackbox_exporter)
+# Monitoring stack service
+#   Prometheus + Alertmanager + Grafana + node_exporter + Loki + Alloy + blackbox_exporter
 #
-# Provides metrics collection, log aggregation, and visualization. Grafana, node_exporter,
-# Loki, and Alloy use Homebrew. Prometheus and blackbox_exporter use nixpkgs derivations
-# (Homebrew Prometheus builds with netgo which breaks multi-interface routing on macOS).
-# All services bind to 0.0.0.0 for network access.
-# Configuration is fully declarative: prometheus.yml, Loki config, and Grafana provisioning
-# are generated from Nix attrsets.
+# Provides metrics collection, log aggregation, visualization, and alerting. Grafana,
+# node_exporter, Loki, and Alloy use Homebrew. Prometheus, Alertmanager, and
+# blackbox_exporter use nixpkgs derivations (Homebrew Prometheus builds with netgo which
+# breaks multi-interface routing on macOS; Alertmanager isn't in Homebrew). All services
+# bind to 0.0.0.0 for network access. Configuration is fully declarative.
+#
+# Alerting pipeline:
+#   Prometheus (rule eval) → Alertmanager (dedup/group/route) → smtp2go → email
+# Grafana stays as pure visualization (Alertmanager added as datasource for alert-state
+# view in UI). Set services.monitoring.alertEmail in the host config to enable.
 { inputs, ... }:
 {
   # Darwin aspect - full configuration from modules/darwin/services/monitoring.nix
@@ -13,6 +18,7 @@
   let
     cfg = config.services.monitoring;
     homeDir = "/Users/${config.system.primaryUser}";
+    alertingEnabled = cfg.alertEmail != null;
 
     # Grafana custom config — overrides Homebrew defaults.ini
     # Only contains settings not handled by GF_* environment variables
@@ -37,7 +43,13 @@
               description = "{{ $labels.instance }} has been unreachable for more than 5 minutes.";
             };
           }
+          # NOTE: node_* rules target the single macOS host (studio's own
+          # node_exporter — the only node_exporter scrape target; unraid is an
+          # HTTP/syslog target only). Metric names below are darwin/Mach, NOT
+          # Linux /proc — do not "fix" them back to MemAvailable/MemTotal etc.
           {
+            # darwin-OK as-is: node_cpu_seconds_total{mode="idle"} exists
+            # (modes idle/user/system/nice). 100 - idle% = busy%.
             alert = "HighCpuUsage";
             expr = "100 - (avg by(instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100) > 85";
             "for" = "10m";
@@ -48,23 +60,35 @@
             };
           }
           {
-            alert = "HighMemoryUsage";
-            expr = "(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 90";
+            # macOS has no MemAvailable/MemTotal and a naive "used %" is
+            # meaningless here — the kernel keeps free near zero by design
+            # (inactive/purgeable are reclaimable, and a 128 GB box running
+            # LLMs sits "full" normally). The unambiguous "RAM is overcommitted"
+            # signal is the dynamic swap file being in use, which is ~0 B on a
+            # healthy host. (Compression climbing — node_memory_compressed_bytes
+            # — is an earlier, noisier warning if you ever want a second tier.)
+            alert = "HighMemoryPressure";
+            expr = "node_memory_swap_used_bytes > 1073741824";
             "for" = "10m";
             labels = { severity = "warning"; };
             annotations = {
-              summary = "High memory usage on {{ $labels.instance }}";
-              description = "Memory usage has been above 90% for more than 10 minutes.";
+              summary = "Memory pressure on {{ $labels.instance }} (swapping to disk)";
+              description = "macOS swap file in use ({{ $value | humanize1024 }}B) for >10m — RAM is overcommitted.";
             };
           }
           {
+            # macOS/APFS: pin to the real data volume. The sealed system
+            # snapshot "/" and "/System/Volumes/Data" share one APFS container
+            # and report the SAME avail but DIFFERENT size, so an unpinned rule
+            # double-fires with confusing numbers. fstypes here are apfs/autofs/
+            # nullfs — the Linux tmpfs/devtmpfs/overlay exclusion matched nothing.
             alert = "HighDiskUsage";
-            expr = "(1 - node_filesystem_avail_bytes{fstype!~\"tmpfs|devtmpfs|overlay\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|devtmpfs|overlay\"}) * 100 > 85";
+            expr = "(1 - node_filesystem_avail_bytes{fstype=\"apfs\",mountpoint=\"/System/Volumes/Data\"} / node_filesystem_size_bytes{fstype=\"apfs\",mountpoint=\"/System/Volumes/Data\"}) * 100 > 85";
             "for" = "15m";
             labels = { severity = "warning"; };
             annotations = {
               summary = "Disk usage above 85% on {{ $labels.instance }}";
-              description = "{{ $labels.mountpoint }} is {{ $value | printf \"%.1f\" }}% full.";
+              description = "Data volume is {{ $value | printf \"%.1f\" }}% full.";
             };
           }
           {
@@ -82,7 +106,9 @@
     });
 
     # Declarative prometheus.yml generated from Nix attrset
-    prometheusConfigFile = pkgs.writeText "prometheus.yml" (builtins.toJSON {
+    # Alerting block points Prometheus at the real Alertmanager (localhost:9093)
+    # when alertEmail is set.
+    prometheusConfigFile = pkgs.writeText "prometheus.yml" (builtins.toJSON ({
       global = {
         scrape_interval = "15s";
         evaluation_interval = "15s";
@@ -130,7 +156,19 @@
           static_configs = [{ targets = [ "127.0.0.1:${toString cfg.blackbox.port}" ]; }];
         }
       ] ++ cfg.extraScrapeConfigs;
-    });
+    } // lib.optionalAttrs alertingEnabled {
+      alerting = {
+        alertmanagers = [{
+          # Real Prometheus Alertmanager running on localhost. We do NOT use
+          # Grafana's embedded AM — as of Grafana 12.4 its /api/v2/alerts
+          # endpoint expects a non-spec wrapped payload ({alerts: [...]}) while
+          # Prometheus's client sends the standard bare-array AM v2 format,
+          # causing 400 "cannot unmarshal array into PostableAlerts" on every
+          # real alert. Real Alertmanager speaks canonical AM v2.
+          static_configs = [{ targets = [ "localhost:${toString cfg.alertmanager.port}" ]; }];
+        }];
+      };
+    }));
 
     # Grafana dashboard JSON directory (separate to avoid circular ref)
     dashboardJsonDir = pkgs.runCommand "grafana-dashboards" {} ''
@@ -141,12 +179,13 @@
       cp ${./grafana/dashboards/studio-logs.json} $out/studio-logs.json
     '';
 
-    # Grafana datasource config (Prometheus + Loki)
+    # Grafana datasource config (Prometheus + Loki + Alertmanager when alerting is on)
     datasourceConfig = pkgs.writeText "datasources.yml" (builtins.toJSON {
       apiVersion = 1;
       deleteDatasources = [
         { name = "Prometheus"; orgId = 1; }
         { name = "Loki"; orgId = 1; }
+        { name = "Alertmanager"; orgId = 1; }
       ];
       datasources = [
         {
@@ -166,7 +205,18 @@
           url = "http://localhost:${toString cfg.loki.port}";
           editable = false;
         }
-      ];
+      ] ++ lib.optional alertingEnabled {
+        name = "Alertmanager";
+        uid = "Alertmanager";
+        type = "alertmanager";
+        access = "proxy";
+        url = "http://localhost:${toString cfg.alertmanager.port}";
+        jsonData = {
+          implementation = "prometheus";
+          handleGrafanaManagedAlerts = false;
+        };
+        editable = false;
+      };
     });
 
     # Grafana dashboard provider config
@@ -183,6 +233,32 @@
           path = "${dashboardJsonDir}";
           foldersFromFilesStructure = false;
         };
+      }];
+    });
+
+    # Alertmanager config — SMTP via smtp2go (reuses the same password file
+    # Grafana uses for its own SMTP integration).
+    alertmanagerConfigFile = pkgs.writeText "alertmanager.yml" (builtins.toJSON {
+      global = {
+        smtp_smarthost = "mail.smtp2go.com:2525";
+        smtp_from = "grafana@snowboardtechie.com";
+        smtp_auth_username = "snowboardtechie.com";
+        smtp_auth_password_file = "${homeDir}/.secrets/grafana-smtp-password";
+        smtp_require_tls = true;
+      };
+      route = {
+        receiver = "email-primary";
+        group_by = [ "alertname" "instance" ];
+        group_wait = "30s";
+        group_interval = "5m";
+        repeat_interval = "4h";
+      };
+      receivers = [{
+        name = "email-primary";
+        email_configs = [{
+          to = cfg.alertEmail;
+          send_resolved = true;
+        }];
       }];
     });
 
@@ -229,16 +305,40 @@
     });
 
     # Grafana Alloy configuration (replaces promtail — EOL March 2026)
+    #
+    # Pipeline:
+    #   local.file_match → loki.source.file → loki.process (regex+labels) → loki.write
+    #
+    # The process stage extracts `service_name` from the basename of the log file
+    # (e.g. /tmp/open-webui.error.log → service_name=open-webui) so LogQL queries
+    # can filter by app instead of full filename.
     alloyConfigFile = pkgs.writeText "alloy-config.alloy" ''
       // Discover service log files
       local.file_match "service_logs" {
         path_targets = [{"__path__" = "/tmp/*.log", "host" = "studio"}]
       }
 
-      // Read discovered log files and ship to Loki
+      // Read discovered log files and forward to processing
       loki.source.file "service_logs" {
         targets    = local.file_match.service_logs.targets
+        forward_to = [loki.process.service_logs.receiver]
+      }
+
+      // Extract service_name label from the filename basename.
+      // /tmp/ollama.log               -> service_name=ollama
+      // /tmp/open-webui.error.log     -> service_name=open-webui
+      // /tmp/open-webui.updater.log   -> service_name=open-webui  (strips first segment)
+      loki.process "service_logs" {
         forward_to = [loki.write.default.receiver]
+
+        stage.regex {
+          expression = "/tmp/(?P<service>[^./]+)(?:\\.[^/]*)?\\.log$"
+          source     = "filename"
+        }
+
+        stage.labels {
+          values = { service_name = "service" }
+        }
       }
 
       // Receive syslog from unraid
@@ -247,7 +347,7 @@
           address       = "0.0.0.0:1514"
           protocol      = "udp"
           syslog_format = "rfc3164"
-          labels        = { host = "unraid" }
+          labels        = { host = "unraid", service_name = "unraid" }
         }
         forward_to = [loki.relabel.syslog.receiver]
       }
@@ -283,7 +383,8 @@
       };
     });
 
-    # Grafana provisioning directory (assembled from configs above)
+    # Grafana provisioning directory (datasources + dashboards only).
+    # Alerting lives in Alertmanager, not Grafana.
     grafanaProvisioning = pkgs.runCommand "grafana-provisioning" {} ''
       mkdir -p $out/datasources $out/dashboards
       cp ${datasourceConfig} $out/datasources/prometheus.yml
@@ -293,6 +394,26 @@
   {
     options.services.monitoring = {
       enable = lib.mkEnableOption "Prometheus and Grafana monitoring stack";
+
+      alertEmail = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "bryan@snowboardtechie.com";
+        description = ''
+          Email address to deliver alert notifications to. Null disables
+          Alertmanager entirely (Prometheus still evaluates rules but has no
+          AM to send to).
+
+          Wiring: Prometheus (rule eval) → Alertmanager (dedup/route/group) →
+          smtp2go → this address. Grafana is kept as pure visualization; it
+          gets Alertmanager added as a datasource so you can view alert state
+          in its UI.
+
+          Requires ~/.secrets/grafana-smtp-password (already used for
+          Grafana's own SMTP integration — Alertmanager reuses it via
+          smtp_auth_password_file).
+        '';
+      };
 
       prometheus = {
         port = lib.mkOption {
@@ -374,6 +495,19 @@
         };
       };
 
+      alertmanager = {
+        port = lib.mkOption {
+          type = lib.types.port;
+          default = 9093;
+          description = "Port for Alertmanager HTTP API / Web UI";
+        };
+        storagePath = lib.mkOption {
+          type = lib.types.str;
+          default = "${homeDir}/.alertmanager/data";
+          description = "Path for Alertmanager data (silences, notification log)";
+        };
+      };
+
       extraScrapeConfigs = lib.mkOption {
         type = lib.types.listOf lib.types.attrs;
         default = [];
@@ -382,13 +516,42 @@
     };
 
     config = lib.mkIf cfg.enable {
-      # Ensure storage directories exist
-      system.activationScripts.monitoring-setup.text = ''
+      # Ensure storage directories exist + run firewall rules, via the only
+      # nix-darwin activation extension point that actually executes:
+      # `extraActivation`. (nix-darwin's system.activationScripts only composes
+      # a hard-coded set of named phases into the final activate script; custom
+      # names like `monitoring-setup` are silently ignored. See services/AGENTS.md.)
+      system.activationScripts.extraActivation.text = lib.mkAfter (''
+        # === monitoring: ensure storage directories exist ===
         mkdir -p "${cfg.prometheus.storagePath}"
         mkdir -p "${cfg.grafana.dataPath}"
         mkdir -p "${cfg.loki.storagePath}"
         mkdir -p "${homeDir}/.alloy/data"
-      '';
+
+        # === monitoring: firewall rules ===
+        /usr/libexec/ApplicationFirewall/socketfilterfw --add ${pkgs.prometheus}/bin/prometheus >/dev/null 2>&1 || true
+        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock ${pkgs.prometheus}/bin/prometheus >/dev/null 2>&1 || true
+        /usr/libexec/ApplicationFirewall/socketfilterfw --add /opt/homebrew/opt/grafana/bin/grafana >/dev/null 2>&1 || true
+        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock /opt/homebrew/opt/grafana/bin/grafana >/dev/null 2>&1 || true
+        /usr/libexec/ApplicationFirewall/socketfilterfw --add /opt/homebrew/opt/node_exporter/bin/node_exporter >/dev/null 2>&1 || true
+        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock /opt/homebrew/opt/node_exporter/bin/node_exporter >/dev/null 2>&1 || true
+        /usr/libexec/ApplicationFirewall/socketfilterfw --add /opt/homebrew/opt/loki/bin/loki >/dev/null 2>&1 || true
+        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock /opt/homebrew/opt/loki/bin/loki >/dev/null 2>&1 || true
+        /usr/libexec/ApplicationFirewall/socketfilterfw --add /opt/homebrew/opt/grafana-alloy/bin/alloy >/dev/null 2>&1 || true
+        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock /opt/homebrew/opt/grafana-alloy/bin/alloy >/dev/null 2>&1 || true
+        /usr/libexec/ApplicationFirewall/socketfilterfw --add ${pkgs.prometheus-blackbox-exporter}/bin/blackbox_exporter >/dev/null 2>&1 || true
+        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock ${pkgs.prometheus-blackbox-exporter}/bin/blackbox_exporter >/dev/null 2>&1 || true
+      '' + lib.optionalString alertingEnabled ''
+
+        # === alertmanager: storage + preflight ===
+        # No app-firewall rule: AM binds 127.0.0.1, and loopback isn't filtered.
+        mkdir -p "${cfg.alertmanager.storagePath}"
+
+        if [ ! -s "${homeDir}/.secrets/grafana-smtp-password" ]; then
+          echo "WARNING: services.monitoring.alertEmail is set but ${homeDir}/.secrets/grafana-smtp-password" >&2
+          echo "         is missing. Alertmanager will start but email delivery will fail." >&2
+        fi
+      '');
 
       # Prometheus service configuration
       launchd.user.agents.prometheus = {
@@ -409,7 +572,8 @@
 
       # Grafana service configuration
       # SMTP password: read via $__file{} in grafanaCustomIni from ~/.secrets/grafana-smtp-password
-      # Create the secrets file: echo '<password>' > ~/.secrets/grafana-smtp-password && chmod 600 ~/.secrets/grafana-smtp-password
+      # Create the secret file:
+      #   echo '<smtp-password>' > ~/.secrets/grafana-smtp-password && chmod 600 $_
       launchd.user.agents.grafana = {
         serviceConfig = {
           ProgramArguments = [
@@ -432,6 +596,9 @@
             GF_SMTP_FROM_ADDRESS = "grafana@snowboardtechie.com";
             GF_SMTP_FROM_NAME = "Studio Grafana";
           };
+          # Note: Grafana is visualization-only here — alerting runs through the
+          # real Alertmanager, not Grafana's embedded one — so there's no reason to
+          # set GF_SECURITY_ADMIN_PASSWORD__FILE; the default admin login is untouched.
         };
       };
 
@@ -496,27 +663,30 @@
         };
       };
 
-      # Firewall rules for monitoring services
-      system.activationScripts.monitoring-firewall.text = ''
-        # Prometheus
-        /usr/libexec/ApplicationFirewall/socketfilterfw --add ${pkgs.prometheus}/bin/prometheus >/dev/null 2>&1 || true
-        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock ${pkgs.prometheus}/bin/prometheus >/dev/null 2>&1 || true
-        # Grafana
-        /usr/libexec/ApplicationFirewall/socketfilterfw --add /opt/homebrew/opt/grafana/bin/grafana >/dev/null 2>&1 || true
-        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock /opt/homebrew/opt/grafana/bin/grafana >/dev/null 2>&1 || true
-        # Node Exporter
-        /usr/libexec/ApplicationFirewall/socketfilterfw --add /opt/homebrew/opt/node_exporter/bin/node_exporter >/dev/null 2>&1 || true
-        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock /opt/homebrew/opt/node_exporter/bin/node_exporter >/dev/null 2>&1 || true
-        # Loki
-        /usr/libexec/ApplicationFirewall/socketfilterfw --add /opt/homebrew/opt/loki/bin/loki >/dev/null 2>&1 || true
-        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock /opt/homebrew/opt/loki/bin/loki >/dev/null 2>&1 || true
-        # Alloy (log shipper)
-        /usr/libexec/ApplicationFirewall/socketfilterfw --add /opt/homebrew/opt/grafana-alloy/bin/alloy >/dev/null 2>&1 || true
-        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock /opt/homebrew/opt/grafana-alloy/bin/alloy >/dev/null 2>&1 || true
-        # Blackbox Exporter
-        /usr/libexec/ApplicationFirewall/socketfilterfw --add ${pkgs.prometheus-blackbox-exporter}/bin/blackbox_exporter >/dev/null 2>&1 || true
-        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock ${pkgs.prometheus-blackbox-exporter}/bin/blackbox_exporter >/dev/null 2>&1 || true
-      '';
+      # Alertmanager — receives alerts from Prometheus, dedups/groups/routes
+      # and delivers via SMTP. Only started when alertEmail is configured.
+      # Bound to 127.0.0.1 (unlike the other 0.0.0.0 agents): AM's web UI and
+      # /api/v2/silences are unauthenticated, so anyone who can reach the port
+      # could suppress every alert. All consumers are local (Prometheus, the
+      # activation preflight, and Grafana's datasource all use localhost:9093),
+      # so loopback-only closes that hole with no functional loss.
+      # `--cluster.listen-address=` intentionally empty: single-node, skip
+      # gossip/HA which would otherwise bind on UDP:9094.
+      launchd.user.agents.alertmanager = lib.mkIf alertingEnabled {
+        serviceConfig = {
+          ProgramArguments = [
+            "${pkgs.prometheus-alertmanager}/bin/alertmanager"
+            "--config.file=${alertmanagerConfigFile}"
+            "--storage.path=${cfg.alertmanager.storagePath}"
+            "--web.listen-address=127.0.0.1:${toString cfg.alertmanager.port}"
+            "--cluster.listen-address="
+          ];
+          RunAtLoad = true;
+          KeepAlive = true;
+          StandardOutPath = "/tmp/alertmanager.log";
+          StandardErrorPath = "/tmp/alertmanager.error.log";
+        };
+      };
     };
   };
 

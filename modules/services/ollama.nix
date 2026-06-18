@@ -75,20 +75,25 @@
         };
       };
 
-      # Firewall rules for Ollama
-      system.activationScripts.ollama-firewall.text = ''
+      # Firewall rules + restart-on-rebuild, folded into extraActivation because
+      # nix-darwin's system.activationScripts only composes a fixed set of named
+      # phases into the activate script (custom names like `ollama-firewall` are
+      # silently ignored). See services/AGENTS.md for the full footgun writeup.
+      #
+      # The restart covers brew-upgrade-without-plist-change: when brew bumps
+      # /opt/homebrew/bin/ollama, the plist file is unchanged so nix-darwin
+      # doesn't reload the agent. Without this kickstart, ollama keeps running
+      # the old binary until something else restarts it.
+      system.activationScripts.extraActivation.text = lib.mkAfter ''
+        # === ollama firewall ===
         /usr/libexec/ApplicationFirewall/socketfilterfw --add /opt/homebrew/bin/ollama >/dev/null 2>&1 || true
         /usr/libexec/ApplicationFirewall/socketfilterfw --unblock /opt/homebrew/bin/ollama >/dev/null 2>&1 || true
-      '';
 
-      # Restart Ollama after rebuild to pick up any Homebrew binary upgrades.
-      # The launchd plist doesn't change when brew upgrades the binary, so
-      # nix-darwin won't restart the agent on its own.
-      system.activationScripts.ollama-restart.text = ''
-        uid=$(/usr/bin/id -u ${config.system.primaryUser})
-        if /bin/launchctl print "gui/$uid/org.nixos.ollama" &>/dev/null; then
+        # === ollama restart on rebuild (picks up brew binary upgrades) ===
+        ollama_uid=$(/usr/bin/id -u ${config.system.primaryUser})
+        if /bin/launchctl print "gui/$ollama_uid/org.nixos.ollama" >/dev/null 2>&1; then
           echo "Restarting Ollama to pick up any binary updates..."
-          /bin/launchctl kickstart -k "gui/$uid/org.nixos.ollama"
+          /bin/launchctl kickstart -k "gui/$ollama_uid/org.nixos.ollama" || true
         fi
       '';
     };

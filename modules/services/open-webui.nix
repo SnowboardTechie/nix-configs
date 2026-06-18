@@ -1,21 +1,60 @@
-# Open WebUI service (pip-based installation)
+# Open WebUI service (uv-managed tool installation)
 #
-# Provides a web interface for LLM interaction. Uses pip3.11 for installation
-# to track upstream releases immediately (Homebrew lags behind).
+# Provides a web interface for LLM interaction. Installed via `uv tool install`
+# into an isolated venv with a uv-managed lockfile, which eliminates the
+# dependency-tree-rot issue that hit us before (missing greenlet caused a 65-hour
+# crash loop invisible behind the Cloudflare tunnel).
+#
+# Requires `uv` via Homebrew — added to studio host config.
 #
 # Includes:
 # - Main service runner (auto-installs if missing)
-# - Daily update checker
+# - Daily update checker with an IMPORT PROBE — refuses to kickstart a
+#   broken install so a bad dep resolution can't take the service down.
 # - Manual upgrade script in PATH
 { inputs, ... }:
 {
   # Darwin aspect - full configuration from modules/darwin/services/open-webui.nix
-  flake.modules.darwin.open-webui = { pkgs, config, lib, ... }: 
+  flake.modules.darwin.open-webui = { pkgs, config, lib, ... }:
   let
     cfg = config.services.open-webui;
     homeDir = "/Users/${config.system.primaryUser}";
-    pip3Path = "/opt/homebrew/bin/pip3.11";
-    openWebUIBinary = "${homeDir}/Library/Python/3.11/bin/open-webui";
+    # uv installs tools into ~/.local/share/uv/tools/<name>/bin/<name>
+    # and symlinks entrypoints into ~/.local/bin/.
+    uvPath = "/opt/homebrew/bin/uv";
+    toolBin = "${homeDir}/.local/bin/open-webui";
+    toolVenvPython = "${homeDir}/.local/share/uv/tools/open-webui/bin/python";
+
+    # Shared preflight — used by runner, updater, upgrade script.
+    # Verifies uv is available; fails loudly if not.
+    preflight = ''
+      if [ ! -x "${uvPath}" ]; then
+        echo "ERROR: uv not found at ${uvPath}"
+        echo "Install with: brew install uv"
+        exit 1
+      fi
+    '';
+
+    # Import probe — runs the actual import chain that was failing during
+    # the Apr 21-24 outage. If this fails, the tool install is broken and
+    # we must NOT kickstart the service (which would just crash-loop).
+    # Returns 0 on success, non-zero on broken install.
+    importProbe = ''
+      if [ ! -x "${toolVenvPython}" ]; then
+        echo "IMPORT PROBE: python missing at ${toolVenvPython}"
+        return 1
+      fi
+      if ! "${toolVenvPython}" -c "
+      import open_webui.main
+      import greenlet
+      import sqlalchemy
+      from open_webui.utils.payload import apply_model_params_to_body_ollama
+      " 2>&1; then
+        echo "IMPORT PROBE: open-webui install cannot load core modules"
+        return 1
+      fi
+      return 0
+    '';
 
     # Manual upgrade script for Open WebUI
     upgrade-open-webui = pkgs.writeShellScriptBin "upgrade-open-webui" ''
@@ -25,83 +64,128 @@
       echo "=== Open WebUI Manual Upgrade ==="
       echo ""
 
-      # Check if Python 3.11 is available
-      if [ ! -f ${pip3Path} ]; then
-        echo "ERROR: Python 3.11 not found at ${pip3Path}"
-        echo "Please install it with: brew install python@3.11"
+      ${preflight}
+
+      # Get current version (may be empty on fresh install)
+      CURRENT_VERSION=$("${uvPath}" tool list 2>/dev/null | awk '/^open-webui/{print $2}')
+      echo "Current version: ''${CURRENT_VERSION:-not installed}"
+      echo ""
+
+      if [ -z "$CURRENT_VERSION" ]; then
+        echo "Installing Open WebUI..."
+        "${uvPath}" tool install --python 3.11 open-webui
+      else
+        echo "Upgrading Open WebUI..."
+        "${uvPath}" tool upgrade open-webui
+      fi
+      echo ""
+
+      NEW_VERSION=$("${uvPath}" tool list 2>/dev/null | awk '/^open-webui/{print $2}')
+      echo "New version: ''${NEW_VERSION:-unknown}"
+      echo ""
+
+      import_probe() {
+        ${importProbe}
+      }
+
+      if ! import_probe; then
+        echo ""
+        echo "ERROR: New install failed import probe. NOT restarting service."
+        echo "Recovery: uv tool uninstall open-webui && uv tool install --python 3.11 open-webui"
         exit 1
       fi
 
-      # Get current version
-      CURRENT_VERSION=$(${pip3Path} show open-webui 2>/dev/null | grep Version | cut -d' ' -f2 || echo "not installed")
-      echo "Current version: $CURRENT_VERSION"
-      echo ""
-
-      # Upgrade
-      echo "Upgrading Open WebUI..."
-      ${pip3Path} install --user --upgrade open-webui
-      echo ""
-
-      # Get new version
-      NEW_VERSION=$(${pip3Path} show open-webui 2>/dev/null | grep Version | cut -d' ' -f2 || echo "unknown")
-      echo "New version: $NEW_VERSION"
-      echo ""
-
       if [ "$CURRENT_VERSION" != "$NEW_VERSION" ]; then
-        echo "✓ Upgraded from $CURRENT_VERSION to $NEW_VERSION"
-        echo ""
+        echo "✓ Upgraded from ''${CURRENT_VERSION:-nothing} to $NEW_VERSION"
         echo "Restarting Open WebUI service..."
         launchctl kickstart -k "gui/$(id -u)/org.nixos.open-webui"
         echo "✓ Service restarted"
       else
-        echo "Already at latest version ($NEW_VERSION)"
+        echo "Already at latest version ($NEW_VERSION) — no restart needed"
       fi
 
       echo ""
       echo "=== Upgrade Complete ==="
-      echo "Open WebUI should now be running version $NEW_VERSION"
-      echo "Access it at: http://localhost:${toString cfg.port}"
+      echo "Access at: http://localhost:${toString cfg.port}"
     '';
 
-    # Runner script that auto-installs Open WebUI if missing
+    # Runner script that auto-installs Open WebUI if missing, then execs it.
+    # Does NOT run the updater — that's a separate launchd agent.
     openWebUIRunner = pkgs.writeShellScriptBin "run-open-webui" ''
       #!/bin/bash
       set -euo pipefail
 
       export HOME="${homeDir}"
-      export PATH="/opt/homebrew/bin:$PATH"
+      export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
 
-      if [ ! -x "${pip3Path}" ]; then
-        echo "ERROR: pip3.11 not found at ${pip3Path}"
-        exit 1
-      fi
+      ${preflight}
 
-      if [ ! -x "${openWebUIBinary}" ]; then
-        echo "Installing Open WebUI into $HOME/Library/Python/3.11"
-        "${pip3Path}" install --user --upgrade pip setuptools wheel
-        "${pip3Path}" install --user --upgrade open-webui
+      if [ ! -x "${toolBin}" ]; then
+        echo "Installing Open WebUI into uv tool venv..."
+        "${uvPath}" tool install --python 3.11 open-webui
       fi
 
       mkdir -p "${cfg.dataDir}"
 
-      exec "${openWebUIBinary}" serve
+      exec "${toolBin}" serve
     '';
 
-    # Updater script for daily automatic updates
+    # Updater with import probe.
+    #
+    # Behavior:
+    #   1. Capture current version.
+    #   2. `uv tool upgrade open-webui` (idempotent; no-op if already latest).
+    #   3. Run import probe against the tool venv python.
+    #   4. ONLY IF probe passes AND version changed, kickstart the service.
+    #
+    # If the probe fails after an upgrade, we leave the existing (running) service
+    # alone and emit a loud error. Service stays up on the old install bits that
+    # were running before the upgrade rearranged site-packages. On next run the
+    # upgrade re-resolves deps, which usually self-heals.
     openWebUIUpdater = pkgs.writeShellScriptBin "update-open-webui" ''
       #!/bin/bash
       set -euo pipefail
 
       export HOME="${homeDir}"
-      export PATH="/opt/homebrew/bin:$PATH"
+      export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
 
-      if [ ! -x "${pip3Path}" ]; then
-        echo "ERROR: pip3.11 not found at ${pip3Path}"
+      ${preflight}
+
+      OLD_VERSION=$("${uvPath}" tool list 2>/dev/null | awk '/^open-webui/{print $2}')
+
+      if [ -z "$OLD_VERSION" ]; then
+        # Fresh install is the runner's job (avoids a race with `uv tool install`
+        # when both agents load at the same time).
+        echo "Open WebUI not installed yet — runner will handle first install. Skipping."
+        exit 0
+      fi
+
+      echo "Checking for Open WebUI updates (current: $OLD_VERSION)..."
+      "${uvPath}" tool upgrade open-webui || {
+        echo "uv tool upgrade failed; leaving existing install alone."
+        exit 0
+      }
+
+      NEW_VERSION=$("${uvPath}" tool list 2>/dev/null | awk '/^open-webui/{print $2}')
+
+      import_probe() {
+        ${importProbe}
+      }
+
+      if ! import_probe; then
+        echo "=== IMPORT PROBE FAILED ==="
+        echo "New install (''${NEW_VERSION:-unknown}) cannot load required modules."
+        echo "Service will NOT be kickstarted. Existing process continues running."
+        echo "Recovery: uv tool uninstall open-webui && uv tool install --python 3.11 open-webui"
         exit 1
       fi
 
-      echo "Checking for Open WebUI updates..."
-      "${pip3Path}" install --user --upgrade open-webui
+      if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
+        echo "Already at latest ($NEW_VERSION) — no restart needed."
+        exit 0
+      fi
+
+      echo "Import probe passed: $OLD_VERSION -> $NEW_VERSION. Restarting."
       launchctl kickstart -k "gui/$(id -u)/org.nixos.open-webui" >/dev/null 2>&1 || true
     '';
   in
@@ -130,7 +214,7 @@
       autoUpdate = lib.mkOption {
         type = lib.types.bool;
         default = true;
-        description = "Enable daily automatic updates";
+        description = "Enable daily automatic updates (with import probe safety net)";
       };
 
       updateInterval = lib.mkOption {
@@ -174,10 +258,16 @@
         };
       };
 
-      # Firewall rules for Open WebUI (python process)
-      system.activationScripts.open-webui-firewall.text = ''
-        /usr/libexec/ApplicationFirewall/socketfilterfw --add /opt/homebrew/bin/python3.11 >/dev/null 2>&1 || true
-        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock /opt/homebrew/bin/python3.11 >/dev/null 2>&1 || true
+      # Firewall rules — folded into extraActivation because nix-darwin's
+      # system.activationScripts only composes a fixed set of named phases into
+      # the activate script. See services/AGENTS.md for the full explanation.
+      # Firewall target is now uv's tool venv python, not the system python3.11.
+      system.activationScripts.extraActivation.text = lib.mkAfter ''
+        # === open-webui firewall ===
+        if [ -x "${toolVenvPython}" ]; then
+          /usr/libexec/ApplicationFirewall/socketfilterfw --add "${toolVenvPython}" >/dev/null 2>&1 || true
+          /usr/libexec/ApplicationFirewall/socketfilterfw --unblock "${toolVenvPython}" >/dev/null 2>&1 || true
+        fi
       '';
     };
   };

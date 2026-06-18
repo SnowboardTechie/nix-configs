@@ -86,21 +86,9 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "probe_success{job=\"blackbox\",instance=\"http://localhost:11434/api/tags\"}",
+          "expr": "probe_success{job=\"blackbox\"}",
           "refId": "A",
-          "legendFormat": "Ollama"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "probe_success{job=\"blackbox\",instance=\"http://localhost:8080/health\"}",
-          "refId": "B",
-          "legendFormat": "Open-WebUI"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "probe_success{job=\"blackbox\",instance=\"http://localhost:32400/web\"}",
-          "refId": "C",
-          "legendFormat": "Plex"
+          "legendFormat": "{{instance}}"
         }
       ]
     },
@@ -171,21 +159,9 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "probe_duration_seconds{job=\"blackbox\",instance=\"http://localhost:11434/api/tags\"}",
+          "expr": "probe_duration_seconds{job=\"blackbox\"}",
           "refId": "A",
-          "legendFormat": "Ollama"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "probe_duration_seconds{job=\"blackbox\",instance=\"http://localhost:8080/health\"}",
-          "refId": "B",
-          "legendFormat": "Open-WebUI"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "probe_duration_seconds{job=\"blackbox\",instance=\"http://localhost:32400/web\"}",
-          "refId": "C",
-          "legendFormat": "Plex"
+          "legendFormat": "{{instance}}"
         }
       ]
     },
@@ -268,21 +244,9 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "probe_http_status_code{job=\"blackbox\",instance=\"http://localhost:11434/api/tags\"}",
+          "expr": "probe_http_status_code{job=\"blackbox\"}",
           "refId": "A",
-          "legendFormat": "Ollama"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "probe_http_status_code{job=\"blackbox\",instance=\"http://localhost:8080/health\"}",
-          "refId": "B",
-          "legendFormat": "Open-WebUI"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "probe_http_status_code{job=\"blackbox\",instance=\"http://localhost:32400/web\"}",
-          "refId": "C",
-          "legendFormat": "Plex"
+          "legendFormat": "{{instance}}"
         }
       ]
     },
