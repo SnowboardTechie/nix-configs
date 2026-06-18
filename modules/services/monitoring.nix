@@ -43,7 +43,13 @@
               description = "{{ $labels.instance }} has been unreachable for more than 5 minutes.";
             };
           }
+          # NOTE: node_* rules target the single macOS host (studio's own
+          # node_exporter — the only node_exporter scrape target; unraid is an
+          # HTTP/syslog target only). Metric names below are darwin/Mach, NOT
+          # Linux /proc — do not "fix" them back to MemAvailable/MemTotal etc.
           {
+            # darwin-OK as-is: node_cpu_seconds_total{mode="idle"} exists
+            # (modes idle/user/system/nice). 100 - idle% = busy%.
             alert = "HighCpuUsage";
             expr = "100 - (avg by(instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100) > 85";
             "for" = "10m";
@@ -54,23 +60,35 @@
             };
           }
           {
-            alert = "HighMemoryUsage";
-            expr = "(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 90";
+            # macOS has no MemAvailable/MemTotal and a naive "used %" is
+            # meaningless here — the kernel keeps free near zero by design
+            # (inactive/purgeable are reclaimable, and a 128 GB box running
+            # LLMs sits "full" normally). The unambiguous "RAM is overcommitted"
+            # signal is the dynamic swap file being in use, which is ~0 B on a
+            # healthy host. (Compression climbing — node_memory_compressed_bytes
+            # — is an earlier, noisier warning if you ever want a second tier.)
+            alert = "HighMemoryPressure";
+            expr = "node_memory_swap_used_bytes > 1073741824";
             "for" = "10m";
             labels = { severity = "warning"; };
             annotations = {
-              summary = "High memory usage on {{ $labels.instance }}";
-              description = "Memory usage has been above 90% for more than 10 minutes.";
+              summary = "Memory pressure on {{ $labels.instance }} (swapping to disk)";
+              description = "macOS swap file in use ({{ $value | humanize1024 }}B) for >10m — RAM is overcommitted.";
             };
           }
           {
+            # macOS/APFS: pin to the real data volume. The sealed system
+            # snapshot "/" and "/System/Volumes/Data" share one APFS container
+            # and report the SAME avail but DIFFERENT size, so an unpinned rule
+            # double-fires with confusing numbers. fstypes here are apfs/autofs/
+            # nullfs — the Linux tmpfs/devtmpfs/overlay exclusion matched nothing.
             alert = "HighDiskUsage";
-            expr = "(1 - node_filesystem_avail_bytes{fstype!~\"tmpfs|devtmpfs|overlay\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|devtmpfs|overlay\"}) * 100 > 85";
+            expr = "(1 - node_filesystem_avail_bytes{fstype=\"apfs\",mountpoint=\"/System/Volumes/Data\"} / node_filesystem_size_bytes{fstype=\"apfs\",mountpoint=\"/System/Volumes/Data\"}) * 100 > 85";
             "for" = "15m";
             labels = { severity = "warning"; };
             annotations = {
               summary = "Disk usage above 85% on {{ $labels.instance }}";
-              description = "{{ $labels.mountpoint }} is {{ $value | printf \"%.1f\" }}% full.";
+              description = "Data volume is {{ $value | printf \"%.1f\" }}% full.";
             };
           }
           {
