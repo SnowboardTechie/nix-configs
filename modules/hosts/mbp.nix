@@ -20,7 +20,6 @@
       gaming
       reaper
       # Service modules
-      ollama
       syncthing
     ];
 
@@ -43,7 +42,6 @@
 
     # === Enable Services ===
 
-    services.ollama.enable = true;
     services.syncthing.enable = true;
 
     # === Host-specific Homebrew Configuration ===
@@ -51,7 +49,6 @@
     homebrew = {
       # Additional brews
       brews = [
-         "ollama"
          "exercism"
         "libfido2" # FIDO2/U2F tools
         "node"     # Includes npm and npx for MCP extensions
