@@ -173,49 +173,28 @@ nix develop '~/code/nix-configs#vets-website'
 
 Development environment definitions are located in `modules/dev-envs/`.
 
-## OpenCode & oh-my-opencode
+## OpenCode
 
-OpenCode is installed via Homebrew on all darwin systems. The oh-my-opencode plugin is automatically installed on rebuild via the shared activation module (`modules/base/activation.nix`).
-
-**Installation:**
-
-The oh-my-opencode plugin installs automatically on the first rebuild after adding the configuration. Run:
-
-```bash
-darwin-rebuild switch --flake '.#mbp'
-```
+The OpenCode CLI is installed via Homebrew (`opencode`) on darwin systems and via nixpkgs on NixOS. The OpenCode desktop app (`opencode-desktop` cask) is installed on `mbp` and `inix`.
 
 **Authentication:**
 
-After installation, authenticate your AI providers:
+Authenticate your AI providers:
 
 ```bash
 opencode auth login
 ```
 
-Follow the prompts to authenticate with:
-- Anthropic (Claude) - select "Claude Team"
-- OpenAI (ChatGPT) - select "ChatGPT Team"
-
 **Usage:**
 
-Start OpenCode:
+Start the CLI:
 
 ```bash
 opencode
 ```
 
-The oh-my-opencode plugin provides:
-- **Sisyphus** - Main orchestrator agent with specialized subagents
-- **Multi-model support** - Claude, ChatGPT, Gemini
-- **Enhanced tools** - LSP, AST grep, background agents
-- **Productivity hooks** - Todo enforcement, comment checker, context management
-
-Include `ultrawork` in your prompts for maximum parallel agent performance.
-
 **Documentation:**
-- [OpenCode Repository](https://github.com/opencode-ai/opencode)
-- [oh-my-opencode Repository](https://github.com/code-yeongyu/oh-my-opencode)
+- [OpenCode](https://opencode.ai/)
 
 ## Resources
 

@@ -1,5 +1,5 @@
 # Base module: Activation scripts
-# Provides shared activation scripts for Alacritty config and oh-my-opencode setup
+# Provides shared activation scripts for Alacritty config
 { inputs, ... }:
 {
   flake.modules.darwin.activation = { pkgs, config, ... }: {
@@ -13,16 +13,6 @@
           echo "Setting up Alacritty config symlink..."
           ln -sf alacritty-macos.toml "$ALACRITTY_TOML"
           echo "  Linked alacritty.toml -> alacritty-macos.toml"
-        fi
-
-        # --- oh-my-opencode plugin ---
-        if ! grep -q "oh-my-opencode" ~/.config/opencode/opencode.json 2>/dev/null; then
-          echo "Installing oh-my-opencode plugin..."
-          ${pkgs.bun}/bin/bunx oh-my-opencode install --no-tui --claude=no --copilot=no --gemini=no || true
-          echo "oh-my-opencode installed!"
-          echo "Next steps:"
-          echo "  1. Authenticate with providers: opencode auth login"
-          echo "  2. Start OpenCode: opencode"
         fi
       '
     '';
@@ -39,13 +29,6 @@
           echo "Setting up Alacritty config symlink..."
           ln -sf alacritty-linux.toml "$ALACRITTY_TOML"
           echo "  Linked alacritty.toml -> alacritty-linux.toml"
-        fi
-
-        # --- oh-my-opencode plugin ---
-        if ! grep -q "oh-my-opencode" ~/.config/opencode/opencode.json 2>/dev/null; then
-          echo "Installing oh-my-opencode plugin..."
-          ${pkgs.bun}/bin/bunx oh-my-opencode install --no-tui --claude=no --copilot=no --gemini=no || true
-          echo "oh-my-opencode installed!"
         fi
       '
     '';

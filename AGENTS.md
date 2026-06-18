@@ -81,7 +81,7 @@ Is this a host-specific setting (only one host needs it)?
 | Change editor config | `modules/dev/editors.nix` | Vim, Neovim |
 | Modify shell/zsh | `modules/base/zsh.nix` | |
 | Add NixOS desktop feature | `modules/desktop/` | gnome.nix, gaming.nix, audio.nix |
-| Change activation scripts | `modules/base/activation.nix` | Alacritty symlink + oh-my-opencode install |
+| Change activation scripts | `modules/base/activation.nix` | Alacritty symlink |
 | Use unstable package | Reference as `unstable.{pkg}` | Overlay in `overlays/default.nix`, enabled on gnarbox |
 
 ## Build/Lint/Test Commands
@@ -182,5 +182,4 @@ grep -E "services\." modules/hosts/*.nix
 - inix is the only Intel Mac (`x86_64-darwin`) — Homebrew prefix is `/usr/local`, not `/opt/homebrew`. Darwin services that reference Homebrew binaries should use `${config.homebrew.prefix}/bin/{tool}` (see `services/syncthing.nix`) rather than hardcoding the aarch64 path
 - Darwin services require the tool installed via Homebrew first (Nix packages alone aren't enough for launchd)
 - NixOS stubs exist in service modules (`# TODO: Implement NixOS equivalent`) — these are intentional placeholders
-- oh-my-opencode auto-installs on activation if not present (see `activation.nix`)
 - 3 git remotes: primary on git.snowboardtechie.com, mirrors on Codeberg and GitHub

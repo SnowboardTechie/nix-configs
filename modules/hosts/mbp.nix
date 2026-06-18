@@ -20,6 +20,7 @@
       gaming
       reaper
       # Service modules
+      ollama
       syncthing
     ];
 
@@ -42,6 +43,7 @@
 
     # === Enable Services ===
 
+    services.ollama.enable = true;
     services.syncthing.enable = true;
 
     # === Host-specific Homebrew Configuration ===
@@ -68,6 +70,7 @@
         "claude"
         "finicky" # Browser/URL router — github.com/johnste/finicky
         "monal"
+        "opencode-desktop" # OpenCode AI coding agent desktop app
         "qobuz"
         "rectangle-pro"
         "slack"
