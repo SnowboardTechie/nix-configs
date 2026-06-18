@@ -49,7 +49,8 @@
     homebrew = {
       # Additional brews
       brews = [
-        "exercism"
+         "ollama"
+         "exercism"
         "libfido2" # FIDO2/U2F tools
         "node"     # Includes npm and npx for MCP extensions
         "pandoc"   # For converting documents
