@@ -5,6 +5,8 @@
     devShells.simpler-grants = let
       # Node.js 22 LTS for simpler-grants-protocol
       nodejs = pkgs.nodejs_22;
+      # Python 3.11 — Poetry builds the in-project .venv from this interpreter
+      python = pkgs.python311;
 
     in
     pkgs.mkShell {
@@ -12,7 +14,7 @@
         nodejs
         # pnpm is managed via corepack (reads packageManager from package.json)
         # Do NOT add pkgs.nodePackages.pnpm — it shadows the corepack shim
-        pkgs.python311
+        python
         # poetry is NOT included due to aarch64-darwin build issues with rapidfuzz
         # Install poetry via Homebrew: brew install poetry
         # Or via pipx: pipx install poetry
@@ -40,7 +42,7 @@
         if [[ ! -d node_modules ]]; then
           echo "📦 Run: pnpm install"
         fi
-        if [[ ! -d lib/python-sdk/.venv ]]; then
+        if [[ -f lib/python-sdk/pyproject.toml && ! -x lib/python-sdk/.venv/bin/mypy ]]; then
           echo "📦 Run: cd lib/python-sdk && poetry install"
         fi
         echo ""
@@ -62,8 +64,17 @@
         export PATH="''${HOME}/.local/bin:$PATH"
 
         # ─── Poetry / Python ─────────────────────────────────────
-        export POETRY_VIRTUALENVS_PREFER_ACTIVE_PYTHON=true
+        # Homebrew Poetry (2.x) misdiscovers its own interpreter (Python 3.14)
+        # and tries to install into Homebrew's externally-managed site-packages,
+        # which pip blocks under PEP 668. (POETRY_VIRTUALENVS_PREFER_ACTIVE_PYTHON
+        # was removed in Poetry 2.0, so it no longer steers selection.) Pre-creating
+        # the in-project .venv from the flake's Python 3.11 sidesteps discovery
+        # entirely: with in-project=true Poetry adopts an existing .venv as-is.
+        export POETRY_VIRTUALENVS_CREATE=true
         export POETRY_VIRTUALENVS_IN_PROJECT=true
+        if [[ -f lib/python-sdk/pyproject.toml && ! -e lib/python-sdk/.venv ]]; then
+          ${python}/bin/python3 -m venv lib/python-sdk/.venv
+        fi
       '';
     };
   };
