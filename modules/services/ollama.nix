@@ -33,11 +33,11 @@
         description = "KV cache quantization type";
       };
 
-      keepAlive = lib.mkOption {
-        type = lib.types.str;
-        default = "45m";
-        description = "How long to keep models loaded (0 = unload immediately, -1 = forever)";
-      };
+       keepAlive = lib.mkOption {
+         type = lib.types.str;
+         default = "-1";
+         description = "How long to keep models loaded (0 = unload immediately, -1 = forever)";
+        };
 
       maxLoadedModels = lib.mkOption {
         type = lib.types.int;
