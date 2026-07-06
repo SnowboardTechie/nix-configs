@@ -51,9 +51,6 @@
         hostPlatform = "x86_64-linux";
         # Allow unfree packages (Discord, Steam, Obsidian, etc.)
         config.allowUnfree = true;
-        # Permit insecure OpenSSL 1.1 for sublime4 (upstream hasn't updated yet)
-        # Tracked: https://github.com/sublimehq/sublime_text/issues/5984
-        config.permittedInsecurePackages = [ "openssl-1.1.1w" ];
       };
 
       # === Boot Configuration ===
@@ -61,6 +58,9 @@
       boot = {
         loader = {
           systemd-boot.enable = true;
+          # Cap kernels/initrds kept in the 1G EFI partition. Without this,
+          # systemd-boot keeps every generation and eventually fills /boot.
+          systemd-boot.configurationLimit = 10;
           efi.canTouchEfiVariables = true;
         };
         kernelPackages = pkgs.linuxPackages_latest;

@@ -1,6 +1,6 @@
 # Development module: Editor configuration
 # Provides vim and neovim for both darwin and nixos systems
-# NixOS additionally includes sublime text
+# NixOS additionally includes the Zed editor
 { inputs, ... }:
 {
   flake.modules.darwin.editors = { pkgs, ... }: {
@@ -16,7 +16,7 @@
   flake.modules.nixos.editors = { pkgs, ... }: {
     environment.systemPackages = with pkgs; [
       neovim
-      sublime
+      zed-editor
       vim
     ];
   };

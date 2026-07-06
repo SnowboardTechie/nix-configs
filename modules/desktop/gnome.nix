@@ -29,7 +29,20 @@
 
         [org.gnome.shell]
         enabled-extensions=['hidetopbar@mathieu.bidon.ca']
+
+        [org.gnome.desktop.interface]
+        cursor-theme='Adwaita'
+        cursor-size=24
       '';
+    };
+
+    # Cursor theme for XWayland / Electron apps that don't read GNOME gsettings.
+    # Without this, apps fall back to a blank cursor rendered as a white/transparent
+    # square when the configured theme can't be resolved (e.g. a stray 'breeze_cursors'
+    # left over from a Plasma session).
+    environment.sessionVariables = {
+      XCURSOR_THEME = "Adwaita";
+      XCURSOR_SIZE = "24";
     };
 
     # Configure keymap in X11
