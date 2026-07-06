@@ -116,6 +116,7 @@
         extraGroups = [
           "networkmanager"
           "wheel"
+          "plugdev" # ZSA keyboard flashing/connect via keymapp (see hardware.keyboard.zsa)
         ];
         shell = pkgs.zsh;
       };
@@ -123,6 +124,10 @@
       # === Security ===
 
       security.sudo.wheelNeedsPassword = false;
+
+      # === Hardware ===
+
+      hardware.keyboard.zsa.enable = true;
 
       # === Programs ===
 
