@@ -1,15 +1,16 @@
 # Development module: Editor configuration
-# Provides vim and neovim for both darwin and nixos systems
-# NixOS additionally includes the Zed editor
+# Provides vim, neovim, and Zed (with the nil Nix LSP) for both darwin and nixos.
+# Darwin installs Zed via Homebrew cask; NixOS via the zed-editor package.
 { inputs, ... }:
 {
   flake.modules.darwin.editors = { pkgs, ... }: {
     environment.systemPackages = with pkgs; [
       neovim
+      nil          # Nix language server (LSP for Zed / nvim)
       vim
     ];
     homebrew.casks = [
-      "sublime-text"
+      "zed"
     ];
   };
 
@@ -17,6 +18,7 @@
     environment.systemPackages = with pkgs; [
       neovim
       zed-editor
+      nil          # Nix language server (LSP for Zed / nvim)
       vim
     ];
   };
