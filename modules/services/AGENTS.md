@@ -90,6 +90,7 @@ but does not execute.
 | syncthing | 8384, 22000 | `/opt/homebrew/bin/syncthing` | Always-on | NixOS uses native module directly |
 | smb-mount | — | mount_smbfs | Event-driven (WatchPaths) | Soft mount, no polling |
 | icloud-backup | — | /usr/bin/rsync | Calendar (2:00 AM) | Excludes .stversions/.syncthing* |
+| hermes | 9119 (Studio Tailscale only) | Nix client package + managed macOS venv for Matrix | Always-on on Studio | Studio runs the only gateway and remote backend; MBP/gnarbox are clients only. |
 
 ## Where Enabled
 

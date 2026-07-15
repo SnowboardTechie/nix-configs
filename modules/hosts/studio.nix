@@ -23,6 +23,7 @@
       smb-mount
       syncthing
       icloud-backup
+      hermes
     ];
 
     # === Core System Settings ===
@@ -51,6 +52,15 @@
     services.syncthing.enable = true;
     services.tailscale.enable = true;
     services.icloud-backup.enable = true;
+    services.hermes = {
+      enable = true;
+      gateway.enable = true;
+      serve = {
+        enable = true;
+        host = "100.121.238.48";
+        port = 9119;
+      };
+    };
 
     # === Service Health & UNRAID NAS Monitoring ===
 
@@ -60,11 +70,11 @@
     services.monitoring.alertEmail = "bryan@snowboardtechie.com";
 
     services.monitoring.blackbox.targets = [
-      "http://localhost:11434/api/tags"   # Ollama
-      "http://localhost:8080/health"       # Open-WebUI
-      "http://localhost:32400/web/index.html"  # Plex (avoids /web → /web/index.html redirect)
-      "http://localhost:8384/rest/noauth/health"  # Syncthing
-      "http://192.168.1.3/login"          # UNRAID Web UI (avoids / → /Main → /login redirects)
+      "http://localhost:11434/api/tags" # Ollama
+      "http://localhost:8080/health" # Open-WebUI
+      "http://localhost:32400/web/index.html" # Plex (avoids /web → /web/index.html redirect)
+      "http://localhost:8384/rest/noauth/health" # Syncthing
+      "http://192.168.1.3/login" # UNRAID Web UI (avoids / → /Main → /login redirects)
     ];
 
     services.monitoring.extraScrapeConfigs = [
@@ -94,14 +104,14 @@
         "cloudflared"
         "grafana"
         "loki"
-        "node"         # Includes npm and npx for MCP extensions
+        "node" # Includes npm and npx for MCP extensions
         "node_exporter"
         "ollama"
 
         "grafana-alloy"
-        "python@3.11"  # Kept for legacy use; open-webui now lives in a uv tool venv
+        "python@3.11" # Kept for legacy use; open-webui now lives in a uv tool venv
         "steipete/tap/remindctl"
-        "uv"           # Isolated venvs + lockfiles for python tools (open-webui)
+        "uv" # Isolated venvs + lockfiles for python tools (open-webui)
         "syncthing"
       ];
       casks = [

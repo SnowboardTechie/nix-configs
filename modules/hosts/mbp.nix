@@ -21,6 +21,7 @@
       reaper
       # Service modules
       syncthing
+      hermes
     ];
 
     # === Core System Settings ===
@@ -44,22 +45,28 @@
 
     services.syncthing.enable = true;
     services.tailscale.enable = true;
+    services.hermes = {
+      enable = true;
+      clientOnly = true;
+      desktop.enable = true;
+      remoteUrl = "http://100.121.238.48:9119";
+    };
 
     # === Host-specific Homebrew Configuration ===
 
     homebrew = {
       # Additional brews
       brews = [
-         "exercism"
+        "exercism"
         "libfido2" # FIDO2/U2F tools
-        "node"     # Includes npm and npx for MCP extensions
-        "pandoc"   # For converting documents
-        "texlive"  # For converting MD to PDF
+        "node" # Includes npm and npx for MCP extensions
+        "pandoc" # For converting documents
+        "texlive" # For converting MD to PDF
         "pinentry-mac" # GPG pinentry for macOS
-        "podman"   # Container runtime
+        "podman" # Container runtime
         "podman-compose" # Compose for podman
         "syncthing"
-        "ykman"    # YubiKey Manager CLI
+        "ykman" # YubiKey Manager CLI
       ];
 
       # Additional casks for this host

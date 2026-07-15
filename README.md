@@ -11,7 +11,7 @@ modules/
 ├── base/       # Core system: fonts, homebrew, nix-settings, zsh
 ├── dev/        # Development: cli-tools, editors, git
 ├── desktop/    # GUI: gnome, gaming, audio (NixOS)
-├── services/   # Daemons: ollama, open-webui, monitoring, smb-mount, syncthing, icloud-backup (Darwin)
+├── services/   # Daemons/agents: Hermes, ollama, open-webui, monitoring, SMB, syncthing, iCloud backup
 ├── hosts/      # Host-specific: a6mbp, gnarbox, inix, mbp, studio (mbp/a6mbp/studio/inix darwin, gnarbox NixOS)
 └── dev-envs/   # VA project environments
 ```
@@ -22,7 +22,7 @@ Each host imports and composes feature modules. See [modules/README.md](modules/
 
 ### mbp (personal macOS)
 
-Personal MacBook Pro with syncthing, Tailscale, and personal apps (gaming, messaging, document tools).
+Personal MacBook Pro with syncthing, Tailscale, a Studio-backed Hermes client, and personal apps (gaming, messaging, document tools).
 **Location:** [`modules/hosts/mbp.nix`](modules/hosts/mbp.nix)
 
 ### a6mbp (work macOS)
@@ -32,7 +32,7 @@ Work MacBook Pro with syncthing and work tools (AWS, Docker, DDEV, Slack, Zoom).
 
 ### studio (media server macOS)
 
-Media server Mac running the full service stack: ollama, open-webui, monitoring (Prometheus + Grafana), SMB mount, syncthing, Tailscale, and iCloud backup.
+Media server Mac running the primary Hermes gateway and Tailscale-only remote backend, plus ollama, open-webui, monitoring (Prometheus + Grafana), SMB mount, syncthing, and iCloud backup.
 **Location:** [`modules/hosts/studio.nix`](modules/hosts/studio.nix)
 
 ### iNix (Intel macOS)
@@ -42,7 +42,7 @@ Garage and shop machine for reading manuals, project plans, and occasional remot
 
 ### gnarbox (NixOS desktop)
 
-NixOS desktop with GNOME, gaming (Steam + Proton GE), and PipeWire audio. Uses the unstable overlay for select packages.
+NixOS desktop with GNOME, gaming (Steam + Proton GE), PipeWire audio, Tailscale, and a Studio-backed Hermes client. Uses the unstable overlay for select packages.
 **Location:** [`modules/hosts/gnarbox.nix`](modules/hosts/gnarbox.nix)
 
 ### Shared Configuration
