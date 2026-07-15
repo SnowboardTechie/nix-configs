@@ -4,6 +4,9 @@
 # hosts. On macOS, Matrix is intentionally excluded from that package upstream,
 # so the Studio gateway/serve agents continue to use Hermes's managed venv in
 # ~/.hermes while nix-darwin owns their launchd definitions and lifecycle.
+# Desktop remote URL/token state remains in its per-user settings. Do not inject
+# only HERMES_DESKTOP_REMOTE_URL: that env path requires a paired token and
+# bypasses the client's already-saved authentication.
 { inputs, ... }:
 {
   flake.modules.darwin.hermes =
@@ -22,15 +25,6 @@
       runtimePython =
         if cfg.runtimePython != null then cfg.runtimePython else "${runtimeVenv}/bin/python";
       upstreamDesktop = inputs.hermes-agent.packages.${system}.desktop;
-      desktopPackage = pkgs.symlinkJoin {
-        name = "hermes-desktop-client";
-        paths = [ upstreamDesktop ];
-        nativeBuildInputs = [ pkgs.makeWrapper ];
-        postBuild = lib.optionalString (cfg.remoteUrl != null) ''
-          wrapProgram $out/bin/hermes-desktop \
-            --set HERMES_DESKTOP_REMOTE_URL ${lib.escapeShellArg cfg.remoteUrl}
-        '';
-      };
       serviceEnvironment = {
         HERMES_HOME = hermesHome;
         VIRTUAL_ENV = runtimeVenv;
@@ -67,12 +61,6 @@
           type = lib.types.nullOr lib.types.str;
           default = null;
           description = "Hermes user's home directory; defaults to /Users/<user>.";
-        };
-
-        remoteUrl = lib.mkOption {
-          type = lib.types.nullOr lib.types.str;
-          default = null;
-          description = "Remote Hermes backend URL embedded in the Desktop client wrapper.";
         };
 
         desktop.enable = lib.mkOption {
@@ -125,7 +113,7 @@
       config = lib.mkIf cfg.enable (lib.mkMerge [
         {
           environment.systemPackages = [ cfg.package ]
-            ++ lib.optional cfg.desktop.enable desktopPackage;
+            ++ lib.optional cfg.desktop.enable upstreamDesktop;
         }
 
         (lib.mkIf (cfg.gateway.enable || cfg.serve.enable) {
@@ -226,15 +214,6 @@
       cfg = config.services.hermes;
       system = pkgs.stdenv.hostPlatform.system;
       upstreamDesktop = inputs.hermes-agent.packages.${system}.desktop;
-      desktopPackage = pkgs.symlinkJoin {
-        name = "hermes-desktop-client";
-        paths = [ upstreamDesktop ];
-        nativeBuildInputs = [ pkgs.makeWrapper ];
-        postBuild = lib.optionalString (cfg.remoteUrl != null) ''
-          wrapProgram $out/bin/hermes-desktop \
-            --set HERMES_DESKTOP_REMOTE_URL ${lib.escapeShellArg cfg.remoteUrl}
-        '';
-      };
       desktopEntry = pkgs.makeDesktopItem {
         name = "hermes-desktop";
         desktopName = "Hermes";
@@ -258,12 +237,6 @@
           description = "Nix-built Hermes CLI package installed for client use.";
         };
 
-        remoteUrl = lib.mkOption {
-          type = lib.types.nullOr lib.types.str;
-          default = null;
-          description = "Remote Hermes backend URL embedded in the Desktop client wrapper.";
-        };
-
         desktop.enable = lib.mkOption {
           type = lib.types.bool;
           default = false;
@@ -274,7 +247,7 @@
       config = lib.mkIf cfg.enable {
         environment.systemPackages = [ cfg.package ]
           ++ lib.optionals cfg.desktop.enable [
-          desktopPackage
+          upstreamDesktop
           desktopEntry
         ];
       };

@@ -49,7 +49,6 @@
       enable = true;
       clientOnly = true;
       desktop.enable = true;
-      remoteUrl = "http://100.121.238.48:9119";
     };
 
     # === Host-specific Homebrew Configuration ===

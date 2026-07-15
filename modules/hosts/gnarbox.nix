@@ -180,7 +180,6 @@
       services.hermes = {
         enable = true;
         desktop.enable = true;
-        remoteUrl = "http://100.121.238.48:9119";
       };
 
       # === Host-specific System Packages ===
