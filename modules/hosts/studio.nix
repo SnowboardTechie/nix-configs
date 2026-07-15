@@ -49,6 +49,7 @@
     services.monitoring.enable = true;
     services.smb-mount.enable = true;
     services.syncthing.enable = true;
+    services.tailscale.enable = true;
     services.icloud-backup.enable = true;
 
     # === Service Health & UNRAID NAS Monitoring ===
@@ -86,6 +87,9 @@
     # === Host-specific Homebrew Configuration ===
 
     homebrew = {
+      taps = [
+        "steipete/tap"
+      ];
       brews = [
         "cloudflared"
         "grafana"
@@ -96,6 +100,7 @@
 
         "grafana-alloy"
         "python@3.11"  # Kept for legacy use; open-webui now lives in a uv tool venv
+        "steipete/tap/remindctl"
         "uv"           # Isolated venvs + lockfiles for python tools (open-webui)
         "syncthing"
       ];

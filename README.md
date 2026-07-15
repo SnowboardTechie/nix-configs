@@ -22,7 +22,7 @@ Each host imports and composes feature modules. See [modules/README.md](modules/
 
 ### mbp (personal macOS)
 
-Personal MacBook Pro with syncthing and personal apps (gaming, messaging, document tools).
+Personal MacBook Pro with syncthing, Tailscale, and personal apps (gaming, messaging, document tools).
 **Location:** [`modules/hosts/mbp.nix`](modules/hosts/mbp.nix)
 
 ### a6mbp (work macOS)
@@ -32,7 +32,7 @@ Work MacBook Pro with syncthing and work tools (AWS, Docker, DDEV, Slack, Zoom).
 
 ### studio (media server macOS)
 
-Media server Mac running the full service stack: ollama, open-webui, monitoring (Prometheus + Grafana), SMB mount, syncthing, and iCloud backup.
+Media server Mac running the full service stack: ollama, open-webui, monitoring (Prometheus + Grafana), SMB mount, syncthing, Tailscale, and iCloud backup.
 **Location:** [`modules/hosts/studio.nix`](modules/hosts/studio.nix)
 
 ### iNix (Intel macOS)

@@ -43,6 +43,7 @@
     # === Enable Services ===
 
     services.syncthing.enable = true;
+    services.tailscale.enable = true;
 
     # === Host-specific Homebrew Configuration ===
 
