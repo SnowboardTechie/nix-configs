@@ -145,6 +145,7 @@
       services = {
         pcscd.enable = true; # Smart card daemon for YubiKey CCID
         printing.enable = true;
+        tailscale.enable = true; # tailnet access to the studio Hermes gateway
         # Disable upower - not needed on desktop without batteries
         upower.enable = lib.mkForce false;
         # Power management - prevent auto-sleep for Steam streaming
@@ -183,6 +184,30 @@
 
         # Media
         vlc
+
+        # Hermes Agent (Nous Research) — client. No local gateway; point it at
+        # the studio gateway via ~/.hermes/.env at runtime.
+        #   .default → CLI/TUI/ACP (hermes, hermes-acp, hermes-agent)
+        #   .desktop → GUI app
+        inputs.hermes-agent.packages.${pkgs.stdenv.hostPlatform.system}.default
+        inputs.hermes-agent.packages.${pkgs.stdenv.hostPlatform.system}.desktop
+
+        # Upstream's desktop package ships only bin/hermes-desktop — no .desktop
+        # entry — so it never appears in the GNOME app grid. Provide one.
+        (makeDesktopItem {
+          name = "hermes-desktop";
+          desktopName = "Hermes";
+          comment = "Nous Research Hermes Agent desktop client";
+          exec = "hermes-desktop";
+          # ponytail: absolute store path in Icon= — works in GNOME. If another DE
+          # ignores it, install into share/icons/hicolor/<size>/apps/ instead.
+          icon = ./assets/hermes-icon.png;
+          terminal = false;
+          categories = [
+            "Network"
+            "Utility"
+          ];
+        })
 
         # GUI applications
         keymapp

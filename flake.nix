@@ -34,6 +34,11 @@
       url = "github:0xc000022070/zen-browser-flake/beta";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    # Hermes Agent (Nous Research) — LLM agent w/ NixOS module (services.hermes-agent)
+    # ponytail: no `inputs.nixpkgs.follows` here — it builds Python deps via uv2nix
+    # against its own pinned nixpkgs; forcing follows tends to break the build.
+    hermes-agent.url = "github:NousResearch/hermes-agent";
   };
 
   outputs = inputs: inputs.flake-parts.lib.mkFlake { inherit inputs; } {
