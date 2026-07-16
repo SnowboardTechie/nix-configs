@@ -1,11 +1,11 @@
 # Host configuration: inix (Garage/shop iMac Pro on macOS)
 #
 # Features: fonts, nix-settings, zsh, homebrew, editors, git, cli-tools, activation
-# Services: syncthing, Tailscale, Hermes Desktop client
+# Services: syncthing, Tailscale
 # Hardware: 2017 iMac Pro (Intel Xeon W) running macOS with nix-darwin
 { inputs, ... }:
 {
-  flake.modules.darwin.inix = { pkgs, ... }: {
+  flake.modules.darwin.inix = { ... }: {
     imports = with inputs.self.modules.darwin; [
       fonts
       nix-settings
@@ -17,7 +17,6 @@
       activation
       # Service modules
       syncthing
-      hermes
     ];
 
     # === Core System Settings ===
@@ -41,21 +40,7 @@
 
     services.syncthing.enable = true;
     services.tailscale.enable = true;
-    services.hermes =
-      let
-        # The Hermes flake omits x86_64-darwin outputs. Instantiate its external
-        # overlay with Hermes's own pinned nixpkgs so its Electron hashes align.
-        hermesPkgs = import inputs.hermes-agent.inputs.nixpkgs {
-          system = pkgs.stdenv.hostPlatform.system;
-          overlays = [ inputs.hermes-agent.overlays.default ];
-        };
-      in
-      {
-        enable = true;
-        clientOnly = true;
-        desktop.enable = true;
-        package = hermesPkgs.hermes-agent;
-      };
+    # Hermes upstream does not support x86_64-darwin; keep this host Tailscale-only.
 
     # === Host-specific Homebrew Configuration ===
 

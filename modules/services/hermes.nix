@@ -24,7 +24,7 @@
       runtimeVenv = "${hermesHome}/hermes-agent/venv";
       runtimePython =
         if cfg.runtimePython != null then cfg.runtimePython else "${runtimeVenv}/bin/python";
-      upstreamDesktop = cfg.package.hermesDesktop;
+      upstreamDesktop = inputs.hermes-agent.packages.${system}.desktop;
       serviceEnvironment = {
         HERMES_HOME = hermesHome;
         VIRTUAL_ENV = runtimeVenv;
@@ -213,7 +213,7 @@
     let
       cfg = config.services.hermes;
       system = pkgs.stdenv.hostPlatform.system;
-      upstreamDesktop = cfg.package.hermesDesktop;
+      upstreamDesktop = inputs.hermes-agent.packages.${system}.desktop;
       desktopEntry = pkgs.makeDesktopItem {
         name = "hermes-desktop";
         desktopName = "Hermes";
