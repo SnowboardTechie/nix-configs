@@ -60,20 +60,18 @@
             };
           }
           {
-            # macOS has no MemAvailable/MemTotal and a naive "used %" is
-            # meaningless here — the kernel keeps free near zero by design
-            # (inactive/purgeable are reclaimable, and a 128 GB box running
-            # LLMs sits "full" normally). The unambiguous "RAM is overcommitted"
-            # signal is the dynamic swap file being in use, which is ~0 B on a
-            # healthy host. (Compression climbing — node_memory_compressed_bytes
-            # — is an earlier, noisier warning if you ever want a second tier.)
+            # macOS retains allocated swap after pressure subsides, so swap
+            # usage alone produces a permanently firing alert on an otherwise
+            # healthy host. Approximate currently available memory with the
+            # free, inactive, and purgeable pools, require swap as corroborating
+            # evidence, and alert only when the condition is sustained.
             alert = "HighMemoryPressure";
-            expr = "node_memory_swap_used_bytes > 1073741824";
-            "for" = "10m";
+            expr = "100 * (node_memory_free_bytes + node_memory_inactive_bytes + node_memory_purgeable_bytes) / node_memory_total_bytes < 10 and node_memory_swap_used_bytes > 4294967296";
+            "for" = "15m";
             labels = { severity = "warning"; };
             annotations = {
-              summary = "Memory pressure on {{ $labels.instance }} (swapping to disk)";
-              description = "macOS swap file in use ({{ $value | humanize1024 }}B) for >10m — RAM is overcommitted.";
+              summary = "Sustained memory pressure on {{ $labels.instance }}";
+              description = "Reclaimable memory has remained below 10% with more than 4 GiB of swap in use for over 15 minutes; investigate sustained workload pressure.";
             };
           }
           {
