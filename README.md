@@ -37,7 +37,7 @@ Media server Mac running the primary Hermes gateway and authenticated Tailscale-
 
 ### iNix (Intel macOS)
 
-Garage and shop machine for reading manuals, project plans, and occasional remote work. Runs on a 2017 iMac Pro (Intel Xeon W) with macOS + nix-darwin. Includes syncthing and Tailscale; uses Studio's browser dashboard because upstream does not support Hermes on x86_64-darwin.
+Garage and shop machine for reading manuals, project plans, and occasional remote work. Runs on a 2017 iMac Pro (Intel Xeon W) with macOS + nix-darwin. Includes syncthing and Tailscale. Until the official Hermes DMG includes an Intel slice, `inix` provides a pinned local-build installer for the native Desktop app, which connects to Studio's remote backend over Tailscale. The browser dashboard remains available as a fallback.
 **Location:** [`modules/hosts/inix.nix`](modules/hosts/inix.nix)
 
 ### gnarbox (NixOS desktop)
