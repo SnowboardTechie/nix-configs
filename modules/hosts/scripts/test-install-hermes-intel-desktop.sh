@@ -54,14 +54,14 @@ PLIST
   make_fake_tool "$FAKE_BIN/lipo" 'case "$*" in *pty.node*) echo "${FAKE_NODE_ARCHS:-x86_64}" ;; *spawn-helper*) echo "${FAKE_HELPER_ARCHS:-x86_64}" ;; *) echo "${FAKE_MAIN_ARCHS:-x86_64}" ;; esac'
   make_fake_tool "$FAKE_BIN/codesign" 'printf "codesign %s\n" "$*" >>"$TEST_COMMAND_LOG"; if [[ "$1" == "--verify" && "${FAKE_CODESIGN_VERIFY_FAIL:-0}" == 1 ]]; then exit 1; fi'
   make_fake_tool "$FAKE_BIN/ditto" 'printf "ditto %s\n" "$*" >>"$TEST_COMMAND_LOG"; cp -R "$1" "$2"'
-  make_fake_tool "$FAKE_BIN/git" 'printf "git %s\n" "$*" >>"$TEST_COMMAND_LOG"; exit 0'
-  make_fake_tool "$FAKE_BIN/npm" 'printf "npm %s\n" "$*" >>"$TEST_COMMAND_LOG"; exit 0'
+  make_fake_tool "$FAKE_BIN/git" 'printf "git %s\n" "$*" >>"$TEST_COMMAND_LOG"; if [[ "${1:-}" == clone ]]; then mkdir -p "$3/.git" "$3/apps/desktop"; printf lock >"$3/package-lock.json"; elif [[ "${1:-}" == remote && "${2:-}" == get-url ]]; then echo "https://github.com/NousResearch/hermes-agent.git"; elif [[ "${1:-}" == rev-parse ]]; then echo "${TEST_SOURCE_REF:-586aae4bf13c20c3f2966cad590b27946b227bbb}"; fi; exit 0'
+  make_fake_tool "$FAKE_BIN/npm" 'printf "npm %s\n" "$*" >>"$TEST_COMMAND_LOG"; if [[ "$*" == *"run builder"* ]]; then mkdir -p apps/desktop/release/mac-x64; cp -R "$TEST_FIXTURE_APP" apps/desktop/release/mac-x64/Hermes.app; fi; exit 0'
   make_fake_tool "$FAKE_BIN/node" 'echo v22.12.0'
   make_fake_tool "$FAKE_BIN/curl" 'exit 0'
 }
 
 run_installer() {
-  HOME="$HOME_DIR" PATH="$FAKE_BIN:/usr/bin:/bin" TEST_COMMAND_LOG="$LOG" \
+  HOME="$HOME_DIR" PATH="$FAKE_BIN:/usr/bin:/bin" TEST_COMMAND_LOG="$LOG" TEST_FIXTURE_APP="$FIXTURE_APP" \
     "$INSTALLER" "$@" >"$CASE_ROOT/stdout" 2>"$CASE_ROOT/stderr"
 }
 
@@ -113,21 +113,21 @@ setup_case
 mkdir -p "$HOME_DIR/Applications/Hermes.app"
 printf old >"$HOME_DIR/Applications/Hermes.app/old-marker"
 DESCRIPTION='does not replace an existing app when signature verification fails'
-FAKE_CODESIGN_VERIFY_FAIL=1 report bash -c '! HOME="$0" PATH="$1:/usr/bin:/bin" TEST_COMMAND_LOG="$2" FAKE_CODESIGN_VERIFY_FAIL=1 HERMES_TEST_BUILT_APP="$4" "$3" >/dev/null 2>&1 && test -f "$0/Applications/Hermes.app/old-marker"' "$HOME_DIR" "$FAKE_BIN" "$LOG" "$INSTALLER" "$FIXTURE_APP"
+FAKE_CODESIGN_VERIFY_FAIL=1 report bash -c '! HOME="$0" PATH="$1:/usr/bin:/bin" TEST_COMMAND_LOG="$2" TEST_FIXTURE_APP="$4" FAKE_CODESIGN_VERIFY_FAIL=1 "$3" >/dev/null 2>&1 && test -f "$0/Applications/Hermes.app/old-marker"' "$HOME_DIR" "$FAKE_BIN" "$LOG" "$INSTALLER" "$FIXTURE_APP"
 cleanup_case
 
 setup_case
 mkdir -p "$HOME_DIR/Applications/Hermes.app"
 printf old >"$HOME_DIR/Applications/Hermes.app/old-marker"
 DESCRIPTION='installs under the user Applications directory and preserves one rollback app'
-report bash -c 'HOME="$0" PATH="$1:/usr/bin:/bin" TEST_COMMAND_LOG="$2" HERMES_TEST_BUILT_APP="$4" "$3" >/dev/null 2>&1 && test -d "$0/Applications/Hermes.app" && test -f "$0/Applications/Hermes.rollback.app/old-marker" && test ! -e /Applications/Hermes.app.test-marker' "$HOME_DIR" "$FAKE_BIN" "$LOG" "$INSTALLER" "$FIXTURE_APP"
+report bash -c 'HOME="$0" PATH="$1:/usr/bin:/bin" TEST_COMMAND_LOG="$2" TEST_FIXTURE_APP="$4" "$3" >/dev/null 2>&1 && test -d "$0/Applications/Hermes.app" && test -f "$0/Applications/Hermes.rollback.app/old-marker" && test ! -e /Applications/Hermes.app.test-marker' "$HOME_DIR" "$FAKE_BIN" "$LOG" "$INSTALLER" "$FIXTURE_APP"
 cleanup_case
 
 setup_case
 mkdir -p "$HOME_DIR/.config/hermes"
 printf 'connection-state' >"$HOME_DIR/.config/hermes/settings"
 DESCRIPTION='leaves connection URL and token state untouched'
-report bash -c 'before=$(shasum "$0/.config/hermes/settings"); HOME="$0" PATH="$1:/usr/bin:/bin" TEST_COMMAND_LOG="$2" HERMES_TEST_BUILT_APP="$4" "$3" >/dev/null 2>&1; after=$(shasum "$0/.config/hermes/settings"); test "$before" = "$after" && ! grep -R "HERMES_DESKTOP_REMOTE_URL" "$0/Applications/Hermes.app" >/dev/null 2>&1' "$HOME_DIR" "$FAKE_BIN" "$LOG" "$INSTALLER" "$FIXTURE_APP"
+report bash -c 'before=$(shasum "$0/.config/hermes/settings"); HOME="$0" PATH="$1:/usr/bin:/bin" TEST_COMMAND_LOG="$2" TEST_FIXTURE_APP="$4" "$3" >/dev/null 2>&1; after=$(shasum "$0/.config/hermes/settings"); test "$before" = "$after" && ! grep -R "HERMES_DESKTOP_REMOTE_URL" "$0/Applications/Hermes.app" >/dev/null 2>&1' "$HOME_DIR" "$FAKE_BIN" "$LOG" "$INSTALLER" "$FIXTURE_APP"
 cleanup_case
 
 printf '1..%d\n' "$TESTS"
