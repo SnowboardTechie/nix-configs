@@ -29,7 +29,6 @@
         "font-meslo-lg-nerd-font"
         "obsidian"
         "sol"
-        "vivaldi"
         "yaak"
       ];
     };

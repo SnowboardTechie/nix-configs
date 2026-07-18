@@ -60,22 +60,24 @@
       brews = [
         # DDEV for va.gov-cms development
         "ddev/ddev/ddev"
-        "libfido2"     # FIDO2/U2F tools
+        "libfido2" # FIDO2/U2F tools
         "pinentry-mac" # GPG pinentry for macOS
-        "podman"       # Container runtime
+        "podman" # Container runtime
         "podman-compose" # Compose for podman
         "syncthing"
-        "ykman"    # YubiKey Manager CLI
+        "ykman" # YubiKey Manager CLI
       ];
 
       # Additional casks for this host
       casks = [
         "claude"
         "docker-desktop"
+        "finicky" # Browser/URL router — github.com/johnste/finicky
         "notion"
         "rectangle"
         "slack"
         "superwhisper"
+        "vivaldi"
         "yubico-authenticator"
         "zoom"
       ];

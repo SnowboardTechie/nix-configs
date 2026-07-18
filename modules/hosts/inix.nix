@@ -51,7 +51,6 @@
       ];
 
       casks = [
-        "finicky" # Browser/URL router — github.com/johnste/finicky
         "opencode-desktop" # OpenCode AI coding agent desktop app
         "rectangle-pro"
         "slack"

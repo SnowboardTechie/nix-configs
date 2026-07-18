@@ -78,6 +78,7 @@
         "qobuz"
         "rectangle-pro"
         "slack"
+        "vivaldi"
         "yubico-authenticator"
         "zen"
         "zoom"

@@ -194,7 +194,6 @@
         # GUI applications
         keymapp
         obsidian
-        vivaldi
         zen-browser
 
         # Unstable packages
