@@ -133,6 +133,27 @@ sudo nixos-rebuild switch --flake '.#gnarbox' --extra-experimental-features 'nix
 
 ## Usage
 
+### Temporary Intel Hermes Desktop workaround
+
+After rebuilding `inix`, run `install-hermes-intel-desktop` as the normal user. It builds the pinned, upstream-verified Hermes Desktop source under `~/Library/Caches/hermes-intel-desktop`, validates its Intel-native binaries, ad-hoc signs it, and installs the user-managed app at `~/Applications/Hermes.app`. In the app, use **Settings → Gateway → Remote gateway** to connect to Studio at `http://100.121.238.48:9119` and sign in normally. The installer does not store the URL or credentials.
+
+This is temporary until the official public `Hermes-Setup.dmg` contains an `x86_64` slice. The tracked script-only watchdog in [`scripts/check-hermes-intel-release.py`](scripts/check-hermes-intel-release.py) checks the upstream PR and official artifact daily. It is silent while pending and sends one Matrix notification only after both the PR and published installer pass their gates. It never installs or removes software.
+
+**Workaround rollback before an official release:**
+
+1. Quit Hermes on `inix`.
+2. Move `~/Applications/Hermes.rollback.app` back only if the new local build fails.
+3. Keep Studio's dashboard and Tailscale configuration unchanged.
+4. Do not delete the build cache until the rollback app has launched successfully.
+
+**Migration after the verified Matrix notification:**
+
+1. Download the exact installer URL named in the notification.
+2. Install and launch the official app, reconnect it to Studio, run a real chat, then fully quit and relaunch to verify saved authentication.
+3. Obtain Bryan's item-level approval before deleting the locally built app, rollback copy, build cache, installer script, or cron job.
+4. List Hermes cron jobs and remove the live watchdog only by its actual runtime job ID.
+5. Remove the tracked installer/watchdog files and the `inix` package declaration in a focused commit, rebuild `inix`, run `nix flake check`, and verify the official app still works.
+
 ### Apply Changes
 
 **macOS:**
