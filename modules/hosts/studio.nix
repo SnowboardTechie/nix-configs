@@ -1,7 +1,7 @@
 # Host configuration: studio (Media Server Mac)
 #
 # Features: fonts, nix-settings, zsh, homebrew, editors, git, cli-tools
-# Services: ollama, open-webui, monitoring, smb-mount, syncthing, icloud-backup
+# Services: Hermes, ollama, open-webui, monitoring, smb-mount, syncthing, iCloud backup
 # Host-specific: Media server tools (cloudflared, etc.)
 { inputs, ... }:
 {
@@ -54,11 +54,26 @@
     services.icloud-backup.enable = true;
     services.hermes = {
       enable = true;
+      secureHome = true;
       gateway.enable = true;
       dashboard = {
         enable = true;
         host = "100.121.238.48";
         port = 9119;
+      };
+      headlessInstances.traci = {
+        user = "traci";
+        homeDirectory = "/Users/traci";
+        serve = {
+          enable = true;
+          host = "127.0.0.1";
+          port = 9120;
+          tailscale = {
+            enable = true;
+            httpsPort = 9120;
+            proxyPort = 9121;
+          };
+        };
       };
     };
 

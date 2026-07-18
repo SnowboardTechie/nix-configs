@@ -32,7 +32,8 @@ Work MacBook Pro with syncthing and work tools (AWS, Docker, DDEV, Slack, Zoom).
 
 ### studio (media server macOS)
 
-Media server Mac running the primary Hermes gateway and authenticated Tailscale-only browser dashboard/remote backend, plus ollama, open-webui, monitoring (Prometheus + Grafana), SMB mount, syncthing, and iCloud backup.
+Media server Mac running the primary Hermes gateway and per-user Tailscale-only remote backends, plus ollama, open-webui, monitoring (Prometheus + Grafana), SMB mount, syncthing, and iCloud backup.
+Traci's isolated headless backend runs under her macOS account and is available at `https://bryans-mac-studio.tail5ba690.ts.net:9120` through Tailscale Serve.
 **Location:** [`modules/hosts/studio.nix`](modules/hosts/studio.nix)
 
 ### iNix (Intel macOS)
