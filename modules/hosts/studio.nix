@@ -55,7 +55,7 @@
     services.hermes = {
       enable = true;
       gateway.enable = true;
-      serve = {
+      dashboard = {
         enable = true;
         host = "100.121.238.48";
         port = 9119;

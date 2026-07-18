@@ -91,21 +91,21 @@
           description = "Run the canonical Hermes messaging gateway at login.";
         };
 
-        serve = {
+        dashboard = {
           enable = lib.mkOption {
             type = lib.types.bool;
             default = false;
-            description = "Expose the Hermes Desktop backend through launchd.";
+            description = "Expose the authenticated Hermes browser dashboard and remote backend through launchd.";
           };
           host = lib.mkOption {
             type = lib.types.str;
             default = "127.0.0.1";
-            description = "Address passed to hermes serve; use a Tailscale address for remote clients.";
+            description = "Address passed to hermes dashboard; use a Tailscale address for remote clients.";
           };
           port = lib.mkOption {
             type = lib.types.port;
             default = 9119;
-            description = "Port passed to hermes serve.";
+            description = "Port passed to hermes dashboard.";
           };
         };
       };
@@ -116,7 +116,7 @@
             ++ lib.optional cfg.desktop.enable upstreamDesktop;
         }
 
-        (lib.mkIf (cfg.gateway.enable || cfg.serve.enable) {
+        (lib.mkIf (cfg.gateway.enable || cfg.dashboard.enable) {
           assertions = [
             {
               assertion = cfg.user == config.system.primaryUser;
@@ -128,8 +128,8 @@
         (lib.mkIf cfg.clientOnly {
           assertions = [
             {
-              assertion = !cfg.gateway.enable && !cfg.serve.enable;
-              message = "services.hermes.clientOnly conflicts with gateway.enable or serve.enable";
+              assertion = !cfg.gateway.enable && !cfg.dashboard.enable;
+              message = "services.hermes.clientOnly conflicts with gateway.enable or dashboard.enable";
             }
           ];
 
@@ -142,10 +142,13 @@
               /bin/launchctl bootout "gui/$hermes_uid/ai.hermes.gateway" >/dev/null 2>&1 || true
               /bin/launchctl bootout "user/$hermes_uid/ai.hermes.serve" >/dev/null 2>&1 || true
               /bin/launchctl bootout "gui/$hermes_uid/ai.hermes.serve" >/dev/null 2>&1 || true
+              /bin/launchctl bootout "user/$hermes_uid/ai.hermes.dashboard" >/dev/null 2>&1 || true
+              /bin/launchctl bootout "gui/$hermes_uid/ai.hermes.dashboard" >/dev/null 2>&1 || true
             fi
             /bin/rm -f \
               ${lib.escapeShellArg "${homeDirectory}/Library/LaunchAgents/ai.hermes.gateway.plist"} \
-              ${lib.escapeShellArg "${homeDirectory}/Library/LaunchAgents/ai.hermes.serve.plist"}
+              ${lib.escapeShellArg "${homeDirectory}/Library/LaunchAgents/ai.hermes.serve.plist"} \
+              ${lib.escapeShellArg "${homeDirectory}/Library/LaunchAgents/ai.hermes.dashboard.plist"}
           '';
         })
 
@@ -176,26 +179,27 @@
           };
         })
 
-        (lib.mkIf cfg.serve.enable {
-          launchd.user.agents.hermes-serve = {
+        (lib.mkIf cfg.dashboard.enable {
+          launchd.user.agents.hermes-dashboard = {
             serviceConfig = {
-              Label = "ai.hermes.serve";
+              Label = "ai.hermes.dashboard";
               ProgramArguments = [
                 runtimePython
                 "-m"
                 "hermes_cli.main"
-                "serve"
+                "dashboard"
                 "--host"
-                cfg.serve.host
+                cfg.dashboard.host
                 "--port"
-                (toString cfg.serve.port)
+                (toString cfg.dashboard.port)
+                "--no-open"
               ];
               RunAtLoad = true;
               KeepAlive = true;
               WorkingDirectory = homeDirectory;
               EnvironmentVariables = serviceEnvironment;
-              StandardOutPath = "${hermesHome}/logs/serve.log";
-              StandardErrorPath = "${hermesHome}/logs/serve.error.log";
+              StandardOutPath = "${hermesHome}/logs/dashboard.log";
+              StandardErrorPath = "${hermesHome}/logs/dashboard.error.log";
               ProcessType = "Background";
               ThrottleInterval = 10;
             };

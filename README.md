@@ -32,12 +32,12 @@ Work MacBook Pro with syncthing and work tools (AWS, Docker, DDEV, Slack, Zoom).
 
 ### studio (media server macOS)
 
-Media server Mac running the primary Hermes gateway and Tailscale-only remote backend, plus ollama, open-webui, monitoring (Prometheus + Grafana), SMB mount, syncthing, and iCloud backup.
+Media server Mac running the primary Hermes gateway and authenticated Tailscale-only browser dashboard/remote backend, plus ollama, open-webui, monitoring (Prometheus + Grafana), SMB mount, syncthing, and iCloud backup.
 **Location:** [`modules/hosts/studio.nix`](modules/hosts/studio.nix)
 
 ### iNix (Intel macOS)
 
-Garage and shop machine for reading manuals, project plans, and occasional remote work. Runs on a 2017 iMac Pro (Intel Xeon W) with macOS + nix-darwin. Includes syncthing and Tailscale; Hermes is unavailable because upstream does not support x86_64-darwin.
+Garage and shop machine for reading manuals, project plans, and occasional remote work. Runs on a 2017 iMac Pro (Intel Xeon W) with macOS + nix-darwin. Includes syncthing and Tailscale; uses Studio's browser dashboard because upstream does not support Hermes on x86_64-darwin.
 **Location:** [`modules/hosts/inix.nix`](modules/hosts/inix.nix)
 
 ### gnarbox (NixOS desktop)
