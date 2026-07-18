@@ -54,8 +54,8 @@ PLIST
   make_fake_tool "$FAKE_BIN/lipo" 'case "$*" in *pty.node*) echo "${FAKE_NODE_ARCHS:-x86_64}" ;; *spawn-helper*) echo "${FAKE_HELPER_ARCHS:-x86_64}" ;; *) echo "${FAKE_MAIN_ARCHS:-x86_64}" ;; esac'
   make_fake_tool "$FAKE_BIN/codesign" 'printf "codesign %s\n" "$*" >>"$TEST_COMMAND_LOG"; if [[ "$1" == "--verify" && "${FAKE_CODESIGN_VERIFY_FAIL:-0}" == 1 ]]; then exit 1; fi'
   make_fake_tool "$FAKE_BIN/ditto" 'printf "ditto %s\n" "$*" >>"$TEST_COMMAND_LOG"; cp -R "$1" "$2"'
-  make_fake_tool "$FAKE_BIN/git" 'printf "git %s\n" "$*" >>"$TEST_COMMAND_LOG"; if [[ "${1:-}" == clone ]]; then mkdir -p "$3/.git" "$3/apps/desktop"; printf lock >"$3/package-lock.json"; elif [[ "${1:-}" == remote && "${2:-}" == get-url ]]; then echo "https://github.com/NousResearch/hermes-agent.git"; elif [[ "${1:-}" == rev-parse ]]; then echo "${TEST_SOURCE_REF:-586aae4bf13c20c3f2966cad590b27946b227bbb}"; elif [[ "${1:-}" == status ]]; then printf "%s" "${FAKE_GIT_STATUS:-}"; fi; exit 0'
-  make_fake_tool "$FAKE_BIN/npm" 'printf "npm %s\n" "$*" >>"$TEST_COMMAND_LOG"; if [[ "$*" == *"run builder"* ]]; then mkdir -p apps/desktop/release/mac-x64; cp -R "$TEST_FIXTURE_APP" apps/desktop/release/mac-x64/Hermes.app; fi; exit 0'
+  make_fake_tool "$FAKE_BIN/git" 'printf "git %s\n" "$*" >>"$TEST_COMMAND_LOG"; if [[ "${1:-}" == clone ]]; then mkdir -p "$3/.git" "$3/apps/desktop"; printf lock >"$3/package-lock.json"; elif [[ "${1:-}" == remote && "${2:-}" == get-url ]]; then echo "https://github.com/NousResearch/hermes-agent.git"; elif [[ "${1:-}" == rev-parse ]]; then echo "${TEST_SOURCE_REF:-586aae4bf13c20c3f2966cad590b27946b227bbb}"; elif [[ "${1:-}" == status ]]; then printf "%s" "${FAKE_GIT_STATUS:-}"; elif [[ "${1:-}" == clean && "${2:-}" == -ffdx && "$#" == 2 ]]; then rm -f apps/desktop/.env.production.local; fi; exit 0'
+  make_fake_tool "$FAKE_BIN/npm" 'printf "npm %s\n" "$*" >>"$TEST_COMMAND_LOG"; if [[ "${FAKE_REQUIRE_CLEAN:-0}" == 1 && -e apps/desktop/.env.production.local ]]; then exit 1; fi; if [[ "$*" == *"run builder"* ]]; then mkdir -p apps/desktop/release/mac-x64; cp -R "$TEST_FIXTURE_APP" apps/desktop/release/mac-x64/Hermes.app; fi; exit 0'
   make_fake_tool "$FAKE_BIN/find" '/usr/bin/find "$@"; exit "${FAKE_FIND_EXIT:-0}"'
   make_fake_tool "$FAKE_BIN/node" 'echo v22.12.0'
   make_fake_tool "$FAKE_BIN/curl" 'exit 0'
@@ -126,6 +126,15 @@ cleanup_case
 setup_case
 DESCRIPTION='refuses a dirty source checkout before npm lifecycle scripts run'
 FAKE_GIT_STATUS='?? unexpected-file' report bash -c '! HOME="$0" PATH="$1:/usr/bin:/bin" TEST_COMMAND_LOG="$2" TEST_FIXTURE_APP="$4" FAKE_GIT_STATUS="?? unexpected-file" "$3" >/dev/null 2>&1 && ! grep -F "npm install" "$2" >/dev/null' "$HOME_DIR" "$FAKE_BIN" "$LOG" "$INSTALLER" "$FIXTURE_APP"
+cleanup_case
+
+setup_case
+mkdir -p "$HOME_DIR/Library/Caches/hermes-intel-desktop/source/.git" \
+  "$HOME_DIR/Library/Caches/hermes-intel-desktop/source/apps/desktop"
+printf lock >"$HOME_DIR/Library/Caches/hermes-intel-desktop/source/package-lock.json"
+printf contaminated >"$HOME_DIR/Library/Caches/hermes-intel-desktop/source/apps/desktop/.env.production.local"
+DESCRIPTION='removes ignored cached inputs before npm lifecycle and build commands'
+report bash -c 'HOME="$0" PATH="$1:/usr/bin:/bin" TEST_COMMAND_LOG="$2" TEST_FIXTURE_APP="$4" FAKE_REQUIRE_CLEAN=1 "$3" >/dev/null 2>&1' "$HOME_DIR" "$FAKE_BIN" "$LOG" "$INSTALLER" "$FIXTURE_APP"
 cleanup_case
 
 setup_case

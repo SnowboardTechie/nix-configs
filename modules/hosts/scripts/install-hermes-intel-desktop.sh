@@ -220,7 +220,9 @@ git checkout --detach "$requested_ref"
 git reset --hard "$requested_ref"
 [[ "$(git rev-parse HEAD)" == "$requested_ref" ]] || fail "checked-out source does not match requested commit"
 
-git clean -ffdx -- node_modules apps/desktop/node_modules apps/desktop/release apps/desktop/dist
+# SOURCE_DIR is a dedicated cache checkout. Remove every ignored/untracked input
+# so lifecycle scripts and Vite cannot consume state outside the pinned commit.
+git clean -ffdx
 [[ -z "$(git status --porcelain --untracked-files=all)" ]] || fail "source checkout is not clean before dependency installation"
 git diff --exit-code -- package-lock.json >/dev/null || fail "package-lock.json differs from the pinned commit"
 
