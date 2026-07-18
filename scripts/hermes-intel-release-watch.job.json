@@ -3,7 +3,7 @@
   "schedule": "15 9 * * *",
   "repeat": "forever",
   "deliver": "matrix",
-  "script": "/Users/bryan/code/nix-configs/scripts/check-hermes-intel-release.py",
+  "script": "check-hermes-intel-release.py",
   "no_agent": true,
   "workdir": "/Users/bryan/code/nix-configs"
 }
