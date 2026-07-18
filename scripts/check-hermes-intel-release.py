@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
 import os
 import plistlib
@@ -135,13 +136,25 @@ def inspect_dmg(
     *,
     command_runner: Callable[..., subprocess.CompletedProcess[bytes]],
 ) -> set[str]:
+    controlled_mount = dmg_path.parent / "mount"
+    controlled_mount.mkdir()
     attach = command_runner(
-        ["/usr/bin/hdiutil", "attach", "-nobrowse", "-readonly", "-plist", str(dmg_path)]
+        [
+            "/usr/bin/hdiutil",
+            "attach",
+            "-nobrowse",
+            "-readonly",
+            "-mountpoint",
+            str(controlled_mount),
+            "-plist",
+            str(dmg_path),
+        ]
     )
     if attach.returncode != 0:
         raise RuntimeError("hdiutil could not mount the installer")
 
     mount_point: Path | None = None
+    detach_target = controlled_mount
     inspection_error: Exception | None = None
     architectures: set[str] | None = None
     try:
@@ -154,6 +167,7 @@ def inspect_dmg(
         if len(mount_points) != 1:
             raise RuntimeError("mounted installer did not expose exactly one mount point")
         mount_point = Path(mount_points.pop())
+        detach_target = mount_point
 
         apps = sorted(path for path in mount_point.glob("*.app") if path.is_dir())
         if len(apps) != 1:
@@ -175,10 +189,9 @@ def inspect_dmg(
     except Exception as error:
         inspection_error = error
     finally:
-        if mount_point is not None:
-            detach = command_runner(["/usr/bin/hdiutil", "detach", str(mount_point)])
-            if detach.returncode != 0 and inspection_error is None:
-                inspection_error = RuntimeError("hdiutil could not detach the installer")
+        detach = command_runner(["/usr/bin/hdiutil", "detach", str(detach_target)])
+        if detach.returncode != 0 and inspection_error is None:
+            inspection_error = RuntimeError("hdiutil could not detach the installer")
 
     if inspection_error is not None:
         raise inspection_error
@@ -208,7 +221,7 @@ def record_failure(path: Path, state: dict[str, object], error: Exception) -> st
     return output
 
 
-def run(
+def _run_locked(
     *,
     http_get: Callable[..., HttpResponse] = default_http_get,
     command_runner: Callable[..., subprocess.CompletedProcess[bytes]] = default_command_runner,
@@ -216,6 +229,8 @@ def run(
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> str:
     state = load_state(state_path)
+    if state.get("ready_transition_notified"):
+        return ""
     try:
         pr_response = fetch_with_retries(
             PR_API,
@@ -283,6 +298,7 @@ def run(
             return ""
 
         state["notified_artifact"] = identity
+        state["ready_transition_notified"] = True
         state["notified_at"] = utc_now()
         save_state(state_path, state)
         return (
@@ -294,6 +310,25 @@ def run(
         )
     except Exception as error:
         return record_failure(state_path, state, error)
+
+
+def run(
+    *,
+    http_get: Callable[..., HttpResponse] = default_http_get,
+    command_runner: Callable[..., subprocess.CompletedProcess[bytes]] = default_command_runner,
+    state_path: Path = STATE_PATH,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> str:
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = state_path.with_name(f"{state_path.name}.lock")
+    with lock_path.open("a+") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        return _run_locked(
+            http_get=http_get,
+            command_runner=command_runner,
+            state_path=state_path,
+            sleep_fn=sleep_fn,
+        )
 
 
 def main() -> int:

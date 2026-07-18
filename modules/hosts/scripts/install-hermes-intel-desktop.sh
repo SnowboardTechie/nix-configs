@@ -39,7 +39,7 @@ require_intel_macos() {
 
 require_prerequisites() {
   local command
-  for command in codesign ditto find git lipo mv node npm python3 rm sw_vers uname xcode-select; do
+  for command in codesign ditto find git lipo mktemp mv node npm python3 rm sw_vers uname xcode-select; do
     require_command "$command"
   done
   xcode-select -p >/dev/null 2>&1 || fail "Xcode Command Line Tools are required"
@@ -88,12 +88,23 @@ verify_app_architectures() {
 
   local node_count=0
   local node_pty_count=0
+  local node_list helper_list
+  node_list=$(mktemp "${TMPDIR:-/tmp}/hermes-intel-nodes.XXXXXX")
+  helper_list=$(mktemp "${TMPDIR:-/tmp}/hermes-intel-helpers.XXXXXX")
+  if ! find "$app" -type f -name '*.node' -print >"$node_list"; then
+    rm -f "$node_list" "$helper_list"
+    fail "could not enumerate native .node artifacts"
+  fi
+  if ! find "$app" -type f -name spawn-helper -perm +111 -print >"$helper_list"; then
+    rm -f "$node_list" "$helper_list"
+    fail "could not enumerate executable spawn-helper artifacts"
+  fi
   while IFS= read -r artifact; do
     [[ -n "$artifact" ]] || continue
     node_count=$((node_count + 1))
     case "$artifact" in *node-pty*) node_pty_count=$((node_pty_count + 1)) ;; esac
     require_x86_64 "$artifact"
-  done < <(find "$app" -type f -name '*.node' -print)
+  done <"$node_list"
 
   local helper_count=0
   local node_pty_helper_count=0
@@ -102,7 +113,8 @@ verify_app_architectures() {
     helper_count=$((helper_count + 1))
     case "$artifact" in *node-pty*) node_pty_helper_count=$((node_pty_helper_count + 1)) ;; esac
     require_x86_64 "$artifact"
-  done < <(find "$app" -type f -name spawn-helper -perm +111 -print)
+  done <"$helper_list"
+  rm -f "$node_list" "$helper_list"
 
   ((node_count > 0 && node_pty_count > 0)) || fail "expected node-pty .node payload was not found"
   ((helper_count > 0 && node_pty_helper_count > 0)) || fail "expected executable node-pty spawn-helper was not found"
@@ -123,25 +135,45 @@ resolve_built_app() {
 
 safe_remove_build_path() {
   local path=$1
-  case "$path" in
-    "$BUILD_ROOT"/*) rm -rf "$path" ;;
-    *) fail "refusing to remove path outside build cache: $path" ;;
-  esac
+  python3 - "$BUILD_ROOT" "$path" <<'PY' || fail "refusing unsafe cache deletion: $path"
+import os
+import sys
+
+root = os.path.abspath(sys.argv[1])
+target = os.path.abspath(sys.argv[2])
+if os.path.commonpath((root, target)) != root or target == root:
+    raise SystemExit(1)
+if os.path.islink(root):
+    raise SystemExit(1)
+relative_parent = os.path.relpath(os.path.dirname(target), root)
+current = root
+if relative_parent != ".":
+    for component in relative_parent.split(os.sep):
+        current = os.path.join(current, component)
+        if os.path.islink(current):
+            raise SystemExit(1)
+if os.path.commonpath((os.path.realpath(root), os.path.realpath(os.path.dirname(target)))) != os.path.realpath(root):
+    raise SystemExit(1)
+PY
+  rm -rf "$path"
 }
 
 requested_ref=$VERIFIED_REF
 keep_build=false
 verify_only_app=
+build_option_seen=false
 
 while (($# > 0)); do
   case "$1" in
     --ref)
       (($# >= 2)) || fail "--ref requires a full commit SHA"
       requested_ref=$2
+      build_option_seen=true
       shift 2
       ;;
     --keep-build)
       keep_build=true
+      build_option_seen=true
       shift
       ;;
     --verify-only)
@@ -161,17 +193,21 @@ while (($# > 0)); do
 done
 
 [[ "$requested_ref" =~ ^[0-9a-fA-F]{40}$ ]] || fail "--ref must be a full 40-character hexadecimal commit SHA"
+requested_ref=$(printf '%s' "$requested_ref" | tr 'A-F' 'a-f')
 require_intel_macos
 require_prerequisites
 
 if [[ -n "$verify_only_app" ]]; then
+  [[ "$build_option_seen" == false ]] || fail "--verify-only cannot be combined with build options"
   verify_app_architectures "$verify_only_app" >/dev/null
   codesign --verify --deep --strict --verbose=2 "$verify_only_app"
   printf 'Verified Intel-compatible app: %s\n' "$verify_only_app"
   exit 0
 fi
 
+[[ ! -L "$BUILD_ROOT" ]] || fail "build cache must not be a symlink: $BUILD_ROOT"
 mkdir -p "$BUILD_ROOT"
+[[ ! -L "$SOURCE_DIR" ]] || fail "source cache must not be a symlink: $SOURCE_DIR"
 if [[ ! -d "$SOURCE_DIR/.git" ]]; then
   [[ ! -e "$SOURCE_DIR" ]] || fail "source cache exists but is not a Git checkout: $SOURCE_DIR"
   git clone "$REPO_URL" "$SOURCE_DIR"
@@ -181,10 +217,12 @@ cd "$SOURCE_DIR"
 [[ "$(git remote get-url origin)" == "$REPO_URL" ]] || fail "cached source origin is not the official HTTPS repository"
 git fetch --no-tags origin "$requested_ref"
 git checkout --detach "$requested_ref"
+git reset --hard "$requested_ref"
 [[ "$(git rev-parse HEAD)" == "$requested_ref" ]] || fail "checked-out source does not match requested commit"
 
-safe_remove_build_path "$SOURCE_DIR/apps/desktop/release"
-safe_remove_build_path "$SOURCE_DIR/apps/desktop/dist"
+git clean -ffdx -- node_modules apps/desktop/node_modules apps/desktop/release apps/desktop/dist
+[[ -z "$(git status --porcelain --untracked-files=all)" ]] || fail "source checkout is not clean before dependency installation"
+git diff --exit-code -- package-lock.json >/dev/null || fail "package-lock.json differs from the pinned commit"
 
 npm_config_arch=x64 npm_config_ignore_scripts=false npm install --workspace apps/desktop
 git diff --exit-code -- package-lock.json >/dev/null || fail "npm install changed package-lock.json"

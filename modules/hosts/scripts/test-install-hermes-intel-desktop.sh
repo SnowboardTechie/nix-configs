@@ -54,8 +54,9 @@ PLIST
   make_fake_tool "$FAKE_BIN/lipo" 'case "$*" in *pty.node*) echo "${FAKE_NODE_ARCHS:-x86_64}" ;; *spawn-helper*) echo "${FAKE_HELPER_ARCHS:-x86_64}" ;; *) echo "${FAKE_MAIN_ARCHS:-x86_64}" ;; esac'
   make_fake_tool "$FAKE_BIN/codesign" 'printf "codesign %s\n" "$*" >>"$TEST_COMMAND_LOG"; if [[ "$1" == "--verify" && "${FAKE_CODESIGN_VERIFY_FAIL:-0}" == 1 ]]; then exit 1; fi'
   make_fake_tool "$FAKE_BIN/ditto" 'printf "ditto %s\n" "$*" >>"$TEST_COMMAND_LOG"; cp -R "$1" "$2"'
-  make_fake_tool "$FAKE_BIN/git" 'printf "git %s\n" "$*" >>"$TEST_COMMAND_LOG"; if [[ "${1:-}" == clone ]]; then mkdir -p "$3/.git" "$3/apps/desktop"; printf lock >"$3/package-lock.json"; elif [[ "${1:-}" == remote && "${2:-}" == get-url ]]; then echo "https://github.com/NousResearch/hermes-agent.git"; elif [[ "${1:-}" == rev-parse ]]; then echo "${TEST_SOURCE_REF:-586aae4bf13c20c3f2966cad590b27946b227bbb}"; fi; exit 0'
+  make_fake_tool "$FAKE_BIN/git" 'printf "git %s\n" "$*" >>"$TEST_COMMAND_LOG"; if [[ "${1:-}" == clone ]]; then mkdir -p "$3/.git" "$3/apps/desktop"; printf lock >"$3/package-lock.json"; elif [[ "${1:-}" == remote && "${2:-}" == get-url ]]; then echo "https://github.com/NousResearch/hermes-agent.git"; elif [[ "${1:-}" == rev-parse ]]; then echo "${TEST_SOURCE_REF:-586aae4bf13c20c3f2966cad590b27946b227bbb}"; elif [[ "${1:-}" == status ]]; then printf "%s" "${FAKE_GIT_STATUS:-}"; fi; exit 0'
   make_fake_tool "$FAKE_BIN/npm" 'printf "npm %s\n" "$*" >>"$TEST_COMMAND_LOG"; if [[ "$*" == *"run builder"* ]]; then mkdir -p apps/desktop/release/mac-x64; cp -R "$TEST_FIXTURE_APP" apps/desktop/release/mac-x64/Hermes.app; fi; exit 0'
+  make_fake_tool "$FAKE_BIN/find" '/usr/bin/find "$@"; exit "${FAKE_FIND_EXIT:-0}"'
   make_fake_tool "$FAKE_BIN/node" 'echo v22.12.0'
   make_fake_tool "$FAKE_BIN/curl" 'exit 0'
 }
@@ -90,8 +91,8 @@ report bash -c '! HOME="$0" PATH="$1:/usr/bin:/bin" TEST_COMMAND_LOG="$2" "$3" -
 cleanup_case
 
 setup_case
-DESCRIPTION='accepts the pinned default source in verification mode'
-report run_installer --verify-only "$FIXTURE_APP"
+DESCRIPTION='fetches, checks out, and reports the pinned default source commit'
+report bash -c 'HOME="$0" PATH="$1:/usr/bin:/bin" TEST_COMMAND_LOG="$2" TEST_FIXTURE_APP="$4" "$3" >"$5" 2>/dev/null && grep -F "git fetch --no-tags origin 586aae4bf13c20c3f2966cad590b27946b227bbb" "$2" >/dev/null && grep -F "git checkout --detach 586aae4bf13c20c3f2966cad590b27946b227bbb" "$2" >/dev/null && grep -F "Source commit: 586aae4bf13c20c3f2966cad590b27946b227bbb" "$5" >/dev/null' "$HOME_DIR" "$FAKE_BIN" "$LOG" "$INSTALLER" "$FIXTURE_APP" "$CASE_ROOT/stdout"
 cleanup_case
 
 setup_case
@@ -107,6 +108,24 @@ cleanup_case
 setup_case
 DESCRIPTION='refuses a node-pty spawn-helper without x86_64'
 FAKE_HELPER_ARCHS=arm64 report bash -c '! HOME="$0" PATH="$1:/usr/bin:/bin" TEST_COMMAND_LOG="$2" FAKE_HELPER_ARCHS=arm64 "$3" --verify-only "$4" >/dev/null 2>&1' "$HOME_DIR" "$FAKE_BIN" "$LOG" "$INSTALLER" "$FIXTURE_APP"
+cleanup_case
+
+setup_case
+DESCRIPTION='fails architecture validation when native-artifact traversal fails'
+FAKE_FIND_EXIT=1 report bash -c '! HOME="$0" PATH="$1:/usr/bin:/bin" TEST_COMMAND_LOG="$2" FAKE_FIND_EXIT=1 "$3" --verify-only "$4" >/dev/null 2>&1' "$HOME_DIR" "$FAKE_BIN" "$LOG" "$INSTALLER" "$FIXTURE_APP"
+cleanup_case
+
+setup_case
+mkdir -p "$HOME_DIR/Library/Caches" "$CASE_ROOT/outside"
+printf keep >"$CASE_ROOT/outside/marker"
+ln -s "$CASE_ROOT/outside" "$HOME_DIR/Library/Caches/hermes-intel-desktop"
+DESCRIPTION='refuses a symlinked build cache without deleting its target'
+report bash -c '! HOME="$0" PATH="$1:/usr/bin:/bin" TEST_COMMAND_LOG="$2" TEST_FIXTURE_APP="$4" "$3" >/dev/null 2>&1 && test -f "$5/marker"' "$HOME_DIR" "$FAKE_BIN" "$LOG" "$INSTALLER" "$FIXTURE_APP" "$CASE_ROOT/outside"
+cleanup_case
+
+setup_case
+DESCRIPTION='refuses a dirty source checkout before npm lifecycle scripts run'
+FAKE_GIT_STATUS='?? unexpected-file' report bash -c '! HOME="$0" PATH="$1:/usr/bin:/bin" TEST_COMMAND_LOG="$2" TEST_FIXTURE_APP="$4" FAKE_GIT_STATUS="?? unexpected-file" "$3" >/dev/null 2>&1 && ! grep -F "npm install" "$2" >/dev/null' "$HOME_DIR" "$FAKE_BIN" "$LOG" "$INSTALLER" "$FIXTURE_APP"
 cleanup_case
 
 setup_case

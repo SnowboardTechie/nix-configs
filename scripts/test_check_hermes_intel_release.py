@@ -5,6 +5,7 @@ import plistlib
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -43,9 +44,15 @@ class Harness:
         self.fail_http = False
         self.detach_fails = False
         self.mount_fails = False
+        self.malformed_attach = False
+        self.failures_by_url = {}
 
     def http_get(self, url, headers=None, timeout=20):
         self.http_calls.append((url, headers or {}, timeout))
+        remaining = self.failures_by_url.get(url, 0)
+        if remaining:
+            self.failures_by_url[url] = remaining - 1
+            raise OSError("temporary network failure")
         if self.fail_http:
             raise OSError("network down")
         if url == watch.PR_API:
@@ -62,7 +69,7 @@ class Harness:
         if args[:2] == ["/usr/bin/hdiutil", "attach"]:
             if self.mount_fails:
                 return subprocess.CompletedProcess(args, 1, b"", b"mount failed")
-            payload = plistlib.dumps({"system-entities": [{"mount-point": str(self.mount)}]})
+            payload = b"not a plist" if self.malformed_attach else plistlib.dumps({"system-entities": [{"mount-point": str(self.mount)}]})
             return subprocess.CompletedProcess(args, 0, payload, b"")
         if args[:2] == ["/usr/bin/hdiutil", "detach"]:
             return subprocess.CompletedProcess(args, 1 if self.detach_fails else 0, b"", b"detach failed")
@@ -106,6 +113,28 @@ class WatchdogTests(unittest.TestCase):
             self.assertIn("only after the official app is verified", output)
             self.assertEqual("", harness.run())
 
+    def test_a_later_intel_artifact_does_not_repeat_the_ready_notification(self):
+        with tempfile.TemporaryDirectory() as root:
+            harness = Harness(root, MERGED_PR, archs="arm64 x86_64", etag='"artifact-1"')
+            self.assertIn(watch.PR_URL, harness.run())
+            harness.etag = '"artifact-2"'
+            self.assertEqual("", harness.run())
+
+    def test_concurrent_ready_checks_emit_only_once(self):
+        with tempfile.TemporaryDirectory() as root:
+            harness = Harness(root, MERGED_PR, archs="arm64 x86_64")
+            outputs = []
+
+            def invoke():
+                outputs.append(harness.run())
+
+            threads = [threading.Thread(target=invoke) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(1, sum(bool(output) for output in outputs))
+
     def test_nested_electron_helper_apps_do_not_make_top_level_app_ambiguous(self):
         with tempfile.TemporaryDirectory() as root:
             harness = Harness(root, MERGED_PR, archs="arm64 x86_64")
@@ -136,11 +165,25 @@ class WatchdogTests(unittest.TestCase):
             self.assertEqual("", harness.run())
             self.assertEqual(12, len(harness.http_calls))
 
+    def test_asset_download_retries_are_bounded_and_can_recover(self):
+        with tempfile.TemporaryDirectory() as root:
+            harness = Harness(root, MERGED_PR, archs="arm64 x86_64")
+            harness.failures_by_url[harness.website_url] = 2
+            self.assertIn(watch.PR_URL, harness.run())
+            self.assertEqual(3, sum(call[0] == harness.website_url for call in harness.http_calls))
+
     def test_mount_failure_never_announces_readiness(self):
         with tempfile.TemporaryDirectory() as root:
             harness = Harness(root, MERGED_PR, archs="arm64 x86_64")
             harness.mount_fails = True
             self.assertEqual("", harness.run())
+
+    def test_malformed_attach_plist_never_announces_and_still_detaches(self):
+        with tempfile.TemporaryDirectory() as root:
+            harness = Harness(root, MERGED_PR, archs="arm64 x86_64")
+            harness.malformed_attach = True
+            self.assertEqual("", harness.run())
+            self.assertTrue(any(command[:2] == ["/usr/bin/hdiutil", "detach"] for command in harness.commands))
 
     def test_missing_app_never_announces_and_detaches(self):
         with tempfile.TemporaryDirectory() as root:
