@@ -38,7 +38,7 @@ Traci's isolated headless backend runs under her macOS account and is available 
 
 ### iNix (Intel macOS)
 
-Garage and shop machine for reading manuals, project plans, and occasional remote work. Runs on a 2017 iMac Pro (Intel Xeon W) with macOS + nix-darwin. Includes syncthing and Tailscale. Until the official Hermes DMG includes an Intel slice, `inix` provides a pinned local-build installer for the native Desktop app, which connects to Studio's remote backend over Tailscale. The browser dashboard remains available as a fallback.
+Garage and shop machine for reading manuals, project plans, and occasional remote work. Runs on a 2017 iMac Pro (Intel Xeon W) with macOS + nix-darwin. Includes syncthing, Tailscale, and Superwhisper dictation. Until the official Hermes DMG includes an Intel slice, `inix` provides a pinned local-build installer for the native Desktop app, which connects to Studio's remote backend over Tailscale. The browser dashboard remains available as a fallback.
 **Location:** [`modules/hosts/inix.nix`](modules/hosts/inix.nix)
 
 ### gnarbox (NixOS desktop)

@@ -73,6 +73,7 @@
           "opencode-desktop" # OpenCode AI coding agent desktop app
           "rectangle-pro"
           "slack"
+          "superwhisper" # Voice dictation and transcription
           "vlc"
           "zen" # Zen Browser (host-level since not in base homebrew)
         ];
