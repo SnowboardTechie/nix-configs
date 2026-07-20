@@ -1,0 +1,19 @@
+{
+  "name": "Watch Inkling-Small release",
+  "schedule": "30 9 * * *",
+  "repeat": "forever",
+  "deliver": "matrix:!5hH-Wud0Gd7hS1Z214EwjEMUvqtH8FBVOZhIZj0sqR4",
+  "script": "check-inkling-small-release.py",
+  "skills": [
+    "open-source-project-health",
+    "huggingface-hub",
+    "llama-cpp"
+  ],
+  "enabled_toolsets": [
+    "web",
+    "file",
+    "terminal"
+  ],
+  "workdir": "/Users/bryan/code/nix-configs",
+  "prompt": "Monitor for the official public release of Thinking Machines' Inkling-Small weights. The pre-run collector is a deterministic transition detector. If its output is empty, respond with only [SILENT]. If it reports a health_warning event, do not infer a release and do not acknowledge anything; deliver the concise warning with the exact failed source. If it reports release_detected, verify the release from original sources before reporting: inspect the official Thinking Machines announcement, the official thinkingmachines Hugging Face model card, config, repository tree, weight formats and exact sizes, and the current Model Acceptable Use Policy; distinguish public ungated full weights from placeholders, adapters, community mirrors, or previews. Inspect current Apple Silicon support in llama.cpp and Ollama, available reputable GGUF and MLX conversions, and any official vLLM or SGLang requirements. Read /Users/bryan/second-brain/Explorations/2026-07-20-inkling-self-hosting-assessment.md and compare the released model against Bryan's live M2 Ultra Mac Studio with 128 GB unified memory and current `ollama list`. Give Bryan a concise technical look-over with direct raw links, verified model and quant sizes, likely memory headroom, practical context limits, runtime maturity, licensing caveats, and a direct add/test/wait recommendation. Separate verified facts from estimates and publisher benchmarks from independent evidence. Do not download model weights, install software, change Ollama/Open WebUI/Hermes configuration, or modify the vault. Only after the review is complete, run the collector payload's exact ack_command so the pending release is not reported again. If verification is ambiguous or incomplete, do not acknowledge it; report the ambiguity so the next daily run retries. For any non-silent Matrix delivery, begin by @mentioning Bryan using the allowed Matrix user identity supplied by the gateway."
+}

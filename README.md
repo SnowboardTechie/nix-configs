@@ -155,6 +155,12 @@ This is temporary until the official public `Hermes-Setup.dmg` contains an `x86_
 4. List Hermes cron jobs and remove the live watchdog only by its actual runtime job ID.
 5. Remove the tracked installer/watchdog files and the `inix` package declaration in a focused commit, rebuild `inix`, run `nix flake check`, and verify the official app still works.
 
+### Inkling-Small release watchdog
+
+The tracked watchdog in [`scripts/check-inkling-small-release.py`](scripts/check-inkling-small-release.py) checks the official Thinking Machines Hugging Face namespace daily for a public, ungated Inkling-Small repository with actual weight files. It stays silent while the release is pending. Once weights appear, its Hermes cron job reviews the official model card, formats and sizes, Apple Silicon runtime support, quantized availability, licensing, and fit on Studio's M2 Ultra with 128 GB unified memory before sending one notification. The release remains pending until that review explicitly acknowledges it, so an interrupted review retries on the next daily run. The job never downloads weights, installs software, or changes the running Ollama/Open WebUI stack.
+
+The recreatable job definition is [`scripts/inkling-small-release-watch.job.json`](scripts/inkling-small-release-watch.job.json). Runtime state is private under `~/.hermes/state/inkling-small-release-watch.json` and is not committed.
+
 ### Apply Changes
 
 **macOS:**
