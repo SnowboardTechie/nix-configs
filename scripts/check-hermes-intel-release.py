@@ -28,6 +28,7 @@ STATE_PATH = Path.home() / ".hermes" / "state" / "hermes-intel-release-watch.jso
 USER_AGENT = "nix-configs-hermes-intel-release-watch/1.0"
 TIMEOUT_SECONDS = 20
 MAX_ATTEMPTS = 3
+MATRIX_MENTION = "@bryan:snowboardtechie.com"
 
 
 @dataclass(frozen=True)
@@ -334,7 +335,7 @@ def run(
 def main() -> int:
     output = run()
     if output:
-        print(output)
+        print(f"{MATRIX_MENTION} {output}")
     return 0
 
 

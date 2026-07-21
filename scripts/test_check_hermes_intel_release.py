@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import importlib.util
+import io
 import json
 import plistlib
 import subprocess
@@ -7,7 +8,9 @@ import sys
 import tempfile
 import threading
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 MODULE_PATH = Path(__file__).with_name("check-hermes-intel-release.py")
 SPEC = importlib.util.spec_from_file_location("hermes_intel_watch", MODULE_PATH)
@@ -92,6 +95,12 @@ CLOSED_PR = {"state": "closed", "merged": False, "merged_at": None}
 
 
 class WatchdogTests(unittest.TestCase):
+    def test_main_prefixes_non_silent_output_with_matrix_mention(self):
+        output = io.StringIO()
+        with mock.patch.object(watch, "run", return_value="Watchdog alert"), redirect_stdout(output):
+            self.assertEqual(0, watch.main())
+        self.assertEqual(f"{watch.MATRIX_MENTION} Watchdog alert\n", output.getvalue())
+
     def test_open_pr_is_silent_and_does_not_download_artifact(self):
         with tempfile.TemporaryDirectory() as root:
             harness = Harness(root, OPEN_PR)
