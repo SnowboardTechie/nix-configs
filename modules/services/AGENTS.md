@@ -90,7 +90,7 @@ but does not execute.
 | syncthing | 8384, 22000 | `/opt/homebrew/bin/syncthing` | Always-on | NixOS uses native module directly |
 | smb-mount | — | mount_smbfs | Event-driven (WatchPaths) | Soft mount, no polling |
 | icloud-backup | — | /usr/bin/rsync | Calendar (2:00 AM) | Excludes .stversions/.syncthing* |
-| hermes | 9119, 9120 (Studio Tailscale only) | Nix client package + managed macOS venv for Matrix + loopback Caddy proxy | Always-on on Studio | Studio runs Bryan's gateway/dashboard plus per-user headless remote backends. Tailscale Serve terminates HTTPS; Caddy normalizes the Host header before the loopback-only backend. MBP/gnarbox are native clients; inix uses the browser dashboard because it is unsupported upstream (x86_64-darwin). |
+| hermes | 443, 9119, 9120 (Studio Tailscale only) | Nix client package + managed macOS venv for Matrix + Caddy proxies | Always-on on Studio | Studio runs Bryan's gateway/dashboard plus per-user headless remote backends. Bryan's dashboard remains bound to its Tailscale IP so Hermes keeps its authentication gate enabled; Tailscale Serve and Caddy add HTTPS on port 443. Traci's backend remains loopback-only behind its own authenticated proxy. MBP/gnarbox are native clients; inix uses the browser dashboard because it is unsupported upstream (x86_64-darwin). |
 
 ## Where Enabled
 

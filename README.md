@@ -32,7 +32,7 @@ Work MacBook Pro with syncthing and work tools (AWS, Docker, DDEV, Slack, Zoom).
 
 ### studio (media server macOS)
 
-Media server Mac running the primary Hermes gateway and per-user Tailscale-only remote backends, plus ollama, open-webui, monitoring (Prometheus + Grafana), SMB mount, syncthing, and iCloud backup.
+Media server Mac running the primary Hermes gateway and per-user Tailscale-only remote backends, plus ollama, open-webui, monitoring (Prometheus + Grafana), SMB mount, syncthing, and iCloud backup. Bryan's primary backend is available at `https://bryans-mac-studio.tail5ba690.ts.net` through Tailscale Serve.
 Traci's isolated headless backend runs under her macOS account and is available at `https://bryans-mac-studio.tail5ba690.ts.net:9120` through Tailscale Serve.
 **Location:** [`modules/hosts/studio.nix`](modules/hosts/studio.nix)
 
@@ -136,7 +136,7 @@ sudo nixos-rebuild switch --flake '.#gnarbox' --extra-experimental-features 'nix
 
 ### Temporary Intel Hermes Desktop workaround
 
-After rebuilding `inix`, run `install-hermes-intel-desktop` as the normal user. It builds the pinned, upstream-verified Hermes Desktop source under `~/Library/Caches/hermes-intel-desktop`, validates its Intel-native binaries, ad-hoc signs it, and installs the user-managed app at `~/Applications/Hermes.app`. In the app, use **Settings → Gateway → Remote gateway** to connect to Studio at `http://100.121.238.48:9119` and sign in normally. The installer does not store the URL or credentials.
+After rebuilding `inix`, run `install-hermes-intel-desktop` as the normal user. It builds the pinned, upstream-verified Hermes Desktop source under `~/Library/Caches/hermes-intel-desktop`, validates its Intel-native binaries, ad-hoc signs it, and installs the user-managed app at `~/Applications/Hermes.app`. In the app, use **Settings → Gateway → Remote gateway** to connect to Studio at `https://bryans-mac-studio.tail5ba690.ts.net` and sign in normally. The installer does not store the URL or credentials.
 
 This is temporary until the official public `Hermes-Setup.dmg` contains an `x86_64` slice. The tracked script-only watchdog in [`scripts/check-hermes-intel-release.py`](scripts/check-hermes-intel-release.py) checks the upstream PR and official artifact daily. It is silent while pending and sends one Matrix notification only after both the PR and published installer pass their gates. It never installs or removes software.
 

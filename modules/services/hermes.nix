@@ -105,12 +105,15 @@
       enabledTailscaleServeInstances = lib.filterAttrs
         (_: instance: instance.serve.tailscale.enable)
         enabledHeadlessServeInstances;
+      primaryTailscaleServeEnabled = cfg.dashboard.enable && cfg.dashboard.tailscale.enable;
       localServePorts = lib.optional cfg.dashboard.enable cfg.dashboard.port
         ++ lib.mapAttrsToList (_: instance: instance.serve.port) enabledHeadlessServeInstances;
-      localProxyPorts = lib.mapAttrsToList
+      localProxyPorts = lib.optional primaryTailscaleServeEnabled cfg.dashboard.tailscale.proxyPort
+        ++ lib.mapAttrsToList
         (_: instance: instance.serve.tailscale.proxyPort)
         enabledTailscaleServeInstances;
-      tailscaleHttpsPorts = lib.mapAttrsToList
+      tailscaleHttpsPorts = lib.optional primaryTailscaleServeEnabled cfg.dashboard.tailscale.httpsPort
+        ++ lib.mapAttrsToList
         (_: instance: instance.serve.tailscale.httpsPort)
         enabledTailscaleServeInstances;
       headlessEnvironment = instance: {
@@ -219,6 +222,27 @@
             };
           })
         enabledTailscaleServeInstances;
+      primaryTailscaleProxyConfig = pkgs.writeText "hermes-dashboard-tailscale-proxy.json" (builtins.toJSON {
+        admin.disabled = true;
+        apps.http.servers.hermes = {
+          listen = [ "127.0.0.1:${toString cfg.dashboard.tailscale.proxyPort}" ];
+          automatic_https.disable = true;
+          routes = [
+            {
+              handle = [
+                {
+                  handler = "reverse_proxy";
+                  headers.request.set = {
+                    Host = [ "${cfg.dashboard.host}:${toString cfg.dashboard.port}" ];
+                    "X-Forwarded-Proto" = [ "https" ];
+                  };
+                  upstreams = [{ dial = "${cfg.dashboard.host}:${toString cfg.dashboard.port}"; }];
+                }
+              ];
+            }
+          ];
+        };
+      });
       serviceEnvironment = {
         HOME = homeDirectory;
         HERMES_HOME = hermesHome;
@@ -318,6 +342,23 @@
             default = 9119;
             description = "Port passed to hermes dashboard.";
           };
+          tailscale = {
+            enable = lib.mkOption {
+              type = lib.types.bool;
+              default = false;
+              description = "Expose the authenticated primary dashboard through Tailscale Serve HTTPS.";
+            };
+            httpsPort = lib.mkOption {
+              type = lib.types.port;
+              default = 443;
+              description = "Tailnet-only HTTPS port exposed by Tailscale Serve.";
+            };
+            proxyPort = lib.mkOption {
+              type = lib.types.port;
+              default = cfg.dashboard.port + 1;
+              description = "Loopback reverse-proxy port used to bridge Tailscale Serve HTTPS to the authenticated Hermes dashboard.";
+            };
+          };
         };
       };
 
@@ -336,6 +377,15 @@
               assertion = builtins.length tailscaleHttpsPorts
                 == builtins.length (lib.unique tailscaleHttpsPorts);
               message = "services.hermes Tailscale Serve HTTPS ports must be unique";
+            }
+            {
+              assertion = !cfg.dashboard.tailscale.enable
+                || (cfg.dashboard.enable
+                && cfg.dashboard.host != "127.0.0.1"
+                && cfg.dashboard.host != "localhost"
+                && cfg.dashboard.host != "::1"
+                && config.services.tailscale.enable);
+              message = "services.hermes.dashboard.tailscale requires an authenticated non-loopback dashboard host and services.tailscale";
             }
           ] ++ lib.mapAttrsToList
             (name: instance: {
@@ -387,6 +437,18 @@
                 /bin/chmod 0600 ${lib.escapeShellArg "${instance.homeDirectory}/.hermes/logs/"}*.log
               '')
               (lib.attrValues enabledHeadlessInstances)
+            + lib.optionalString primaryTailscaleServeEnabled ''
+              # === Hermes primary dashboard via Tailscale Serve ===
+              if ! ${pkgs.coreutils}/bin/timeout --foreground 30s \
+                ${config.services.tailscale.package}/bin/tailscale serve \
+                  --bg \
+                  --yes \
+                  --https=${toString cfg.dashboard.tailscale.httpsPort} \
+                  http://127.0.0.1:${toString cfg.dashboard.tailscale.proxyPort}; then
+                echo "Failed to configure Tailscale Serve for the primary Hermes dashboard on port ${toString cfg.dashboard.tailscale.httpsPort}" >&2
+                exit 1
+              fi
+            ''
             + lib.concatMapStrings
               (instance: lib.optionalString instance.serve.tailscale.enable ''
                 # === Hermes headless backend via Tailscale Serve ===
@@ -492,6 +554,28 @@
               EnvironmentVariables = serviceEnvironment;
               StandardOutPath = "${hermesHome}/logs/dashboard.log";
               StandardErrorPath = "${hermesHome}/logs/dashboard.error.log";
+              ProcessType = "Background";
+              ThrottleInterval = 10;
+            };
+          };
+        })
+
+        (lib.mkIf primaryTailscaleServeEnabled {
+          launchd.user.agents.hermes-dashboard-tailscale-proxy = {
+            serviceConfig = {
+              Label = "ai.hermes.dashboard-tailscale-proxy";
+              ProgramArguments = [
+                "${pkgs.caddy}/bin/caddy"
+                "run"
+                "--config"
+                "${primaryTailscaleProxyConfig}"
+              ];
+              RunAtLoad = true;
+              KeepAlive = true;
+              WorkingDirectory = homeDirectory;
+              EnvironmentVariables = serviceEnvironment;
+              StandardOutPath = "${hermesHome}/logs/dashboard-tailscale-proxy.log";
+              StandardErrorPath = "${hermesHome}/logs/dashboard-tailscale-proxy.error.log";
               ProcessType = "Background";
               ThrottleInterval = 10;
             };

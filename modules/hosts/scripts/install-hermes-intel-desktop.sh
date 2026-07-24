@@ -3,7 +3,7 @@ set -euo pipefail
 
 readonly REPO_URL="https://github.com/NousResearch/hermes-agent.git"
 readonly VERIFIED_REF="586aae4bf13c20c3f2966cad590b27946b227bbb"
-readonly REMOTE_URL="http://100.121.238.48:9119"
+readonly REMOTE_URL="https://bryans-mac-studio.tail5ba690.ts.net"
 readonly BUILD_ROOT="${HOME}/Library/Caches/hermes-intel-desktop"
 readonly SOURCE_DIR="${BUILD_ROOT}/source"
 readonly INSTALL_DIR="${HOME}/Applications"

@@ -60,6 +60,11 @@
         enable = true;
         host = "100.121.238.48";
         port = 9119;
+        tailscale = {
+          enable = true;
+          httpsPort = 443;
+          proxyPort = 9122;
+        };
       };
       headlessInstances.traci = {
         user = "traci";
