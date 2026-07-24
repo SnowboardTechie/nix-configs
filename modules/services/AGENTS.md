@@ -141,6 +141,7 @@ Three launchd scheduling modes used (match existing when adding):
 ## Anti-Patterns
 
 - **NEVER** use arbitrary names for `system.activationScripts.{foo}.text` — see footgun above. Use `extraActivation.text = lib.mkAfter …` instead.
+- **NEVER** point a boot-time system LaunchDaemon directly at `/nix/store`. The Nix volume may not be mounted when launchd first spawns it, causing `EX_CONFIG` and a persistent penalty-box state. Start through `/bin/sh` and wait for the real executable before `exec` (see `hermes.nix`).
 - **NEVER** use Nix store paths for ProgramArguments for Homebrew packages — use `/opt/homebrew/bin/` (exception: tools not in Homebrew, like blackbox_exporter, use nixpkgs derivations).
 - **ALWAYS** include both darwin and nixos aspects (even if nixos is a stub).
 - **ALWAYS** log to `/tmp/{name}.log` and `/tmp/{name}.error.log` — alloy discovers these by glob and tags them with `service_name` extracted from the filename.

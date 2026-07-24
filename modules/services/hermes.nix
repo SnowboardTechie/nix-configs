@@ -130,13 +130,27 @@
           "/sbin"
         ];
       };
+      # System LaunchDaemons are loaded before the Nix volume is guaranteed to
+      # be mounted. Start through a system shell so launchd does not put the job
+      # in its penalty box when the real executable is temporarily unavailable.
+      waitForNixStoreProgram = programArguments: [
+        "/bin/sh"
+        "-c"
+        ''
+          while [ ! -x "$1" ]; do
+            /bin/sleep 1
+          done
+          exec "$@"
+        ''
+        "wait-for-nix-store"
+      ] ++ programArguments;
       headlessServeDaemons = lib.mapAttrs'
         (name: instance:
           lib.nameValuePair "hermes-${name}-serve" {
             serviceConfig = {
               Label = "ai.hermes.serve-${name}";
               UserName = instance.user;
-              ProgramArguments = [
+              ProgramArguments = waitForNixStoreProgram [
                 "${cfg.package}/bin/hermes"
                 "serve"
                 "--host"
@@ -162,7 +176,7 @@
             serviceConfig = {
               Label = "ai.hermes.gateway-${name}";
               UserName = instance.user;
-              ProgramArguments = [
+              ProgramArguments = waitForNixStoreProgram [
                 "${cfg.package}/bin/hermes"
                 "gateway"
                 "run"
@@ -205,7 +219,7 @@
             serviceConfig = {
               Label = "ai.hermes.serve-${name}-tailscale-proxy";
               UserName = instance.user;
-              ProgramArguments = [
+              ProgramArguments = waitForNixStoreProgram [
                 "${pkgs.caddy}/bin/caddy"
                 "run"
                 "--config"
