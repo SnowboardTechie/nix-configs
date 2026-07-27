@@ -50,6 +50,12 @@
         default = 4;
         description = "Maximum number of parallel requests per model";
       };
+
+      contextLength = lib.mkOption {
+        type = lib.types.int;
+        default = 16384;
+        description = "Context window size (ollama defaults to 4096 and silently truncates beyond it)";
+      };
     };
 
     config = let
@@ -71,6 +77,7 @@
             OLLAMA_KEEP_ALIVE = cfg.keepAlive;
             OLLAMA_MAX_LOADED_MODELS = toString cfg.maxLoadedModels;
             OLLAMA_NUM_PARALLEL = toString cfg.numParallel;
+            OLLAMA_CONTEXT_LENGTH = toString cfg.contextLength;
           };
         };
       };
