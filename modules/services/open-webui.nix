@@ -24,6 +24,15 @@
     uvPath = "/opt/homebrew/bin/uv";
     toolBin = "${homeDir}/.local/bin/open-webui";
     toolVenvPython = "${homeDir}/.local/share/uv/tools/open-webui/bin/python";
+    secretKeyFile = "${homeDir}/.open-webui/.webui_secret_key";
+    databaseEnvironment = {
+      # Open WebUI defaults SQLite's async pool to 512 connections. Each
+      # aiosqlite connection consumes a worker thread plus database/WAL file
+      # descriptors, which exhausts launchd's default 256-file soft limit.
+      DATABASE_POOL_SIZE = "8";
+      DATABASE_SQLITE_PRAGMA_CACHE_SIZE = "-2000";
+      DATABASE_SQLITE_PRAGMA_MMAP_SIZE = "0";
+    };
 
     # Shared preflight — used by runner, updater, upgrade script.
     # Verifies uv is available; fails loudly if not.
@@ -44,6 +53,24 @@
         echo "IMPORT PROBE: python missing at ${toolVenvPython}"
         return 1
       fi
+
+      export DATA_DIR="${cfg.dataDir}"
+      export DATABASE_POOL_SIZE="${databaseEnvironment.DATABASE_POOL_SIZE}"
+      export DATABASE_SQLITE_PRAGMA_CACHE_SIZE="${databaseEnvironment.DATABASE_SQLITE_PRAGMA_CACHE_SIZE}"
+      export DATABASE_SQLITE_PRAGMA_MMAP_SIZE="${databaseEnvironment.DATABASE_SQLITE_PRAGMA_MMAP_SIZE}"
+
+      # `open-webui serve` loads or creates this key before importing main.
+      # The standalone updater must do the equivalent or Open WebUI 0.9.6+
+      # rejects the import even when the installation is healthy.
+      if [ -z "''${WEBUI_SECRET_KEY:-}" ]; then
+        if [ ! -r "${secretKeyFile}" ]; then
+          echo "IMPORT PROBE: secret key missing at ${secretKeyFile}"
+          return 1
+        fi
+        WEBUI_SECRET_KEY=$(<"${secretKeyFile}")
+        export WEBUI_SECRET_KEY
+      fi
+
       if ! "${toolVenvPython}" -c "
       import open_webui.main
       import greenlet
@@ -126,6 +153,10 @@
       fi
 
       mkdir -p "${cfg.dataDir}"
+
+      if [ -f "${secretKeyFile}" ]; then
+        chmod 600 "${secretKeyFile}"
+      fi
 
       exec "${toolBin}" serve
     '';
@@ -237,13 +268,15 @@
           StandardOutPath = "/tmp/open-webui.log";
           StandardErrorPath = "/tmp/open-webui.error.log";
           WorkingDirectory = "${homeDir}/.open-webui";
-          EnvironmentVariables = {
+          EnvironmentVariables = databaseEnvironment // {
             PORT = toString cfg.port;
             OLLAMA_BASE_URL = cfg.ollamaUrl;
             WEBUI_AUTH = "true";
             DATA_DIR = cfg.dataDir;
             HOME = homeDir;
           };
+          SoftResourceLimits.NumberOfFiles = 65536;
+          HardResourceLimits.NumberOfFiles = 65536;
         };
       };
 
@@ -255,6 +288,11 @@
           StartInterval = cfg.updateInterval;
           StandardOutPath = "/tmp/open-webui.updater.log";
           StandardErrorPath = "/tmp/open-webui.updater.error.log";
+          WorkingDirectory = "${homeDir}/.open-webui";
+          EnvironmentVariables = databaseEnvironment // {
+            DATA_DIR = cfg.dataDir;
+            HOME = homeDir;
+          };
         };
       };
 
