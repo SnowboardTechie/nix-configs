@@ -161,6 +161,10 @@ The tracked watchdog in [`scripts/check-inkling-small-release.py`](scripts/check
 
 The recreatable job definition is [`scripts/inkling-small-release-watch.job.json`](scripts/inkling-small-release-watch.job.json). Runtime state is private under `~/.hermes/state/inkling-small-release-watch.json` and is not committed.
 
+### Colibrì GLM-5.2 readiness watchdog
+
+The Hermes watchdog checks grouped-quality Metal support, a complete compatible checkpoint, reproducible Ultra-class Mac Studio evidence, tool-calling stabilization, and blocking regressions before recommending a controlled GLM-5.2 proof of concept. The recreatable, read-only job definition is [`scripts/colibri-glm52-readiness-watch.job.json`](scripts/colibri-glm52-readiness-watch.job.json). Runtime notification state remains private under `~/.hermes/state/` and is not committed.
+
 ### Apply Changes
 
 **macOS:**

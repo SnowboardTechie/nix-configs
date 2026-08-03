@@ -1,6 +1,8 @@
 {
   "name": "Watch Inkling-Small release",
   "schedule": "30 9 * * *",
+  "model": "gpt-5.6-terra",
+  "provider": "openai-codex",
   "repeat": "forever",
   "deliver": "matrix:!5hH-Wud0Gd7hS1Z214EwjEMUvqtH8FBVOZhIZj0sqR4",
   "script": "check-inkling-small-release.py",
