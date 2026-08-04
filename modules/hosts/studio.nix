@@ -123,6 +123,7 @@
       brews = [
         "cloudflared"
         "grafana"
+        "libomp" # Colibri Metal/OpenMP build dependency for isolated GLM-5.2 retests
         "loki"
         "node" # Includes npm and npx for MCP extensions
         "node_exporter"
