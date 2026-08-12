@@ -541,6 +541,8 @@
               EnvironmentVariables = serviceEnvironment;
               StandardOutPath = "${hermesHome}/logs/gateway.log";
               StandardErrorPath = "${hermesHome}/logs/gateway.error.log";
+              SoftResourceLimits.NumberOfFiles = 65536;
+              HardResourceLimits.NumberOfFiles = 65536;
               ProcessType = "Background";
               ThrottleInterval = 10;
             };
@@ -568,6 +570,8 @@
               EnvironmentVariables = serviceEnvironment;
               StandardOutPath = "${hermesHome}/logs/dashboard.log";
               StandardErrorPath = "${hermesHome}/logs/dashboard.error.log";
+              SoftResourceLimits.NumberOfFiles = 65536;
+              HardResourceLimits.NumberOfFiles = 65536;
               ProcessType = "Background";
               ThrottleInterval = 10;
             };
