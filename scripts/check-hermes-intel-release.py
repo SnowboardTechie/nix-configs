@@ -20,8 +20,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Mapping
 
-PR_API = "https://api.github.com/repos/NousResearch/hermes-agent/pulls/51777"
-PR_URL = "https://github.com/NousResearch/hermes-agent/pull/51777"
+PR_NUMBER = 37762
+PR_API = f"https://api.github.com/repos/NousResearch/hermes-agent/pulls/{PR_NUMBER}"
+PR_URL = f"https://github.com/NousResearch/hermes-agent/pull/{PR_NUMBER}"
 WEBSITE_URL = "https://hermes-agent.nousresearch.com/"
 FALLBACK_DMG_URL = "https://hermes-assets.nousresearch.com/Hermes-Setup.dmg"
 STATE_PATH = Path.home() / ".hermes" / "state" / "hermes-intel-release-watch.json"
@@ -257,10 +258,10 @@ def _run_locked(
         if status == "closed" and not merged:
             reset_failures(state)
             output = ""
-            if not state.get("closed_unmerged_warning_emitted"):
-                state["closed_unmerged_warning_emitted"] = True
+            if state.get("closed_unmerged_warning_pr") != PR_NUMBER:
+                state["closed_unmerged_warning_pr"] = PR_NUMBER
                 output = (
-                    f"Hermes Intel release watchdog manual review: PR #51777 closed without merging. "
+                    f"Hermes Intel release watchdog manual review: PR #{PR_NUMBER} closed without merging. "
                     f"Reassess the upstream Intel macOS release route. PR: {PR_URL}"
                 )
             save_state(state_path, state)
@@ -303,7 +304,7 @@ def _run_locked(
         state["notified_at"] = utc_now()
         save_state(state_path, state)
         return (
-            "Hermes now has an official Intel-capable macOS installer. PR #51777 is merged and the "
+            f"Hermes now has an official Intel-capable macOS installer. PR #{PR_NUMBER} is merged and the "
             "published Hermes installer contains x86_64. Replace the locally built iMac app only after "
             "the official app is verified, including its Studio connection and relaunch authentication. "
             "After that verification, we can remove the temporary installer and watchdog.\n\n"

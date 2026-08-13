@@ -95,6 +95,11 @@ CLOSED_PR = {"state": "closed", "merged": False, "merged_at": None}
 
 
 class WatchdogTests(unittest.TestCase):
+    def test_tracks_current_upstream_pr(self):
+        self.assertEqual(37762, watch.PR_NUMBER)
+        self.assertTrue(watch.PR_API.endswith("/pulls/37762"))
+        self.assertTrue(watch.PR_URL.endswith("/pull/37762"))
+
     def test_main_prefixes_non_silent_output_with_matrix_mention(self):
         output = io.StringIO()
         with mock.patch.object(watch, "run", return_value="Watchdog alert"), redirect_stdout(output):
@@ -156,6 +161,15 @@ class WatchdogTests(unittest.TestCase):
             harness = Harness(root, CLOSED_PR)
             self.assertIn("manual review", harness.run().lower())
             self.assertEqual("", harness.run())
+
+    def test_old_pr_warning_does_not_suppress_current_pr_warning(self):
+        with tempfile.TemporaryDirectory() as root:
+            harness = Harness(root, CLOSED_PR)
+            harness.state_path.parent.mkdir(parents=True)
+            harness.state_path.write_text(
+                json.dumps({"closed_unmerged_warning_emitted": True}), encoding="utf-8"
+            )
+            self.assertIn(f"PR #{watch.PR_NUMBER}", harness.run())
 
     def test_current_versioned_website_dmg_url_is_inspected(self):
         with tempfile.TemporaryDirectory() as root:
