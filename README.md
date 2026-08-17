@@ -167,7 +167,7 @@ The Hermes watchdog checks grouped-quality Metal support, a complete compatible 
 
 ### GitHub incident recovery watchdog
 
-The tracked monitor in [`scripts/check-github-status.py`](scripts/check-github-status.py) polls GitHub's official Statuspage summary every five minutes and emits a timestamp-free snapshot. Hermes suppresses unchanged ticks and uses the local `gemma4:31b-mlx` model only when the official status changes. The job stays silent for its initial baseline, source-health noise, and worsening conditions; it notifies Bryan in Matrix when incidents or affected components begin recovering and when GitHub becomes fully operational. The recreatable job definition is [`scripts/github-status-watch.job.json`](scripts/github-status-watch.job.json).
+The tracked monitor in [`scripts/check-github-status.py`](scripts/check-github-status.py) polls GitHub's official Statuspage summary every five minutes and emits a timestamp-free snapshot. Hermes suppresses unchanged ticks and uses the local `gemma4:31b-mlx` model only when the official status changes. This incident-specific finite watch stays silent for its initial baseline and source-health noise, notifies Bryan in Matrix when service meaningfully improves or worsens, and automatically stops after 36 checks (about three hours). The recreatable job definition is [`scripts/github-status-watch.job.json`](scripts/github-status-watch.job.json).
 
 ### Apply Changes
 
