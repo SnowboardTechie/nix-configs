@@ -18,7 +18,6 @@
       openchamber
       # Desktop features
       gaming
-      reaper
       # Service modules
       syncthing
       hermes

@@ -8,8 +8,6 @@
       alsa.enable = true;
       alsa.support32Bit = true;
       pulse.enable = true;
-      # JACK bridge for DAW audio routing (REAPER, Ardour, etc.)
-      jack.enable = true;
     };
   };
 }

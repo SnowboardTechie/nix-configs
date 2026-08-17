@@ -1,7 +1,7 @@
 # Host configuration: gnarbox (NixOS Desktop)
 #
-# Features: fonts, nix-settings, zsh, editors, git, cli-tools, activation, reaper
-# Desktop: gnome, gaming, audio, reaper, alvr
+# Features: fonts, nix-settings, zsh, editors, git, cli-tools, activation
+# Desktop: gnome, gaming, audio, alvr
 # Host-specific: Boot, networking, users, power management, etc.
 { inputs, ... }:
 {
@@ -29,7 +29,6 @@
           gnome
           gaming
           audio
-          reaper
           alvr
           hermes
         ])
