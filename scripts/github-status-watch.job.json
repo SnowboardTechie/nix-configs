@@ -1,0 +1,16 @@
+{
+  "name": "Watch GitHub incident recovery",
+  "schedule": "every 5m",
+  "model": "gemma4:31b-mlx",
+  "provider": "custom",
+  "base_url": "http://127.0.0.1:11434/v1",
+  "repeat": "forever",
+  "deliver": "matrix:!5hH-Wud0Gd7hS1Z214EwjEMUvqtH8FBVOZhIZj0sqR4",
+  "monitor_script": "check-github-status.py",
+  "enabled_toolsets": [
+    "safe"
+  ],
+  "workdir": "/Users/bryan/code/nix-configs",
+  "attach_to_session": false,
+  "prompt": "Classify changes from the normalized githubstatus.com monitor snapshot. The monitor provides a unified diff and the complete new JSON snapshot. Use only that data; do not call tools or infer beyond GitHub's official status. On the first baseline run, when there is no previous output, respond exactly [SILENT]. Also respond exactly [SILENT] for source_health-only changes, source errors, wording-only changes without evidence of recovery, unchanged severity, or any new/worsening incident. Notify Bryan only when GitHub is meaningfully becoming more usable: the overall indicator improves; an incident advances from investigating to identified, monitoring, or resolved/disappears; an affected component improves from major_outage to partial_outage, degraded_performance, or operational/disappears; or an official latest_update explicitly reports recovery or restored service. For an improvement, begin the final response exactly `@bryan:snowboardtechie.com`, lead with what improved, name the exact services and statuses that changed, briefly state what remains affected, and end with the raw link https://www.githubstatus.com/. Say fully resolved only when the new snapshot has overall indicator `none`, no incidents, and no affected_components. Keep the message concise."
+}

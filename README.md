@@ -165,6 +165,10 @@ The recreatable job definition is [`scripts/inkling-small-release-watch.job.json
 
 The Hermes watchdog checks grouped-quality Metal support, a complete compatible checkpoint, reproducible Ultra-class Mac Studio evidence, tool-calling stabilization, and blocking regressions before recommending a controlled GLM-5.2 proof of concept. The recreatable, read-only job definition is [`scripts/colibri-glm52-readiness-watch.job.json`](scripts/colibri-glm52-readiness-watch.job.json). Runtime notification state remains private under `~/.hermes/state/` and is not committed.
 
+### GitHub incident recovery watchdog
+
+The tracked monitor in [`scripts/check-github-status.py`](scripts/check-github-status.py) polls GitHub's official Statuspage summary every five minutes and emits a timestamp-free snapshot. Hermes suppresses unchanged ticks and uses the local `gemma4:31b-mlx` model only when the official status changes. The job stays silent for its initial baseline, source-health noise, and worsening conditions; it notifies Bryan in Matrix when incidents or affected components begin recovering and when GitHub becomes fully operational. The recreatable job definition is [`scripts/github-status-watch.job.json`](scripts/github-status-watch.job.json).
+
 ### Apply Changes
 
 **macOS:**
