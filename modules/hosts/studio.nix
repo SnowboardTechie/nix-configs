@@ -45,7 +45,11 @@
 
     # === Enable Services ===
 
-    services.ollama.enable = true;
+    services.ollama = {
+      enable = true;
+      contextLength = 65536;
+      numParallel = 1;
+    };
     services.open-webui.enable = true;
     services.monitoring.enable = true;
     services.smb-mount.enable = true;
