@@ -23,6 +23,8 @@
       "git-lfs"
       "gnupg"
       "googleworkspace-cli"
+      # herdr: no x86_64-darwin bottle upstream, so inix builds it from source
+      "herdr"
       "jq"
       "just"
       "lazydocker"
