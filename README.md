@@ -11,7 +11,7 @@ modules/
 ├── base/       # Core system: fonts, homebrew, nix-settings, zsh
 ├── dev/        # Development: cli-tools, editors, git
 ├── desktop/    # GUI: gnome, gaming, audio (NixOS)
-├── services/   # Daemons/agents: Hermes, ollama, open-webui, monitoring, SMB, syncthing, iCloud backup
+├── services/   # Daemons/agents: Hermes, Hindsight, ollama, open-webui, monitoring, SMB, syncthing, iCloud backup
 ├── hosts/      # Host-specific: a6mbp, gnarbox, inix, mbp, studio (mbp/a6mbp/studio/inix darwin, gnarbox NixOS)
 └── dev-envs/   # VA project environments
 ```
@@ -34,6 +34,8 @@ Work MacBook Pro with syncthing and work tools (AWS, Docker, DDEV, Slack, Zoom).
 
 Media server Mac running the primary Hermes gateway and per-user Tailscale-only remote backends, plus ollama, open-webui, monitoring (Prometheus + Grafana), SMB mount, syncthing, and iCloud backup. Bryan's primary backend is available at `https://bryans-mac-studio.tail5ba690.ts.net` through Tailscale Serve.
 Traci's isolated headless backend runs under her macOS account and is available at `https://bryans-mac-studio.tail5ba690.ts.net:9120` through Tailscale Serve.
+
+Studio also hosts the self-hosted [Hindsight](https://github.com/vectorize-io/hindsight) shared agent-memory service (bryan instance): dedicated PostgreSQL 17 + pgvector, a uv-locked API on loopback `8888`, an npm-locked Control Plane on loopback `9999`, exposed tailnet-only at `https://bryans-mac-studio.tail5ba690.ts.net:9443` (API, bearer-authenticated) and `:9444` (Control Plane, key-authenticated). All extraction/consolidation runs through local Ollama. Six-hourly age-encrypted logical backups with tiered retention (48h/14d/4w + pre-upgrade) live under `~/.local/state/hindsight-bryan/backups/`, with a monthly disposable restore test; `hindsight-bryan-backup-now pre-upgrade` takes the mandatory pre-upgrade snapshot. Versions are pinned by `modules/services/hindsight-env/` lock files; `scripts/check-hindsight-releases.py` is the daily read-only Hermes release watch (register with `hermes cron add`, no-agent mode, workdir this repo). Secrets live in `~/.secrets/hindsight-bryan/` and never enter the store.
 **Location:** [`modules/hosts/studio.nix`](modules/hosts/studio.nix)
 
 ### iNix (Intel macOS)

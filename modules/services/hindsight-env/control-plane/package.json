@@ -1,0 +1,9 @@
+{
+  "name": "hindsight-control-plane-env",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Locked runtime environment for the Hindsight Control Plane (see modules/services/hindsight.nix)",
+  "dependencies": {
+    "@vectorize-io/hindsight-control-plane": "0.9.1"
+  }
+}
