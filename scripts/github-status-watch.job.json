@@ -2,7 +2,7 @@
   "name": "Watch GitHub incident recovery",
   "schedule": "every 5m",
   "model": "gemma4:31b-mlx",
-  "provider": "custom",
+  "provider": "custom:local-gemma4",
   "base_url": "http://127.0.0.1:11434/v1",
   "repeat": 36,
   "deliver": "matrix:!5hH-Wud0Gd7hS1Z214EwjEMUvqtH8FBVOZhIZj0sqR4",
