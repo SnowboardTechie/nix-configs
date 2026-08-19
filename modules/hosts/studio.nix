@@ -93,7 +93,22 @@
     services.hindsight = {
       enable = true;
       instances.bryan = {
-        llm.model = "gemma4:31b-mlx";
+        # Hosted generative processing (Bryan, 2026-08-18): the single local
+        # Ollama lane could not keep pace with three machines' steady-state
+        # syncs (reflect timeouts, multi-hour extraction backlog). Embeddings
+        # and reranking remain local; only extraction/consolidation/reflect
+        # go to OpenRouter. Key file is machine-local, mode 0600.
+        # gpt-4.1-nano: cheapest reliable OpenRouter option whose endpoints
+        # honor the account's no-training data policy (train-on-data-only
+        # models like qwen3.7-flash return HTTP 404 under that policy, which
+        # is the correct guard for memory data). Azure-hosted, OpenAI-style
+        # tool-calling that reflect's search loop needs.
+        llm = {
+          provider = "openai";
+          model = "openai/gpt-4.1-nano";
+          baseUrl = "https://openrouter.ai/api/v1";
+          apiKeyFile = "/Users/bryan/.secrets/hindsight-bryan/llm-api-key";
+        };
         tailscale.enable = true; # API 9443, Control Plane 9444
         backups.ageRecipient = "age1q4m8cll6m4u2vqvhz6j40znlx92trw8wwgrnp99ewtxjum75539q85jq5f";
         # Memory Defense on every newly created bank: redact secrets/PII

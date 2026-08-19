@@ -69,14 +69,24 @@
             description = "Loopback port for this instance's dedicated PostgreSQL cluster.";
           };
           llm = {
+            provider = lib.mkOption {
+              type = lib.types.str;
+              default = "ollama";
+              description = "LLM provider for extraction/consolidation/reflection (ollama, openai, ...).";
+            };
             model = lib.mkOption {
               type = lib.types.str;
-              description = "Ollama model tag used for extraction/consolidation/reflection.";
+              description = "Model identifier for the provider.";
             };
             baseUrl = lib.mkOption {
               type = lib.types.str;
               default = "http://127.0.0.1:11434";
-              description = "Ollama base URL.";
+              description = "Provider base URL (local Ollama or an OpenAI-compatible endpoint).";
+            };
+            apiKeyFile = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Mode-0600 file holding the provider API key; read at exec time, never in the store. Null for keyless local providers.";
             };
           };
           defaultBankTemplate = lib.mkOption {
@@ -194,9 +204,17 @@
             export HINDSIGHT_API_DATABASE_URL="postgresql://hindsight:''${DB_PASSWORD}@127.0.0.1:${toString instance.dbPort}/hindsight"
             export HINDSIGHT_API_HOST=127.0.0.1
             export HINDSIGHT_API_PORT=${toString instance.apiPort}
-            export HINDSIGHT_API_LLM_PROVIDER=ollama
+            export HINDSIGHT_API_LLM_PROVIDER=${lib.escapeShellArg instance.llm.provider}
             export HINDSIGHT_API_LLM_MODEL=${lib.escapeShellArg instance.llm.model}
             export HINDSIGHT_API_LLM_BASE_URL=${lib.escapeShellArg instance.llm.baseUrl}
+            ${lib.optionalString (instance.llm.apiKeyFile != null) ''
+              if [ ! -s "${instance.llm.apiKeyFile}" ]; then
+                echo "hindsight-${name}: missing LLM api key at ${instance.llm.apiKeyFile}" >&2
+                exit 1
+              fi
+              HINDSIGHT_API_LLM_API_KEY=$(/bin/cat "${instance.llm.apiKeyFile}")
+              export HINDSIGHT_API_LLM_API_KEY
+            ''}
             export HINDSIGHT_API_TENANT_EXTENSION=hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension
             export HINDSIGHT_API_TENANT_API_KEY="''${API_BEARER}"
             export HINDSIGHT_API_MCP_AUTH_TOKEN="''${API_BEARER}"
