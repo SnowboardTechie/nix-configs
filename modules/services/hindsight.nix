@@ -144,11 +144,12 @@
           npmBin = "${config.homebrew.prefix}/bin/npm";
           logPrefix = "/tmp/hindsight-${name}";
 
-          # Control Plane 0.9.1's next-intl middleware combines Tailscale
-          # Serve's X-Forwarded-Proto=https with its internal localhost URL,
-          # then tries to proxy its locale rewrite to https://localhost even
-          # though the listener is plain HTTP. Normalize only the upstream
-          # request headers; the user-facing Tailscale endpoint remains HTTPS.
+          # Control Plane 0.9.1's next-intl middleware only handles locale
+          # rewrites when the server hostname is the literal "localhost".
+          # On macOS that binds IPv6 loopback. Caddy keeps a stable IPv4
+          # loopback target for Tailscale Serve, dials ::1, and normalizes the
+          # forwarded protocol so the plain-HTTP internal rewrite stays HTTP.
+          # The user-facing Tailscale endpoint remains HTTPS.
           controlPlaneProxyConfig = pkgs.writeText "hindsight-${name}-tailscale-proxy.json" (builtins.toJSON {
             admin.disabled = true;
             apps.http.servers.hindsight = {
@@ -160,10 +161,10 @@
                     {
                       handler = "reverse_proxy";
                       headers.request.set = {
-                        Host = [ "127.0.0.1:${toString instance.controlPlanePort}" ];
+                        Host = [ "localhost:${toString instance.controlPlanePort}" ];
                         "X-Forwarded-Proto" = [ "http" ];
                       };
-                      upstreams = [{ dial = "127.0.0.1:${toString instance.controlPlanePort}"; }];
+                      upstreams = [{ dial = "[::1]:${toString instance.controlPlanePort}"; }];
                     }
                   ];
                 }
@@ -279,7 +280,10 @@
               (cd ${lib.escapeShellArg cpEnv} && "${npmBin}" ci --ignore-scripts --no-audit --no-fund)
               printf '%s' "$LOCK_HASH" > "$STAMP"
             fi
-            export HOSTNAME=127.0.0.1
+            # The literal localhost hostname is required by the packaged
+            # next-intl middleware for internal locale rewrites. On macOS it
+            # remains loopback-only and binds ::1.
+            export HOSTNAME=localhost
             export PORT=${toString instance.controlPlanePort}
             export HINDSIGHT_CP_DATAPLANE_API_URL="http://127.0.0.1:${toString instance.apiPort}"
             HINDSIGHT_CP_DATAPLANE_API_KEY=$(/bin/cat "${secrets}/api-bearer")
@@ -287,7 +291,7 @@
             HINDSIGHT_CP_ACCESS_KEY=$(/bin/cat "${secrets}/cp-access-key")
             export HINDSIGHT_CP_ACCESS_KEY
             exec "${cpEnv}/node_modules/.bin/hindsight-control-plane" \
-              --hostname 127.0.0.1 --port ${toString instance.controlPlanePort}
+              --hostname localhost --port ${toString instance.controlPlanePort}
           '';
 
           # Six-hourly age-encrypted logical backups with tiered retention:
