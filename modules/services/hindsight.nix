@@ -114,6 +114,11 @@
               default = 9444;
               description = "Tailnet-only HTTPS port for the Control Plane.";
             };
+            controlPlaneProxyPort = lib.mkOption {
+              type = lib.types.port;
+              default = 9998;
+              description = "Loopback normalization proxy for the Control Plane behind Tailscale Serve.";
+            };
           };
           backups = {
             ageRecipient = lib.mkOption {
@@ -138,6 +143,33 @@
           uvBin = "${config.homebrew.prefix}/bin/uv";
           npmBin = "${config.homebrew.prefix}/bin/npm";
           logPrefix = "/tmp/hindsight-${name}";
+
+          # Control Plane 0.9.1's next-intl middleware combines Tailscale
+          # Serve's X-Forwarded-Proto=https with its internal localhost URL,
+          # then tries to proxy its locale rewrite to https://localhost even
+          # though the listener is plain HTTP. Normalize only the upstream
+          # request headers; the user-facing Tailscale endpoint remains HTTPS.
+          controlPlaneProxyConfig = pkgs.writeText "hindsight-${name}-tailscale-proxy.json" (builtins.toJSON {
+            admin.disabled = true;
+            apps.http.servers.hindsight = {
+              listen = [ "127.0.0.1:${toString instance.tailscale.controlPlaneProxyPort}" ];
+              automatic_https.disable = true;
+              routes = [
+                {
+                  handle = [
+                    {
+                      handler = "reverse_proxy";
+                      headers.request.set = {
+                        Host = [ "127.0.0.1:${toString instance.controlPlanePort}" ];
+                        "X-Forwarded-Proto" = [ "http" ];
+                      };
+                      upstreams = [{ dial = "127.0.0.1:${toString instance.controlPlanePort}"; }];
+                    }
+                  ];
+                }
+              ];
+            };
+          });
 
           baseEnvironment = {
             HOME = instance.homeDirectory;
@@ -414,6 +446,26 @@
                 ProcessType = "Background";
               };
             };
+          } // lib.optionalAttrs instance.tailscale.enable {
+            "hindsight-${name}-tailscale-proxy" = {
+              serviceConfig = {
+                Label = "org.nixos.hindsight-${name}-tailscale-proxy";
+                ProgramArguments = [
+                  "${pkgs.caddy}/bin/caddy"
+                  "run"
+                  "--config"
+                  "${controlPlaneProxyConfig}"
+                ];
+                RunAtLoad = true;
+                KeepAlive = true;
+                WorkingDirectory = instance.homeDirectory;
+                EnvironmentVariables = baseEnvironment;
+                StandardOutPath = "${logPrefix}-tailscale-proxy.log";
+                StandardErrorPath = "${logPrefix}-tailscale-proxy.error.log";
+                ProcessType = "Background";
+                ThrottleInterval = 10;
+              };
+            };
           };
           packages = [ backupNow ];
           activation = ''
@@ -439,7 +491,7 @@
                 ${config.services.tailscale.package}/bin/tailscale serve \
                   --bg --yes \
                   --https=${toString instance.tailscale.controlPlaneHttpsPort} \
-                  http://127.0.0.1:${toString instance.controlPlanePort}; then
+                  http://127.0.0.1:${toString instance.tailscale.controlPlaneProxyPort}; then
                 echo "Failed to configure Tailscale Serve for Hindsight Control Plane on port ${toString instance.tailscale.controlPlaneHttpsPort}" >&2
                 exit 1
               fi
@@ -449,7 +501,9 @@
 
       pieces = lib.mapAttrsToList instancePieces enabledInstances;
       allPorts = lib.flatten (lib.mapAttrsToList
-        (_: i: [ i.apiPort i.controlPlanePort i.dbPort ])
+        (_: i:
+          [ i.apiPort i.controlPlanePort i.dbPort ]
+          ++ lib.optional i.tailscale.enable i.tailscale.controlPlaneProxyPort)
         enabledInstances);
     in
     {
