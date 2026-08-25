@@ -1,9 +1,0 @@
-{
-  "name": "Watch Hermes Intel macOS release",
-  "schedule": "15 9 * * *",
-  "repeat": "forever",
-  "deliver": "matrix",
-  "script": "check-hermes-intel-release.py",
-  "no_agent": true,
-  "workdir": "/Users/bryan/code/nix-configs"
-}

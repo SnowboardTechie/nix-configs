@@ -4,7 +4,7 @@
 
 ## Overview
 
-Declarative system configs for 4 macOS hosts (nix-darwin) + 1 NixOS desktop. Uses **flake-parts** + **import-tree** for automatic module discovery.
+Declarative system configs for 3 macOS hosts (nix-darwin) + 1 NixOS desktop. Uses **flake-parts** + **import-tree** for automatic module discovery.
 
 ### Dendritic Architecture
 
@@ -36,7 +36,7 @@ nix-configs/
 │   ├── dev/               # Dev tools: cli-tools, editors, git
 │   ├── desktop/           # NixOS-only: gnome, gaming, audio
 │   ├── services/          # Daemons: ollama, open-webui, monitoring, smb-mount, syncthing, icloud-backup
-│   ├── hosts/             # Host compositions: a6mbp, mbp, studio, gnarbox, inix
+│   ├── hosts/             # Host compositions: a6mbp, mbp, studio, gnarbox
 │   └── dev-envs/          # VA project shells (see dev-envs/AGENTS.md)
 ├── overlays/              # Single overlay: nixpkgs-unstable → pkgs.unstable
 └── hardware-configs/      # Auto-generated NixOS hardware config
@@ -88,7 +88,7 @@ Is this a host-specific setting (only one host needs it)?
 
 ```bash
 # macOS
-darwin-rebuild switch --flake '.#mbp'     # or a6mbp, studio, inix
+darwin-rebuild switch --flake '.#mbp'     # or a6mbp, studio
 # NixOS
 sudo nixos-rebuild switch --flake '.#gnarbox'
 # Validate
@@ -167,7 +167,7 @@ README.md is kept **high-level** — it describes architecture and host purposes
 | Change | README Section |
 |--------|----------------|
 | Service module in `modules/services/` | Architecture tree + host sections |
-| Host packages in `modules/hosts/*.nix` | Host section (mbp, a6mbp, studio, gnarbox, inix) |
+| Host packages in `modules/hosts/*.nix` | Host section (mbp, a6mbp, studio, gnarbox) |
 | Dev-env versions in `modules/dev-envs/*.nix` | "Development Environments" |
 
 Verify with:
@@ -179,7 +179,7 @@ grep -E "services\." modules/hosts/*.nix
 
 - `_options.nix` must exist — declares the `flake.modules` option type that import-tree merges into
 - gnarbox hardware config lives outside `modules/` because import-tree can't handle `modulesPath`
-- inix is the only Intel Mac (`x86_64-darwin`) — Homebrew prefix is `/usr/local`, not `/opt/homebrew`. Darwin services that reference Homebrew binaries should use `${config.homebrew.prefix}/bin/{tool}` (see `services/syncthing.nix`) rather than hardcoding the aarch64 path
+- Darwin services that reference Homebrew binaries should use `${config.homebrew.prefix}/bin/{tool}` (see `services/syncthing.nix`) rather than hardcoding the Homebrew prefix
 - Darwin services require the tool installed via Homebrew first (Nix packages alone aren't enough for launchd)
 - NixOS stubs exist in service modules (`# TODO: Implement NixOS equivalent`) — these are intentional placeholders
 - 3 git remotes: primary on git.snowboardtechie.com, mirrors on Codeberg and GitHub

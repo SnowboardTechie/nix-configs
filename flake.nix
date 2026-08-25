@@ -47,7 +47,7 @@
       (inputs.import-tree ./modules)
     ];
 
-    systems = [ "aarch64-darwin" "x86_64-darwin" "x86_64-linux" ];
+    systems = [ "aarch64-darwin" "x86_64-linux" ];
 
     flake = {
       # Export overlays for use in system configurations
@@ -69,11 +69,6 @@
           system = "aarch64-darwin";
           specialArgs = { inherit inputs; };
           modules = [ inputs.self.modules.darwin.studio ];
-        };
-        inix = inputs.nix-darwin.lib.darwinSystem {
-          system = "x86_64-darwin";
-          specialArgs = { inherit inputs; };
-          modules = [ inputs.self.modules.darwin.inix ];
         };
       };
 

@@ -23,14 +23,11 @@
       "git-lfs"
       "gnupg"
       "googleworkspace-cli"
-      # herdr: no x86_64-darwin bottle upstream, so inix builds it from source
       "herdr"
       "jq"
       "just"
       "lazydocker"
       "libpq"
-      # marksman: delivered via nixpkgs because Homebrew has no x86_64-darwin bottle
-      # (formula only provides ARM macOS bottles); building from source needs dotnet@9.
       "ncurses"
       "node" # Includes npm for Pi and npx for MCP extensions
       "opencode"
@@ -47,20 +44,20 @@
       "zoxide"
     ];
 
-    # Pi has no Homebrew package, and its nixpkgs package excludes Intel macOS.
+    # Pi has no Homebrew package.
     system.activationScripts.extraActivation.text = lib.mkAfter ''
       echo "Installing Pi coding agent..."
       /usr/bin/su - ${config.system.primaryUser} -c \
         '${config.homebrew.prefix}/bin/npm install -g --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent'
     '';
 
-    # Nix-only packages (no homebrew equivalent, or no x86_64-darwin bottle)
+    # Nix-only packages
     environment.systemPackages = with pkgs; [
       alacritty
       bun
       fd
       htop
-      marksman # Homebrew has no x86_64-darwin bottle; nixpkgs supports all four platforms
+      marksman
       nix-direnv
       nixd
       ripgrep

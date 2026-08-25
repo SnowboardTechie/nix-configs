@@ -12,7 +12,7 @@ modules/
 ├── dev/        # Development: cli-tools, editors, git
 ├── desktop/    # GUI: gnome, gaming, audio (NixOS)
 ├── services/   # Daemons/agents: Hermes, Hindsight, ollama, open-webui, monitoring, SMB, syncthing, iCloud backup
-├── hosts/      # Host-specific: a6mbp, gnarbox, inix, mbp, studio (mbp/a6mbp/studio/inix darwin, gnarbox NixOS)
+├── hosts/      # Host-specific: a6mbp, gnarbox, mbp, studio (mbp/a6mbp/studio darwin, gnarbox NixOS)
 └── dev-envs/   # VA project environments
 ```
 
@@ -38,11 +38,6 @@ Traci's isolated headless backend runs under her macOS account and is available 
 Studio also hosts the self-hosted [Hindsight](https://github.com/vectorize-io/hindsight) shared agent-memory service (bryan instance): dedicated PostgreSQL 17 + pgvector, a uv-locked API on loopback `8888`, and an npm-locked Control Plane on IPv6 loopback `9999`. The API is exposed tailnet-only at `https://bryans-mac-studio.tail5ba690.ts.net:9443` (bearer-authenticated); the key-authenticated Control Plane is exposed at `:9444` through an IPv4 loopback compatibility proxy on `9998` that preserves working locale rewrites behind Tailscale Serve. All extraction/consolidation runs through local Ollama. Six-hourly age-encrypted logical backups with tiered retention (48h/14d/4w + pre-upgrade) live under `~/.local/state/hindsight-bryan/backups/`, with a monthly disposable restore test; `hindsight-bryan-backup-now pre-upgrade` takes the mandatory pre-upgrade snapshot. Versions are pinned by `modules/services/hindsight-env/` lock files; `scripts/check-hindsight-releases.py` is the daily read-only Hermes release watch (register with `hermes cron add`, no-agent mode, workdir this repo). Secrets live in `~/.secrets/hindsight-bryan/` and never enter the store.
 **Location:** [`modules/hosts/studio.nix`](modules/hosts/studio.nix)
 
-### iNix (Intel macOS)
-
-Garage and shop machine for reading manuals, project plans, and occasional remote work. Runs on a 2017 iMac Pro (Intel Xeon W) with macOS + nix-darwin. Includes syncthing, Tailscale, and Superwhisper dictation. Until the official Hermes DMG includes an Intel slice, `inix` provides a pinned local-build installer for the native Desktop app, which connects to Studio's remote backend over Tailscale. The browser dashboard remains available as a fallback.
-**Location:** [`modules/hosts/inix.nix`](modules/hosts/inix.nix)
-
 ### gnarbox (NixOS desktop)
 
 NixOS desktop with GNOME, gaming (Steam + Proton GE), PipeWire audio, Tailscale, and a Studio-backed Hermes client. Uses the unstable overlay for select packages.
@@ -66,12 +61,6 @@ Feature modules own both platform aspects: darwin uses `homebrew.brews`/`homebre
 
 ```bash
 curl -fsSL https://install.determinate.systems/nix | sh -s -- install --determinate
-```
-
-**Intel Mac (`inix`):** Determinate Systems lists `x86_64-darwin` as unsupported. Use the official upstream Nix installer instead (multi-user is the default on macOS):
-
-```bash
-curl -L https://nixos.org/nix/install | sh
 ```
 
 **All macOS hosts also need Homebrew installed first.** nix-darwin's `homebrew` module manages your Brewfile; it does not install Homebrew itself. If `brew` isn't already on the machine:
@@ -107,27 +96,6 @@ Subsequent rebuilds:
 darwin-rebuild switch --flake '.#mbp'
 ```
 
-**macOS — Intel (`inix`):**
-
-The upstream Nix installer doesn't enable flakes by default, and `modules/base/nix-settings.nix` keeps `nix.enable = false` on darwin (defers Nix config to Determinate, which inix doesn't have). Enable flakes system-wide in `/etc/nix/nix.conf` so both your user and `sudo` invocations see them:
-
-```bash
-echo "experimental-features = nix-command flakes" | sudo tee -a /etc/nix/nix.conf
-```
-
-Bootstrap nix-darwin (this is the step that creates the `darwin-rebuild` command):
-
-```bash
-cd ~/code/nix-configs
-sudo nix run nix-darwin/master#darwin-rebuild -- switch --flake '.#inix'
-```
-
-Open a new shell, then subsequent rebuilds:
-
-```bash
-sudo darwin-rebuild switch --flake '.#inix'
-```
-
 **NixOS** (first build requires experimental features flag):
 
 ```bash
@@ -135,27 +103,6 @@ sudo nixos-rebuild switch --flake '.#gnarbox' --extra-experimental-features 'nix
 ```
 
 ## Usage
-
-### Temporary Intel Hermes Desktop workaround
-
-After rebuilding `inix`, run `install-hermes-intel-desktop` as the normal user. It builds the pinned, upstream-verified Hermes Desktop source under `~/Library/Caches/hermes-intel-desktop`, validates its Intel-native binaries, ad-hoc signs it, and installs the user-managed app at `~/Applications/Hermes.app`. In the app, use **Settings → Gateway → Remote gateway** to connect to Studio at `https://bryans-mac-studio.tail5ba690.ts.net` and sign in normally. The installer does not store the URL or credentials.
-
-This is temporary until the official public `Hermes-Setup.dmg` contains an `x86_64` slice. The tracked script-only watchdog in [`scripts/check-hermes-intel-release.py`](scripts/check-hermes-intel-release.py) checks the upstream PR and official artifact daily. It is silent while pending and sends one Matrix notification only after both the PR and published installer pass their gates. It never installs or removes software.
-
-**Workaround rollback before an official release:**
-
-1. Quit Hermes on `inix`.
-2. Move `~/Applications/Hermes.rollback.app` back only if the new local build fails.
-3. Keep Studio's dashboard and Tailscale configuration unchanged.
-4. Do not delete the build cache until the rollback app has launched successfully.
-
-**Migration after the verified Matrix notification:**
-
-1. Download the exact installer URL named in the notification.
-2. Install and launch the official app, reconnect it to Studio, run a real chat, then fully quit and relaunch to verify saved authentication.
-3. Obtain Bryan's item-level approval before deleting the locally built app, rollback copy, build cache, installer script, or cron job.
-4. List Hermes cron jobs and remove the live watchdog only by its actual runtime job ID.
-5. Remove the tracked installer/watchdog files and the `inix` package declaration in a focused commit, rebuild `inix`, run `nix flake check`, and verify the official app still works.
 
 ### Inkling-Small release watchdog
 
@@ -219,7 +166,7 @@ Development environment definitions are located in `modules/dev-envs/`.
 
 ## OpenCode
 
-The OpenCode CLI is installed via Homebrew (`opencode`) on darwin systems and via nixpkgs on NixOS. The OpenCode desktop app (`opencode-desktop` cask) is installed on `mbp` and `inix`.
+The OpenCode CLI is installed via Homebrew (`opencode`) on darwin systems and via nixpkgs on NixOS. The OpenCode desktop app (`opencode-desktop` cask) is installed on `mbp`.
 
 **Authentication:**
 
