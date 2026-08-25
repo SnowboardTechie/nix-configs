@@ -50,6 +50,7 @@
       enable = true;
       contextLength = 65536;
       numParallel = 1;
+      tailscaleServe = true;
     };
     services.open-webui.enable = true;
     services.monitoring.enable = true;
@@ -172,7 +173,6 @@
         "grafana"
         "libomp" # Colibri Metal/OpenMP build dependency for isolated GLM-5.2 retests
         "loki"
-        "node" # Includes npm and npx for MCP extensions
         "node_exporter"
         "ollama"
 

@@ -84,7 +84,7 @@ but does not execute.
 
 | Service | Port(s) | Binary | Scheduling | Notes |
 |---------|---------|--------|------------|-------|
-| ollama | 11434 | `/opt/homebrew/bin/ollama` | Always-on | Flash attention, q8_0 KV cache. Auto-restarts on rebuild to pick up brew upgrades. |
+| ollama | 11434 | `/opt/homebrew/bin/ollama` | Always-on | Flash attention, q8_0 KV cache. Auto-restarts on rebuild to pick up brew upgrades. Studio forwards the loopback listener tailnet-only through Tailscale Serve. |
 | open-webui | 8080 | uv tool venv `~/.local/bin/open-webui` | Always-on + daily updater | Installed via `uv tool install`. Updater has an import probe — refuses to kickstart a broken install. |
 | monitoring | 9090, 9093, 9100, 3000, 3100, 12345, 9115 | prometheus, alertmanager, node_exporter, grafana, loki, alloy, blackbox_exporter | Always-on | Binds 0.0.0.0 (except Alertmanager — loopback-only, its silence API is unauthenticated); 7 agents; SMTP via smtp2go; alertmanager + blackbox_exporter via nixpkgs derivations; alloy replaced promtail (EOL March 2026). Alerts: Prometheus → Alertmanager → email. |
 | syncthing | 8384, 22000 | `/opt/homebrew/bin/syncthing` | Always-on | NixOS uses native module directly |
