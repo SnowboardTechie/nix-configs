@@ -261,6 +261,22 @@
         "type": "github"
       }
     },
+    "obsidian-headless-nixpkgs": {
+      "locked": {
+        "lastModified": 1785426923,
+        "narHash": "sha256-5hkKrPrPPL0M5Jp7gTPxf0EVOLeGvNPymxID5gcqhdw=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "39f82096d8d8dd504daa48311015f4664bd38418",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "39f82096d8d8dd504daa48311015f4664bd38418",
+        "type": "github"
+      }
+    },
     "pyproject-build-systems": {
       "inputs": {
         "nixpkgs": [
@@ -320,6 +336,7 @@
         "nix-darwin": "nix-darwin",
         "nixpkgs": "nixpkgs_2",
         "nixpkgs-unstable": "nixpkgs-unstable",
+        "obsidian-headless-nixpkgs": "obsidian-headless-nixpkgs",
         "worktrunk": "worktrunk",
         "zen-browser": "zen-browser"
       }

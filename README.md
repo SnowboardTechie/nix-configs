@@ -11,7 +11,7 @@ modules/
 ├── base/       # Core system: fonts, homebrew, nix-settings, zsh
 ├── dev/        # Development: cli-tools, editors, git
 ├── desktop/    # GUI: gnome, gaming, audio (NixOS)
-├── services/   # Daemons/agents: Hermes, Hindsight, ollama, open-webui, monitoring, SMB, syncthing, iCloud backup
+├── services/   # Daemons/agents: Hermes, Hindsight, Obsidian Sync/backup, ollama, monitoring, SMB, syncthing
 ├── hosts/      # Host-specific: a6mbp, gnarbox, mbp, studio (mbp/a6mbp/studio darwin, gnarbox NixOS)
 └── dev-envs/   # VA project environments
 ```
@@ -22,7 +22,7 @@ Each host imports and composes feature modules. See [modules/README.md](modules/
 
 ### mbp (personal macOS)
 
-Personal MacBook Pro with syncthing, Tailscale, a Studio-backed Hermes client, and personal apps (gaming, messaging, document tools).
+Personal MacBook Pro with syncthing, Tailscale, a Studio-backed Hermes client, Obsidian Headless Sync for the active `/Users/bryan/second-brain` vault, and personal apps (gaming, messaging, document tools). MBP is a Sync replica and must not automatically commit, pull, or push this vault.
 **Location:** [`modules/hosts/mbp.nix`](modules/hosts/mbp.nix)
 
 ### a6mbp (work macOS)
@@ -36,6 +36,8 @@ Media server Mac running the primary Hermes gateway and per-user Tailscale-only 
 Traci's isolated headless backend runs under her macOS account and is available at `https://bryans-mac-studio.tail5ba690.ts.net:9120` through Tailscale Serve.
 
 Studio also hosts the self-hosted [Hindsight](https://github.com/vectorize-io/hindsight) shared agent-memory service (bryan instance): dedicated PostgreSQL 17 + pgvector, a uv-locked API on loopback `8888`, and an npm-locked Control Plane on IPv6 loopback `9999`. The API is exposed tailnet-only at `https://bryans-mac-studio.tail5ba690.ts.net:9443` (bearer-authenticated); the key-authenticated Control Plane is exposed at `:9444` through an IPv4 loopback compatibility proxy on `9998` that preserves working locale rewrites behind Tailscale Serve. All extraction/consolidation runs through local Ollama. Six-hourly age-encrypted logical backups with tiered retention (48h/14d/4w + pre-upgrade) live under `~/.local/state/hindsight-bryan/backups/`, with a monthly disposable restore test; `hindsight-bryan-backup-now pre-upgrade` takes the mandatory pre-upgrade snapshot. Versions are pinned by `modules/services/hindsight-env/` lock files; `scripts/check-hindsight-releases.py` is the daily read-only Hermes release watch (register with `hermes cron add`, no-agent mode, workdir this repo). Secrets live in `~/.secrets/hindsight-bryan/` and never enter the store.
+
+Studio and MBP use Obsidian Headless for live synchronization of `/Users/bryan/second-brain`. Separately, Studio is the sole Git writer and takes a conservative snapshot nightly at 03:00 local time before pushing normally to the existing `origin/main`. The Git job refuses divergent history, staged work, in-progress operations, or an existing backup lock; it never pulls or rewrites history.
 **Location:** [`modules/hosts/studio.nix`](modules/hosts/studio.nix)
 
 ### gnarbox (NixOS desktop)
@@ -103,6 +105,33 @@ sudo nixos-rebuild switch --flake '.#gnarbox' --extra-experimental-features 'nix
 ```
 
 ## Usage
+
+### Obsidian Headless migration
+
+Live Obsidian synchronization and nightly Git backup are independent. Headless Sync runs on Studio and MBP; only Studio performs the Git backup. Do not use the stale Syncthing copy at `/Users/bryan/notes/second-brain`. Phone Sync remains enabled. The Mac Headless clients exclude the `core-plugin` category so the phone's enabled state and each Mac's disabled desktop state remain device-specific.
+
+Perform these steps on one host at a time. Start with Studio, verify it fully, and then repeat on MBP:
+
+1. In desktop Obsidian, open `/Users/bryan/second-brain`, disable the core **Sync** plugin, and quit Obsidian. Disable automatic commit, pull, and push actions in the Obsidian Git community plugin as well. Desktop Obsidian may be reopened after Headless Sync is healthy, but its Sync plugin must remain off.
+2. Verify `.obsidian/core-plugins.json` contains `"sync": false`. Do not continue while it is `true`.
+3. Apply the host configuration only after step 2: `darwin-rebuild switch --flake '~/code/nix-configs#studio'` on Studio or `darwin-rebuild switch --flake '~/code/nix-configs#mbp'` on MBP. The managed job waits without a crash loop while interactive setup is incomplete.
+4. Log in without command-line credentials: `ob login`.
+5. List existing remote vaults: `ob sync-list-remote`. Select the existing remote vault; do not run `ob sync-create-remote`.
+6. Connect the existing local vault, allowing any E2E password to be prompted interactively: `ob sync-setup --vault "<existing-vault-name-or-id>" --path /Users/bryan/second-brain --device-name studio` on Studio, or use `--device-name mbp` on MBP. Do not use `--password`, reset history, or create a replacement remote.
+7. Keep core-plugin activation state device-specific: `ob sync-config --path /Users/bryan/second-brain --configs "app,appearance,appearance-data,hotkey,core-plugin-data"`. Omitting `core-plugin` prevents the phone's enabled Sync state from overwriting the disabled Mac state, and prevents the Mac state from disabling Sync on the phone.
+8. Verify configuration with `ob sync-status --path /Users/bryan/second-brain`; its `Configs` line must list `core-plugin-data` but must not list a standalone `core-plugin` entry.
+9. Start the configured managed process immediately: `launchctl kickstart -k gui/$(id -u)/md.obsidian.headless-sync`.
+10. Inspect `/tmp/obsidian-headless.log` and `/tmp/obsidian-headless.error.log`, then rerun `ob sync-status --path /Users/bryan/second-brain` and verify `.obsidian/core-plugins.json` still contains `"sync": false` before reopening desktop Obsidian.
+
+Before Studio's first scheduled Git snapshot, review exactly which untracked, non-ignored files it would include:
+
+```bash
+git -C /Users/bryan/second-brain ls-files --others --exclude-standard
+```
+
+The nightly job logs to `/tmp/vault-git-backup.log` and `/tmp/vault-git-backup.error.log`. Any nonzero result requires manual investigation; do not respond by pulling, rebasing, resetting, or force-pushing automatically. MBP's `.git` directory remains untouched, but no agent or plugin on MBP may commit, pull, or push this vault.
+
+Follow-up outside this repository: update `/Users/bryan/second-brain/AGENTS.md` so agents treat Studio as the sole Git writer, do not commit or push from MBP, and regard the nightly Studio snapshot as the fallback for uncommitted vault edits. That policy change belongs in the `second-brain` repository and is intentionally not part of this `nix-configs` change.
 
 ### Inkling-Small release watchdog
 

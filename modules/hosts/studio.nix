@@ -1,7 +1,7 @@
 # Host configuration: studio (Media Server Mac)
 #
 # Features: fonts, nix-settings, zsh, homebrew, editors, git, cli-tools
-# Services: Hermes, ollama, open-webui, monitoring, smb-mount, syncthing, iCloud backup
+# Services: Hermes, ollama, open-webui, monitoring, smb-mount, syncthing, Obsidian Sync, vault backup, iCloud backup
 # Host-specific: Media server tools (cloudflared, etc.)
 { inputs, ... }:
 {
@@ -25,6 +25,8 @@
       icloud-backup
       hermes
       hindsight
+      obsidian-headless
+      vault-git-backup
     ];
 
     # === Core System Settings ===
@@ -56,6 +58,14 @@
     services.monitoring.enable = true;
     services.smb-mount.enable = true;
     services.syncthing.enable = true;
+    services.obsidian-headless = {
+      enable = true;
+      vaultPath = "/Users/bryan/second-brain";
+    };
+    services.vault-git-backup = {
+      enable = true;
+      vaultPath = "/Users/bryan/second-brain";
+    };
     services.tailscale.enable = true;
     services.icloud-backup.enable = true;
     services.hermes = {

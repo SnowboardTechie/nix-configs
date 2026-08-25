@@ -7,6 +7,10 @@
     # Unstable packages for overlays
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
 
+    # Package-only pin. The fleet nixpkgs revision predates obsidian-headless,
+    # while advancing all packages introduces unrelated service regressions.
+    obsidian-headless-nixpkgs.url = "github:NixOS/nixpkgs/39f82096d8d8dd504daa48311015f4664bd38418";
+
     nix-darwin = {
       url = "github:LnL7/nix-darwin";
       inputs.nixpkgs.follows = "nixpkgs";
