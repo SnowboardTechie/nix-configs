@@ -39,7 +39,6 @@
       "shellcheck"
       "stow"
       "tlrc"
-      "tmux"
       "worktrunk"
       "zoxide"
     ];
@@ -113,7 +112,6 @@
       stow
       tea
       tlrc
-      tmux
       tree
       ttyper
       vacuum-go
