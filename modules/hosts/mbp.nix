@@ -57,7 +57,6 @@
       brews = [
         "exercism"
         "libfido2" # FIDO2/U2F tools
-        "node" # Includes npm and npx for MCP extensions
         "pandoc" # For converting documents
         "texlive" # For converting MD to PDF
         "pinentry-mac" # GPG pinentry for macOS

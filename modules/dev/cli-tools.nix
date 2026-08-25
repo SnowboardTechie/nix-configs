@@ -5,7 +5,7 @@
 { inputs, ... }:
 {
   # Darwin aspect - hybrid delivery
-  flake.modules.darwin.cli-tools = { pkgs, ... }: {
+  flake.modules.darwin.cli-tools = { config, lib, pkgs, ... }: {
     # Homebrew casks for tools distributed as installer bundles
     homebrew.casks = [
       "gcloud-cli"
@@ -32,6 +32,7 @@
       # marksman: delivered via nixpkgs because Homebrew has no x86_64-darwin bottle
       # (formula only provides ARM macOS bottles); building from source needs dotnet@9.
       "ncurses"
+      "node" # Includes npm for Pi and npx for MCP extensions
       "opencode"
       "pinentry-mac"
       "pipx"
@@ -45,6 +46,13 @@
       "worktrunk"
       "zoxide"
     ];
+
+    # Pi has no Homebrew package, and its nixpkgs package excludes Intel macOS.
+    system.activationScripts.extraActivation.text = lib.mkAfter ''
+      echo "Installing Pi coding agent..."
+      /usr/bin/su - ${config.system.primaryUser} -c \
+        '${config.homebrew.prefix}/bin/npm install -g --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent'
+    '';
 
     # Nix-only packages (no homebrew equivalent, or no x86_64-darwin bottle)
     environment.systemPackages = with pkgs; [
