@@ -2,9 +2,9 @@
 #
 # The upstream Nix package makes the CLI/Desktop reproducible on all client
 # hosts. On macOS, Matrix is intentionally excluded from that package upstream,
-# so the primary Studio gateway/dashboard agents continue to use Hermes's
-# managed venv in ~/.hermes while nix-darwin owns their launchd definitions
-# and lifecycle. Additional headless users run the Nix-built package directly.
+# so Studio server processes use isolated per-user managed venvs while
+# nix-darwin owns their launchd definitions and lifecycle. The Nix package
+# remains the interactive client package, not a server runtime.
 # Desktop remote URL/token state remains in its per-user settings. Do not inject
 # only HERMES_DESKTOP_REMOTE_URL: that env path requires a paired token and
 # bypasses the client's already-saved authentication.
@@ -49,6 +49,25 @@
               type = lib.types.bool;
               default = true;
               description = "Restrict the user's home directory to mode 0700.";
+            };
+
+            runtimePython = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Python executable from this user's managed Hermes installation.";
+            };
+
+            autoUpdate = {
+              enable = lib.mkOption {
+                type = lib.types.bool;
+                default = false;
+                description = "Update this managed Hermes runtime with a guarded launchd job.";
+              };
+              calendar = lib.mkOption {
+                type = lib.types.attrsOf lib.types.int;
+                default = { Hour = 4; Minute = 0; };
+                description = "launchd StartCalendarInterval for managed Hermes updates.";
+              };
             };
 
             gateway.enable = lib.mkOption {
@@ -105,6 +124,10 @@
       enabledTailscaleServeInstances = lib.filterAttrs
         (_: instance: instance.serve.tailscale.enable)
         enabledHeadlessServeInstances;
+      enabledHeadlessUpdateInstances = lib.filterAttrs
+        (_: instance: instance.autoUpdate.enable)
+        enabledHeadlessInstances;
+      headlessUpdateLogDirectory = "/var/log/hermes-updates";
       primaryTailscaleServeEnabled = cfg.dashboard.enable && cfg.dashboard.tailscale.enable;
       localServePorts = lib.optional cfg.dashboard.enable cfg.dashboard.port
         ++ lib.mapAttrsToList (_: instance: instance.serve.port) enabledHeadlessServeInstances;
@@ -116,10 +139,17 @@
         ++ lib.mapAttrsToList
         (_: instance: instance.serve.tailscale.httpsPort)
         enabledTailscaleServeInstances;
+      headlessRuntimeVenv = instance: "${instance.homeDirectory}/.hermes/hermes-agent/venv";
+      headlessRuntimePython = instance:
+        if instance.runtimePython != null
+        then instance.runtimePython
+        else "${headlessRuntimeVenv instance}/bin/python";
       headlessEnvironment = instance: {
         HOME = instance.homeDirectory;
         HERMES_HOME = "${instance.homeDirectory}/.hermes";
+        VIRTUAL_ENV = headlessRuntimeVenv instance;
         PATH = lib.concatStringsSep ":" [
+          "${headlessRuntimeVenv instance}/bin"
           "${instance.homeDirectory}/.local/bin"
           "${cfg.package}/bin"
           "/run/current-system/sw/bin"
@@ -144,14 +174,242 @@
         ''
         "wait-for-nix-store"
       ] ++ programArguments;
+      waitForManagedProgram = programArguments: [
+        "/bin/sh"
+        "-c"
+        ''
+          attempts=0
+          while [ ! -x "$1" ] && [ "$attempts" -lt 120 ]; do
+            attempts=$((attempts + 1))
+            /bin/sleep 1
+          done
+          if [ ! -x "$1" ]; then
+            echo "Managed Hermes executable unavailable after 120 seconds: $1" >&2
+            exit 75
+          fi
+          exec "$@"
+        ''
+        "wait-for-managed-hermes"
+      ] ++ programArguments;
+      mkHermesUpdater =
+        { name
+        , user
+        , updaterHome
+        , updaterRuntimePython
+        , healthUrl
+        , supervisedServiceLabel ? null
+        }:
+        let
+          installDirectory = "${updaterHome}/.hermes/hermes-agent";
+          updaterPath = lib.concatStringsSep ":" [
+            "${installDirectory}/venv/bin"
+            "${updaterHome}/.local/bin"
+            "/run/current-system/sw/bin"
+            "${config.homebrew.prefix}/bin"
+            "/usr/bin"
+            "/bin"
+            "/usr/sbin"
+            "/sbin"
+          ];
+          servicePlist =
+            if supervisedServiceLabel != null
+            then "/Library/LaunchDaemons/${supervisedServiceLabel}.plist"
+            else "";
+        in
+        pkgs.writeShellScript "update-hermes-${name}" ''
+          set -eu
+
+          export HOME=${lib.escapeShellArg updaterHome}
+          export HERMES_HOME=${lib.escapeShellArg "${updaterHome}/.hermes"}
+          export PATH=${lib.escapeShellArg updaterPath}
+
+          as_user() {
+            if [ "$(/usr/bin/id -u)" -eq 0 ]; then
+              /usr/bin/sudo -u ${lib.escapeShellArg user} -H \
+                /usr/bin/env HOME="$HOME" HERMES_HOME="$HERMES_HOME" PATH="$PATH" "$@"
+            else
+              "$@"
+            fi
+          }
+
+          lock_dir="$HERMES_HOME/.auto-update-lock"
+          write_lock_pid() {
+            # Positional arguments expand in the child shell.
+            # shellcheck disable=SC2016
+            as_user /bin/sh -c \
+              'umask 077; printf "%s\n" "$1" > "$2/pid"' \
+              write-lock "$$" "$lock_dir"
+          }
+          if as_user /bin/mkdir "$lock_dir" 2>/dev/null; then
+            if ! write_lock_pid; then
+              as_user /bin/rmdir "$lock_dir" >/dev/null 2>&1 || true
+              echo "Could not record Hermes update lock for ${name}." >&2
+              exit 1
+            fi
+          else
+            if ! as_user /bin/test -d "$lock_dir"; then
+              echo "Could not create Hermes update lock for ${name}." >&2
+              exit 1
+            fi
+            lock_pid=$(as_user /bin/cat "$lock_dir/pid" 2>/dev/null || true)
+            lock_mtime=$(as_user /usr/bin/stat -f %m "$lock_dir" 2>/dev/null || true)
+            now=$(/bin/date +%s)
+            lock_active=0
+            case "$lock_pid:$lock_mtime" in
+              *[!0-9:]* | :* | *:)
+                ;;
+              *)
+                if [ $((now - lock_mtime)) -le 21600 ] \
+                  && /bin/kill -0 "$lock_pid" 2>/dev/null; then
+                  lock_active=1
+                fi
+                ;;
+            esac
+            if [ "$lock_active" -eq 1 ]; then
+              echo "Hermes update already running for ${name}; skipping."
+              exit 0
+            fi
+            if ! as_user /bin/rm -f "$lock_dir/pid" \
+              || ! as_user /bin/rmdir "$lock_dir" \
+              || ! as_user /bin/mkdir "$lock_dir" \
+              || ! write_lock_pid; then
+              echo "Could not recover stale Hermes update lock for ${name}." >&2
+              exit 1
+            fi
+            echo "Recovered stale Hermes update lock for ${name}."
+          fi
+
+          ${lib.optionalString (supervisedServiceLabel != null) "service_stopped=0"}
+          cleanup() {
+            ${lib.optionalString (supervisedServiceLabel != null) ''
+              if [ "$service_stopped" -eq 1 ]; then
+                /bin/launchctl bootstrap system ${lib.escapeShellArg servicePlist} >/dev/null 2>&1 || true
+              fi
+            ''}
+            lock_pid=$(as_user /bin/cat "$lock_dir/pid" 2>/dev/null || true)
+            if [ "$lock_pid" = "$$" ]; then
+              as_user /bin/rm -f "$lock_dir/pid" >/dev/null 2>&1 || true
+              as_user /bin/rmdir "$lock_dir" >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup EXIT HUP INT TERM
+
+          if [ ! -x ${lib.escapeShellArg updaterRuntimePython} ]; then
+            echo "Managed Hermes runtime is missing for ${name}: ${updaterRuntimePython}" >&2
+            exit 1
+          fi
+          if [ ! -d ${lib.escapeShellArg "${installDirectory}/.git"} ]; then
+            echo "Managed Hermes checkout is missing for ${name}: ${installDirectory}" >&2
+            exit 1
+          fi
+
+          branch=$(as_user ${pkgs.git}/bin/git -C ${lib.escapeShellArg installDirectory} branch --show-current)
+          if [ "$branch" != main ]; then
+            echo "Refusing to update ${name}: checkout is on branch '$branch', not main." >&2
+            exit 1
+          fi
+          if [ -n "$(as_user ${pkgs.git}/bin/git -C ${lib.escapeShellArg installDirectory} status --porcelain)" ]; then
+            echo "Refusing to update ${name}: managed checkout is dirty." >&2
+            exit 1
+          fi
+
+          # The supported check fetches the target branch and records the
+          # updater's own read-only assessment before we inspect divergence.
+          as_user ${lib.escapeShellArg updaterRuntimePython} -m hermes_cli.main update --check
+          counts=$(as_user ${pkgs.git}/bin/git -C ${lib.escapeShellArg installDirectory} rev-list --left-right --count HEAD...origin/main)
+          ahead="''${counts%%[[:space:]]*}"
+          behind="''${counts##*[[:space:]]}"
+          if [ "$ahead" -ne 0 ]; then
+            echo "Refusing to update ${name}: checkout is $ahead commit(s) ahead of origin/main." >&2
+            exit 1
+          fi
+          if [ "$behind" -eq 0 ]; then
+            exit 0
+          fi
+
+          # Unlike the updater's best-effort internal snapshot, this explicit
+          # quick backup is a hard gate: no successful backup, no update.
+          backup_label="auto-update-$(/bin/date -u +%Y%m%dT%H%M%SZ)"
+          as_user ${lib.escapeShellArg updaterRuntimePython} - "$backup_label" <<'PY'
+          import sys
+          from hermes_cli.backup import create_quick_snapshot
+
+          snapshot_id = create_quick_snapshot(label=sys.argv[1])
+          if not snapshot_id:
+              raise SystemExit("Hermes pre-update state snapshot produced no backup")
+          print(f"Hermes pre-update state snapshot: {snapshot_id}")
+          PY
+
+          ${lib.optionalString (supervisedServiceLabel != null) ''
+            # A system LaunchDaemon would immediately respawn a stopped serve
+            # process during the code swap. Unload it first, then restore it on
+            # every exit path. The updater itself still runs as the instance user.
+            if /bin/launchctl print system/${lib.escapeShellArg supervisedServiceLabel} >/dev/null 2>&1; then
+              /bin/launchctl bootout system/${lib.escapeShellArg supervisedServiceLabel}
+            fi
+            service_stopped=1
+          ''}
+
+          as_user ${lib.escapeShellArg updaterRuntimePython} -m hermes_cli.main update --yes --no-backup --keep-stash
+
+          ${lib.optionalString (supervisedServiceLabel != null) ''
+            /bin/launchctl bootstrap system ${lib.escapeShellArg servicePlist}
+            service_stopped=0
+          ''}
+
+          if [ -n "$(as_user ${pkgs.git}/bin/git -C ${lib.escapeShellArg installDirectory} status --porcelain)" ]; then
+            echo "Hermes update left ${name}'s managed checkout dirty." >&2
+            exit 1
+          fi
+          counts=$(as_user ${pkgs.git}/bin/git -C ${lib.escapeShellArg installDirectory} rev-list --left-right --count HEAD...origin/main)
+          ahead="''${counts%%[[:space:]]*}"
+          behind="''${counts##*[[:space:]]}"
+          if [ "$ahead" -ne 0 ] || [ "$behind" -ne 0 ]; then
+            echo "Hermes update left ${name}'s checkout out of sync with origin/main." >&2
+            exit 1
+          fi
+
+          as_user ${lib.escapeShellArg updaterRuntimePython} - ${lib.escapeShellArg healthUrl} <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.request
+          from importlib.metadata import version
+
+          expected = version("hermes-agent")
+          url = sys.argv[1]
+          error = None
+          for _ in range(60):
+              try:
+                  with urllib.request.urlopen(url, timeout=5) as response:
+                      actual = str(json.load(response).get("version", ""))
+                  if actual == expected:
+                      print(f"Hermes backend healthy at {url} (v{actual})")
+                      raise SystemExit(0)
+                  error = f"running v{actual or 'unknown'}, expected v{expected}"
+              except Exception as exc:
+                  error = str(exc)
+              time.sleep(1)
+          raise SystemExit(f"Hermes backend verification failed at {url}: {error}")
+          PY
+        '';
+      primaryUpdater = mkHermesUpdater {
+        name = cfg.user;
+        user = cfg.user;
+        updaterHome = homeDirectory;
+        updaterRuntimePython = runtimePython;
+        healthUrl = "http://${cfg.dashboard.host}:${toString cfg.dashboard.port}/api/status";
+      };
       headlessServeDaemons = lib.mapAttrs'
         (name: instance:
           lib.nameValuePair "hermes-${name}-serve" {
             serviceConfig = {
               Label = "ai.hermes.serve-${name}";
               UserName = instance.user;
-              ProgramArguments = waitForNixStoreProgram [
-                "${cfg.package}/bin/hermes"
+              ProgramArguments = waitForManagedProgram [
+                (headlessRuntimePython instance)
+                "-m"
+                "hermes_cli.main"
                 "serve"
                 "--host"
                 instance.serve.host
@@ -176,11 +434,14 @@
             serviceConfig = {
               Label = "ai.hermes.gateway-${name}";
               UserName = instance.user;
-              ProgramArguments = waitForNixStoreProgram [
-                "${cfg.package}/bin/hermes"
+              ProgramArguments = waitForManagedProgram [
+                (headlessRuntimePython instance)
+                "-m"
+                "hermes_cli.main"
                 "gateway"
                 "run"
                 "--replace"
+                "--external-supervisor"
               ];
               RunAtLoad = true;
               KeepAlive = true;
@@ -236,6 +497,29 @@
             };
           })
         enabledTailscaleServeInstances;
+      headlessUpdateDaemons = lib.mapAttrs'
+        (name: instance:
+          let
+            updater = mkHermesUpdater {
+              inherit name;
+              user = instance.user;
+              updaterHome = instance.homeDirectory;
+              updaterRuntimePython = headlessRuntimePython instance;
+              healthUrl = "http://${instance.serve.host}:${toString instance.serve.port}/api/status";
+              supervisedServiceLabel = "ai.hermes.serve-${name}";
+            };
+          in
+          lib.nameValuePair "hermes-${name}-updater" {
+            serviceConfig = {
+              Label = "ai.hermes.update-${name}";
+              ProgramArguments = [ "${updater}" ];
+              StartCalendarInterval = instance.autoUpdate.calendar;
+              StandardOutPath = "${headlessUpdateLogDirectory}/${name}.log";
+              StandardErrorPath = "${headlessUpdateLogDirectory}/${name}.error.log";
+              ProcessType = "Background";
+            };
+          })
+        enabledHeadlessUpdateInstances;
       primaryTailscaleProxyConfig = pkgs.writeText "hermes-dashboard-tailscale-proxy.json" (builtins.toJSON {
         admin.disabled = true;
         apps.http.servers.hermes = {
@@ -307,8 +591,8 @@
           default = { };
           description = ''
             Additional per-user Hermes instances supervised as LaunchDaemons.
-            These start at boot without a GUI login and use the Nix-built Hermes
-            package, so Matrix support is unavailable unless added upstream.
+            These start at boot without a GUI login and execute from isolated
+            per-user managed Hermes installations.
           '';
         };
 
@@ -332,6 +616,19 @@
             upstream Darwin Nix package excludes Matrix, so gateway services use
             this mutable venv while Nix manages launchd supervision.
           '';
+        };
+
+        autoUpdate = {
+          enable = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = "Update the primary managed Hermes runtime with a guarded launchd job.";
+          };
+          calendar = lib.mkOption {
+            type = lib.types.attrsOf lib.types.int;
+            default = { Hour = 4; Minute = 0; };
+            description = "launchd StartCalendarInterval for primary managed Hermes updates.";
+          };
         };
 
         gateway.enable = lib.mkOption {
@@ -409,6 +706,12 @@
             cfg.headlessInstances
           ++ lib.mapAttrsToList
             (name: instance: {
+              assertion = !instance.autoUpdate.enable || instance.serve.enable;
+              message = "services.hermes.headlessInstances.${name}.autoUpdate requires serve.enable";
+            })
+            cfg.headlessInstances
+          ++ lib.mapAttrsToList
+            (name: instance: {
               assertion = !instance.serve.tailscale.enable
                 || (instance.serve.enable
                 && instance.serve.host == "127.0.0.1"
@@ -419,17 +722,42 @@
 
           launchd.daemons = headlessServeDaemons
             // headlessGatewayDaemons
-            // headlessTailscaleProxyDaemons;
+            // headlessTailscaleProxyDaemons
+            // headlessUpdateDaemons;
 
           system.activationScripts.extraActivation.text = lib.mkAfter (
             lib.optionalString cfg.secureHome ''
               # === Hermes primary-user home isolation ===
               /bin/chmod 0700 ${lib.escapeShellArg homeDirectory}
             ''
+            + lib.optionalString (enabledHeadlessUpdateInstances != { }) ''
+              # === Root-owned Hermes updater logs ===
+              /bin/mkdir -p ${lib.escapeShellArg headlessUpdateLogDirectory}
+              ${lib.concatMapStrings
+                (name: ''
+                  /usr/bin/touch \
+                    ${lib.escapeShellArg "${headlessUpdateLogDirectory}/${name}.log"} \
+                    ${lib.escapeShellArg "${headlessUpdateLogDirectory}/${name}.error.log"}
+                '')
+                (lib.attrNames enabledHeadlessUpdateInstances)}
+              /usr/sbin/chown -R root:wheel ${lib.escapeShellArg headlessUpdateLogDirectory}
+              /bin/chmod 0750 ${lib.escapeShellArg headlessUpdateLogDirectory}
+              /bin/chmod 0640 ${lib.escapeShellArg headlessUpdateLogDirectory}/*.log
+            ''
             + lib.concatMapStrings
               (instance: ''
                 # === Hermes headless instance: ${instance.user} ===
                 ${lib.optionalString instance.secureHome "/bin/chmod 0700 ${lib.escapeShellArg instance.homeDirectory}"}
+                ${lib.optionalString instance.gateway.enable ''
+                  # Remove the per-user service created by `hermes gateway
+                  # install`; the Nix-owned system LaunchDaemon is canonical.
+                  legacy_uid=$(/usr/bin/id -u ${lib.escapeShellArg instance.user} 2>/dev/null || true)
+                  if [ -n "$legacy_uid" ]; then
+                    /bin/launchctl bootout "user/$legacy_uid/ai.hermes.gateway" >/dev/null 2>&1 || true
+                    /bin/launchctl bootout "gui/$legacy_uid/ai.hermes.gateway" >/dev/null 2>&1 || true
+                  fi
+                  /bin/rm -f ${lib.escapeShellArg "${instance.homeDirectory}/Library/LaunchAgents/ai.hermes.gateway.plist"}
+                ''}
                 /bin/mkdir -p ${lib.escapeShellArg "${instance.homeDirectory}/.hermes/logs"}
                 /usr/bin/touch \
                   ${lib.escapeShellArg "${instance.homeDirectory}/.hermes/logs/serve.log"} \
@@ -534,6 +862,7 @@
                 "gateway"
                 "run"
                 "--replace"
+                "--external-supervisor"
               ];
               RunAtLoad = true;
               KeepAlive = true;
@@ -545,6 +874,26 @@
               HardResourceLimits.NumberOfFiles = 65536;
               ProcessType = "Background";
               ThrottleInterval = 10;
+            };
+          };
+        })
+
+        (lib.mkIf cfg.autoUpdate.enable {
+          assertions = [
+            {
+              assertion = cfg.gateway.enable || cfg.dashboard.enable;
+              message = "services.hermes.autoUpdate requires a primary gateway or dashboard";
+            }
+          ];
+
+          launchd.user.agents.hermes-updater = {
+            serviceConfig = {
+              Label = "ai.hermes.update";
+              ProgramArguments = [ "${primaryUpdater}" ];
+              StartCalendarInterval = cfg.autoUpdate.calendar;
+              StandardOutPath = "/tmp/hermes-${cfg.user}-updater.log";
+              StandardErrorPath = "/tmp/hermes-${cfg.user}-updater.error.log";
+              ProcessType = "Background";
             };
           };
         })

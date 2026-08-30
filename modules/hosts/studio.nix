@@ -72,6 +72,10 @@
       enable = true;
       secureHome = true;
       gateway.enable = true;
+      autoUpdate = {
+        enable = true;
+        calendar = { Hour = 4; Minute = 0; };
+      };
       dashboard = {
         enable = true;
         host = "100.121.238.48";
@@ -85,6 +89,11 @@
       headlessInstances.traci = {
         user = "traci";
         homeDirectory = "/Users/traci";
+        gateway.enable = true;
+        autoUpdate = {
+          enable = true;
+          calendar = { Weekday = 0; Hour = 5; Minute = 0; };
+        };
         serve = {
           enable = true;
           host = "127.0.0.1";
