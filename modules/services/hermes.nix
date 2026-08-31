@@ -68,6 +68,23 @@
                 default = { Hour = 4; Minute = 0; };
                 description = "launchd StartCalendarInterval for managed Hermes updates.";
               };
+              notifications = {
+                enable = lib.mkOption {
+                  type = lib.types.bool;
+                  default = false;
+                  description = "Announce actual update start and verified completion through the primary Hermes runtime.";
+                };
+                target = lib.mkOption {
+                  type = lib.types.str;
+                  default = "matrix";
+                  description = "Hermes send target for update lifecycle announcements.";
+                };
+                mention = lib.mkOption {
+                  type = lib.types.nullOr lib.types.str;
+                  default = null;
+                  description = "Optional recipient mention prepended to update lifecycle announcements.";
+                };
+              };
             };
 
             gateway.enable = lib.mkOption {
@@ -198,6 +215,7 @@
         , updaterRuntimePython
         , healthUrl
         , supervisedServiceLabel ? null
+        , notifications ? null
         }:
         let
           installDirectory = "${updaterHome}/.hermes/hermes-agent";
@@ -231,6 +249,32 @@
               "$@"
             fi
           }
+
+          ${lib.optionalString (notifications != null) ''
+            notify() {
+              notification_message="$1"
+              if [ "$(/usr/bin/id -u)" -eq 0 ]; then
+                /usr/bin/sudo -u ${lib.escapeShellArg cfg.user} -H \
+                  /usr/bin/env \
+                    HOME=${lib.escapeShellArg homeDirectory} \
+                    HERMES_HOME=${lib.escapeShellArg hermesHome} \
+                    PATH=${lib.escapeShellArg serviceEnvironment.PATH} \
+                    ${lib.escapeShellArg runtimePython} -m hermes_cli.main send \
+                      --to ${lib.escapeShellArg notifications.target} \
+                      --quiet \
+                      "$notification_message"
+              else
+                /usr/bin/env \
+                  HOME=${lib.escapeShellArg homeDirectory} \
+                  HERMES_HOME=${lib.escapeShellArg hermesHome} \
+                  PATH=${lib.escapeShellArg serviceEnvironment.PATH} \
+                  ${lib.escapeShellArg runtimePython} -m hermes_cli.main send \
+                    --to ${lib.escapeShellArg notifications.target} \
+                    --quiet \
+                    "$notification_message"
+              fi
+            }
+          ''}
 
           lock_dir="$HERMES_HOME/.auto-update-lock"
           write_lock_pid() {
@@ -340,6 +384,13 @@
           print(f"Hermes pre-update state snapshot: {snapshot_id}")
           PY
 
+          ${lib.optionalString (notifications != null) ''
+            notify ${lib.escapeShellArg (
+              lib.optionalString (notifications.mention != null) "${notifications.mention} "
+              + "Hermes automatic update is starting for ${name}. The service may be briefly unavailable."
+            )}
+          ''}
+
           ${lib.optionalString (supervisedServiceLabel != null) ''
             # A system LaunchDaemon would immediately respawn a stopped serve
             # process during the code swap. Unload it first, then restore it on
@@ -392,6 +443,12 @@
               time.sleep(1)
           raise SystemExit(f"Hermes backend verification failed at {url}: {error}")
           PY
+
+          ${lib.optionalString (notifications != null) ''
+            updated_version=$(as_user ${lib.escapeShellArg updaterRuntimePython} -c \
+              'from importlib.metadata import version; print(version("hermes-agent"))')
+            notify "${lib.optionalString (notifications.mention != null) "${notifications.mention} "}Hermes automatic update completed successfully for ${name}. The backend is healthy on v$updated_version."
+          ''}
         '';
       primaryUpdater = mkHermesUpdater {
         name = cfg.user;
@@ -399,6 +456,10 @@
         updaterHome = homeDirectory;
         updaterRuntimePython = runtimePython;
         healthUrl = "http://${cfg.dashboard.host}:${toString cfg.dashboard.port}/api/status";
+        notifications =
+          if cfg.autoUpdate.notifications.enable then {
+            inherit (cfg.autoUpdate.notifications) target mention;
+          } else null;
       };
       headlessServeDaemons = lib.mapAttrs'
         (name: instance:
@@ -507,6 +568,10 @@
               updaterRuntimePython = headlessRuntimePython instance;
               healthUrl = "http://${instance.serve.host}:${toString instance.serve.port}/api/status";
               supervisedServiceLabel = "ai.hermes.serve-${name}";
+              notifications =
+                if instance.autoUpdate.notifications.enable then {
+                  inherit (instance.autoUpdate.notifications) target mention;
+                } else null;
             };
           in
           lib.nameValuePair "hermes-${name}-updater" {
@@ -629,6 +694,23 @@
             default = { Hour = 4; Minute = 0; };
             description = "launchd StartCalendarInterval for primary managed Hermes updates.";
           };
+          notifications = {
+            enable = lib.mkOption {
+              type = lib.types.bool;
+              default = false;
+              description = "Announce actual update start and verified completion through the primary Hermes runtime.";
+            };
+            target = lib.mkOption {
+              type = lib.types.str;
+              default = "matrix";
+              description = "Hermes send target for update lifecycle announcements.";
+            };
+            mention = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Optional recipient mention prepended to update lifecycle announcements.";
+            };
+          };
         };
 
         gateway.enable = lib.mkOption {
@@ -708,6 +790,13 @@
             (name: instance: {
               assertion = !instance.autoUpdate.enable || instance.serve.enable;
               message = "services.hermes.headlessInstances.${name}.autoUpdate requires serve.enable";
+            })
+            cfg.headlessInstances
+          ++ lib.mapAttrsToList
+            (name: instance: {
+              assertion = !instance.autoUpdate.notifications.enable
+                || (instance.autoUpdate.enable && (cfg.gateway.enable || cfg.dashboard.enable));
+              message = "services.hermes.headlessInstances.${name}.autoUpdate.notifications requires autoUpdate.enable and a primary gateway or dashboard";
             })
             cfg.headlessInstances
           ++ lib.mapAttrsToList

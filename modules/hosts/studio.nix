@@ -75,6 +75,11 @@
       autoUpdate = {
         enable = true;
         calendar = { Hour = 4; Minute = 0; };
+        notifications = {
+          enable = true;
+          target = "matrix";
+          mention = "@bryan:snowboardtechie.com";
+        };
       };
       dashboard = {
         enable = true;
@@ -93,6 +98,11 @@
         autoUpdate = {
           enable = true;
           calendar = { Weekday = 0; Hour = 5; Minute = 0; };
+          notifications = {
+            enable = true;
+            target = "matrix";
+            mention = "@bryan:snowboardtechie.com";
+          };
         };
         serve = {
           enable = true;
