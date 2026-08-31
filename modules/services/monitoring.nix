@@ -600,6 +600,17 @@
         };
       };
 
+      # Homebrew upgrades Grafana after nix-darwin's launchd activation phase.
+      # Restart afterward so the running binary and the frontend assets reached
+      # through /opt/homebrew/opt/grafana always come from the same keg.
+      system.activationScripts.postActivation.text = lib.mkAfter ''
+        grafana_uid=$(/usr/bin/id -u ${config.system.primaryUser})
+        if /bin/launchctl print "gui/$grafana_uid/org.nixos.grafana" >/dev/null 2>&1; then
+          echo "Restarting Grafana to pick up any Homebrew updates..."
+          /bin/launchctl kickstart -k "gui/$grafana_uid/org.nixos.grafana" || true
+        fi
+      '';
+
       # node_exporter service configuration
       launchd.user.agents.node-exporter = {
         serviceConfig = {
