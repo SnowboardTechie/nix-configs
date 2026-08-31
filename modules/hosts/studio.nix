@@ -25,6 +25,7 @@
       icloud-backup
       hermes
       hindsight
+      dashy
       obsidian-headless
       vault-git-backup
     ];
@@ -156,6 +157,10 @@
           };
         };
       };
+    };
+    services.dashy = {
+      enable = true;
+      host = "100.121.238.48";
     };
 
     # === Service Health & UNRAID NAS Monitoring ===
