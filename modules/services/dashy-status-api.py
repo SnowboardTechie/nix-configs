@@ -23,6 +23,10 @@ def service_name_from_target(target: str) -> str | None:
     return name or None
 
 
+def is_status_path(path: str) -> bool:
+    return path.rstrip("/") == "/status-check"
+
+
 def _payload(success: bool, status_code: int, status_text: str, message: str) -> dict:
     return {
         "successStatus": success,
@@ -85,7 +89,7 @@ class StatusHandler(BaseHTTPRequestHandler):
         if parsed.path == "/health":
             self._send_json(HTTPStatus.OK, {"status": "healthy"})
             return
-        if parsed.path != "/status-check":
+        if not is_status_path(parsed.path):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         target = (parse_qs(parsed.query, keep_blank_values=True).get("url") or [""])[0]

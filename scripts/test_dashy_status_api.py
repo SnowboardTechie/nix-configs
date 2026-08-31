@@ -96,6 +96,11 @@ class ServiceStatusTest(unittest.TestCase):
             with self.subTest(target=target):
                 self.assertIsNone(self.module.service_name_from_target(target))
 
+    def test_status_route_accepts_dashy_trailing_slash(self) -> None:
+        self.assertTrue(self.module.is_status_path("/status-check"))
+        self.assertTrue(self.module.is_status_path("/status-check/"))
+        self.assertFalse(self.module.is_status_path("/status-check/other"))
+
 
 if __name__ == "__main__":
     unittest.main()

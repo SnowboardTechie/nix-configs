@@ -177,7 +177,7 @@
           automatic_https.disable = true;
           routes = [
             {
-              match = [{ path = [ "/status-check" ]; }];
+              match = [{ path = [ "/status-check" "/status-check/" ]; }];
               handle = [
                 {
                   handler = "reverse_proxy";
