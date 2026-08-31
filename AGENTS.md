@@ -101,6 +101,13 @@ nix flake update
 nix develop '.#vets-website'              # or vets-api, next-build, etc.
 ```
 
+## Repository Delivery
+
+- **This repo is an explicit exception to the default wait-for-authorization rule.** Once requested work is complete and verified, commit the task-owned changes directly to `main` and push `origin main` without waiting for a separate commit or push request.
+- A local commit is not completion. Verify that `origin/main` contains the pushed commit before reporting the work done.
+- Preserve unrelated work: stage only the exact task-owned paths. Never absorb, discard, stash, reset, or rewrite unrelated changes to make the commit or push succeed.
+- If `origin/main` has diverged or the push is rejected, stop and report the blocker rather than rebasing or rewriting user work automatically.
+
 ## Architecture Pattern: import-tree Module Merging
 
 Every `.nix` file under `modules/` is auto-imported by import-tree. Each module contributes to `flake.modules.{darwin|nixos}.{name}`:
