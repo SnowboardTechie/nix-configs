@@ -19,6 +19,30 @@
     cfg = config.services.monitoring;
     homeDir = "/Users/${config.system.primaryUser}";
     alertingEnabled = cfg.alertEmail != null;
+    monitoringStoragePaths = [
+      cfg.prometheus.storagePath
+      cfg.grafana.dataPath
+      cfg.loki.storagePath
+      "${homeDir}/.alloy/data"
+    ] ++ lib.optional alertingEnabled cfg.alertmanager.storagePath;
+    installMonitoringStorageCommand = lib.escapeShellArgs (
+      [ "/usr/bin/install" "-d" "-m" "0750" ] ++ monitoringStoragePaths
+    );
+    # System LaunchDaemons are loaded before the Nix volume is guaranteed to
+    # be mounted. Keep launchd pointed at the always-available system shell and
+    # wait there for the real Nix-store executable instead of entering the
+    # penalty box with EX_CONFIG after a reboot.
+    waitForNixStoreProgram = programArguments: [
+      "/bin/sh"
+      "-c"
+      ''
+        while [ ! -x "$1" ]; do
+          /bin/sleep 1
+        done
+        exec "$@"
+      ''
+      "wait-for-nix-store"
+    ] ++ programArguments;
 
     # Grafana custom config — overrides Homebrew defaults.ini
     # Only contains settings not handled by GF_* environment variables
@@ -520,11 +544,13 @@
       # a hard-coded set of named phases into the final activate script; custom
       # names like `monitoring-setup` are silently ignored. See services/AGENTS.md.)
       system.activationScripts.extraActivation.text = lib.mkAfter (''
-        # === monitoring: ensure storage directories exist ===
-        mkdir -p "${cfg.prometheus.storagePath}"
-        mkdir -p "${cfg.grafana.dataPath}"
-        mkdir -p "${cfg.loki.storagePath}"
-        mkdir -p "${homeDir}/.alloy/data"
+        # === monitoring: migrate and ensure storage directories ===
+        # The migration helper pins each physical parent before its no-follow
+        # ownership repair. Routine creation and mode changes run unprivileged.
+        /bin/sh ${../../scripts/migrate-monitoring-storage.sh} \
+          ${lib.escapeShellArg "${config.system.primaryUser}:staff"} \
+          ${lib.escapeShellArgs monitoringStoragePaths}
+        /usr/bin/su - ${config.system.primaryUser} -c ${lib.escapeShellArg installMonitoringStorageCommand}
 
         # === monitoring: firewall rules ===
         /usr/libexec/ApplicationFirewall/socketfilterfw --add ${pkgs.prometheus}/bin/prometheus >/dev/null 2>&1 || true
@@ -543,8 +569,6 @@
 
         # === alertmanager: storage + preflight ===
         # No app-firewall rule: AM binds 127.0.0.1, and loopback isn't filtered.
-        mkdir -p "${cfg.alertmanager.storagePath}"
-
         if [ ! -s "${homeDir}/.secrets/grafana-smtp-password" ]; then
           echo "WARNING: services.monitoring.alertEmail is set but ${homeDir}/.secrets/grafana-smtp-password" >&2
           echo "         is missing. Alertmanager will start but email delivery will fail." >&2
@@ -558,7 +582,7 @@
       launchd.daemons.prometheus = {
         serviceConfig = {
           UserName = config.system.primaryUser;
-          ProgramArguments = [
+          ProgramArguments = waitForNixStoreProgram [
             "${pkgs.prometheus}/bin/prometheus"
             "--config.file=${prometheusConfigFile}"
             "--web.listen-address=0.0.0.0:${toString cfg.prometheus.port}"
@@ -666,7 +690,7 @@
       launchd.daemons.blackbox-exporter = {
         serviceConfig = {
           UserName = config.system.primaryUser;
-          ProgramArguments = [
+          ProgramArguments = waitForNixStoreProgram [
             "${pkgs.prometheus-blackbox-exporter}/bin/blackbox_exporter"
             "--config.file=${blackboxConfigFile}"
             "--web.listen-address=0.0.0.0:${toString cfg.blackbox.port}"
