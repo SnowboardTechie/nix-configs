@@ -9,9 +9,9 @@
 # Version pinning: the API env is locked by modules/services/hindsight-env/
 # {pyproject.toml,uv.lock} and the Control Plane by hindsight-env/
 # control-plane/{package.json,package-lock.json}. Service start applies the
-# committed locks exactly (uv sync --locked / npm ci); updates are deliberate
-# reviewed lock changes followed by update-studio, never discovery of newer
-# versions at runtime. PostgreSQL comes from nixpkgs (postgresql_17 +
+# committed locks exactly (uv sync --locked / npm ci); server updates are
+# operator-controlled lock changes followed by a Studio rebuild, never runtime
+# discovery of a newer database-owning release. PostgreSQL comes from nixpkgs (postgresql_17 +
 # pgvector) rather than Homebrew so a major upgrade is an explicit reviewed
 # migration, not a side effect of `brew upgrade`.
 #
@@ -144,7 +144,7 @@
           npmBin = "${config.homebrew.prefix}/bin/npm";
           logPrefix = "/tmp/hindsight-${name}";
 
-          # Control Plane 0.9.1's next-intl middleware only handles locale
+          # The packaged Control Plane's next-intl middleware only handles locale
           # rewrites when the server hostname is the literal "localhost".
           # On macOS that binds IPv6 loopback. Caddy keeps a stable IPv4
           # loopback target for Tailscale Serve, dials ::1, and normalizes the

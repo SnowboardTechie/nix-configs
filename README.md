@@ -149,9 +149,9 @@ The Hermes watchdog checks grouped-quality Metal support, a complete compatible 
 
 The tracked monitor in [`scripts/check-github-status.py`](scripts/check-github-status.py) polls GitHub's official Statuspage summary every five minutes and emits a timestamp-free snapshot. Hermes suppresses unchanged ticks and uses the OpenAI Codex subscription only when the official status changes. This incident-specific finite watch stays silent for its initial baseline and source-health noise, notifies Bryan in Matrix when service meaningfully improves or worsens, and automatically stops after 36 checks (about three hours). The recreatable job definition is [`scripts/github-status-watch.job.json`](scripts/github-status-watch.job.json).
 
-### Hindsight release compatibility watchdog
+### Hindsight release watchdog
 
-The deterministic watchdog in [`scripts/check-hindsight-releases.py`](scripts/check-hindsight-releases.py) compares the committed Hindsight API, Control Plane, and coding-agent pins with their latest public releases. A newer coding-agent package is not treated as actionable until the latest released `hindsight-api-slim` wheel proves that `UpdateNodeRequest` accepts knowledge-page trigger patches and `KnowledgeNode` reports the effective trigger. This keeps the known `coding-agents` 0.4.1 versus API 0.9.1 incompatibility silent while still notifying Bryan when a server release changes or the coordinated update gates pass. The job is read-only and never changes locks, installs packages, restarts services, or updates clients.
+The deterministic watchdog in [`scripts/check-hindsight-releases.py`](scripts/check-hindsight-releases.py) compares the lock-managed Hindsight API and Control Plane plus the installed, auto-updated Coding Agents runtime with their latest public releases. Server releases remain lock-managed because they own PostgreSQL migrations and service startup; Coding Agents uses its supported automatic runtime updater. The job reports drift but never changes locks, installs packages, restarts services, or updates clients itself.
 
 The recreatable no-agent job definition is [`scripts/hindsight-release-watch.job.json`](scripts/hindsight-release-watch.job.json). Runtime notification state remains private under `~/.hermes/state/hindsight-release-watch.json` and is not committed.
 
