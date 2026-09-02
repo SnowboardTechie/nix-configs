@@ -139,6 +139,7 @@
                   description = "Tailnet devices and access controls";
                   url = "https://login.tailscale.com/admin/machines";
                   icon = "🔐";
+                  statusCheck = false;
                 }
                 (item {
                   title = "Hindsight API";
