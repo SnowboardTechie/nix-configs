@@ -1,6 +1,6 @@
 # Nix Configuration
 
-Declarative, reproducible system configuration using Nix for macOS (nix-darwin) and NixOS. Includes cross-platform development environments for VA projects.
+Declarative, reproducible system configuration for three macOS hosts using nix-darwin, plus cross-platform development environments for VA projects.
 
 ## Architecture
 
@@ -10,9 +10,9 @@ This repository uses a **dendritic (tree-like) modular architecture** with [flak
 modules/
 ├── base/       # Core system: fonts, homebrew, nix-settings, zsh
 ├── dev/        # Development: cli-tools, editors, git
-├── desktop/    # GUI: gnome, gaming, audio (NixOS)
+├── desktop/    # GUI: gnome, gaming, audio (NixOS modules; no current system output)
 ├── services/   # Daemons/agents: Hermes, Hindsight, Obsidian Sync/backup, ollama, monitoring, SMB, syncthing
-├── hosts/      # Host-specific: a6mbp, gnarbox, mbp, studio (mbp/a6mbp/studio darwin, gnarbox NixOS)
+├── hosts/      # Active nix-darwin hosts: a6mbp, mbp, studio
 └── dev-envs/   # VA project environments
 ```
 
@@ -42,16 +42,11 @@ The private Studio service portal is available over Tailscale at `http://100.121
 Studio and MBP use Obsidian Headless for live synchronization of `/Users/bryan/second-brain`. Separately, Studio is the sole Git writer and takes a conservative snapshot nightly at 03:00 local time before pushing normally to the existing `origin/main`. The Git job refuses divergent history, staged work, in-progress operations, or an existing backup lock; it never pulls or rewrites history.
 **Location:** [`modules/hosts/studio.nix`](modules/hosts/studio.nix)
 
-### gnarbox (NixOS desktop)
-
-NixOS desktop with GNOME, gaming (Steam + Proton GE), PipeWire audio, Tailscale, and a Studio-backed Hermes client. Uses the unstable overlay for select packages.
-**Location:** [`modules/hosts/gnarbox.nix`](modules/hosts/gnarbox.nix)
-
 ### Shared Configuration
 
-All darwin hosts share common packages via feature modules. All hosts (including NixOS) share Nix packages for CLI tools, editors, and fonts.
+All managed hosts are Macs and share common packages through feature modules.
 
-Feature modules own both platform aspects: darwin uses `homebrew.brews`/`homebrew.casks`, NixOS uses `environment.systemPackages`. This keeps each capability self-contained.
+Feature modules define both Darwin and NixOS aspects, but this flake currently publishes no NixOS system output. Gnarchy and Imachy are managed by Omarchy and consume this repository through development flakes.
 
 - **CLI tools (both platforms):** [`modules/dev/cli-tools.nix`](modules/dev/cli-tools.nix)
 - **Git tools (both platforms):** [`modules/dev/git.nix`](modules/dev/git.nix)
@@ -72,8 +67,6 @@ curl -fsSL https://install.determinate.systems/nix | sh -s -- install --determin
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 ```
-
-**NixOS:** Nix comes pre-installed.
 
 ## Installation
 
@@ -98,12 +91,6 @@ Subsequent rebuilds:
 
 ```bash
 darwin-rebuild switch --flake '.#mbp'
-```
-
-**NixOS** (first build requires experimental features flag):
-
-```bash
-sudo nixos-rebuild switch --flake '.#gnarbox' --extra-experimental-features 'nix-command flakes'
 ```
 
 ## Usage
@@ -155,16 +142,8 @@ On Studio, `upgrade-system` updates the Hindsight API and Control Plane locks al
 
 ### Apply Changes
 
-**macOS:**
-
 ```bash
 darwin-rebuild switch --flake '~/code/nix-configs#mbp'
-```
-
-**NixOS:**
-
-```bash
-sudo nixos-rebuild switch --flake '~/code/nix-configs#gnarbox'
 ```
 
 ### Update Dependencies
@@ -177,6 +156,8 @@ nix flake update
 ## Development Environments
 
 Cross-platform development environments for VA projects:
+
+Gnarchy and Imachy use these `nix develop` outputs, but their operating systems and packages remain Omarchy-owned.
 
 - **vets-website:** Node 22.22.0, Yarn 1.x, Cypress → [vets-website](https://github.com/department-of-veterans-affairs/vets-website)
 - **vets-api:** Ruby 3.3.6, PostgreSQL, Redis, Kafka → [vets-api](https://github.com/department-of-veterans-affairs/vets-api)
@@ -195,7 +176,7 @@ Development environment definitions are located in `modules/dev-envs/`.
 
 ## OpenCode
 
-The OpenCode CLI is installed via Homebrew (`opencode`) on darwin systems and via nixpkgs on NixOS. The OpenCode desktop app (`opencode-desktop` cask) is installed on `mbp`.
+The OpenCode CLI is installed via Homebrew (`opencode`) on managed macOS systems. The OpenCode desktop app (`opencode-desktop` cask) is installed on `mbp`.
 
 **Authentication:**
 

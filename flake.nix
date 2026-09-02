@@ -76,17 +76,6 @@
         };
       };
 
-      # NixOS configurations
-      nixosConfigurations = {
-        gnarbox = inputs.nixpkgs.lib.nixosSystem {
-          specialArgs = {
-            inherit inputs;
-            outputs = inputs.self;
-            meta = { hostname = "gnarbox"; };
-          };
-          modules = [ inputs.self.modules.nixos.gnarbox ];
-        };
-      };
     };
   };
 }
