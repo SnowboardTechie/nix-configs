@@ -134,6 +134,12 @@
                   url = "http://100.121.238.48:12345";
                   icon = "🧪";
                 })
+                {
+                  title = "Tailscale";
+                  description = "Tailnet devices and access controls";
+                  url = "https://login.tailscale.com/admin/machines";
+                  icon = "🔐";
+                }
                 (item {
                   title = "Hindsight API";
                   description = "Agent-memory data plane";
