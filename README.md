@@ -46,7 +46,7 @@ Studio and MBP use Obsidian Headless for live synchronization of `/Users/bryan/s
 
 All managed hosts are Macs and share common packages through feature modules.
 
-Feature modules define both Darwin and NixOS aspects, but this flake currently publishes no NixOS system output. Gnarchy and Imachy are managed by Omarchy and consume this repository through development flakes.
+Feature modules define both Darwin and NixOS aspects, but this flake currently publishes no NixOS system output. Linux machines consume this repository through development flakes while their operating systems and packages are managed separately.
 
 - **CLI tools (both platforms):** [`modules/dev/cli-tools.nix`](modules/dev/cli-tools.nix)
 - **Git tools (both platforms):** [`modules/dev/git.nix`](modules/dev/git.nix)
@@ -157,7 +157,7 @@ nix flake update
 
 Cross-platform development environments for VA projects:
 
-Gnarchy and Imachy use these `nix develop` outputs, but their operating systems and packages remain Omarchy-owned.
+Linux machines use these `nix develop` outputs without consuming a system configuration from this repository.
 
 - **vets-website:** Node 22.22.0, Yarn 1.x, Cypress → [vets-website](https://github.com/department-of-veterans-affairs/vets-website)
 - **vets-api:** Ruby 3.3.6, PostgreSQL, Redis, Kafka → [vets-api](https://github.com/department-of-veterans-affairs/vets-api)

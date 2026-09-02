@@ -55,7 +55,7 @@ This follows the **flake-parts + import-tree** organization:
 
 1. **Feature modules** (base, dev, services, desktop) define reusable configurations
 2. **Host modules** (hosts/) compose features for the currently published machines
-3. **Development environments** (dev-envs/) provide isolated project shells across macOS and Linux, including Gnarchy and Imachy
+3. **Development environments** (dev-envs/) provide isolated project shells across macOS and Linux
 
 Each module is self-contained and can be:
 - Imported by multiple hosts
