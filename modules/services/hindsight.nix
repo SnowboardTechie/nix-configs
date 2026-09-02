@@ -6,12 +6,12 @@
 # and age-encrypted six-hourly logical backups with tiered retention plus a
 # monthly disposable restore test.
 #
-# Version pinning: the API env is locked by modules/services/hindsight-env/
+# Version ownership: the API env is locked by modules/services/hindsight-env/
 # {pyproject.toml,uv.lock} and the Control Plane by hindsight-env/
 # control-plane/{package.json,package-lock.json}. Service start applies the
-# committed locks exactly (uv sync --locked / npm ci); server updates are
-# operator-controlled lock changes followed by a Studio rebuild, never runtime
-# discovery of a newer database-owning release. PostgreSQL comes from nixpkgs (postgresql_17 +
+# committed locks exactly (uv sync --locked / npm ci). Studio's upgrade-system
+# refreshes these coordinated locks before rebuilding; update-system reapplies
+# the committed versions without network-driven drift. PostgreSQL comes from nixpkgs (postgresql_17 +
 # pgvector) rather than Homebrew so a major upgrade is an explicit reviewed
 # migration, not a side effect of `brew upgrade`.
 #

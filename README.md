@@ -149,11 +149,9 @@ The Hermes watchdog checks grouped-quality Metal support, a complete compatible 
 
 The tracked monitor in [`scripts/check-github-status.py`](scripts/check-github-status.py) polls GitHub's official Statuspage summary every five minutes and emits a timestamp-free snapshot. Hermes suppresses unchanged ticks and uses the OpenAI Codex subscription only when the official status changes. This incident-specific finite watch stays silent for its initial baseline and source-health noise, notifies Bryan in Matrix when service meaningfully improves or worsens, and automatically stops after 36 checks (about three hours). The recreatable job definition is [`scripts/github-status-watch.job.json`](scripts/github-status-watch.job.json).
 
-### Hindsight release watchdog
+### Hindsight system upgrades
 
-The deterministic watchdog in [`scripts/check-hindsight-releases.py`](scripts/check-hindsight-releases.py) compares the lock-managed Hindsight API and Control Plane plus the installed, auto-updated Coding Agents runtime with their latest public releases. Server releases remain lock-managed because they own PostgreSQL migrations and service startup; Coding Agents uses its supported automatic runtime updater. The job reports drift but never changes locks, installs packages, restarts services, or updates clients itself.
-
-The recreatable no-agent job definition is [`scripts/hindsight-release-watch.job.json`](scripts/hindsight-release-watch.job.json). Runtime notification state remains private under `~/.hermes/state/hindsight-release-watch.json` and is not committed.
+On Studio, `upgrade-system` updates the Hindsight API and Control Plane locks alongside the flake inputs before rebuilding. [`scripts/update-hindsight-locks.py`](scripts/update-hindsight-locks.py) requires a coordinated upstream release, resolves both package locks in temporary environments, and takes the existing encrypted pre-upgrade PostgreSQL backup before publishing changed locks. `update-system` remains deterministic and applies only committed versions. Coding Agents uses its upstream-supported runtime auto-updater.
 
 ### Apply Changes
 

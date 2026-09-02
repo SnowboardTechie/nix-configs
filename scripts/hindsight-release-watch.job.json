@@ -1,9 +1,0 @@
-{
-  "name": "Watch Hindsight releases",
-  "schedule": "45 9 * * *",
-  "repeat": "forever",
-  "deliver": "matrix",
-  "script": "check-hindsight-releases.py",
-  "no_agent": true,
-  "workdir": "/Users/bryan/code/nix-configs"
-}
