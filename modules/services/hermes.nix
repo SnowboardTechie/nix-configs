@@ -610,6 +610,10 @@
         HOME = homeDirectory;
         HERMES_HOME = hermesHome;
         VIRTUAL_ENV = runtimeVenv;
+        # gws 0.22.5 deletes credentials.enc after a decryption mismatch.
+        # Pin the headless-safe backend so launchd and interactive shells share
+        # the same local encryption key instead of alternating with Keychain.
+        GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND = "file";
         PATH = lib.concatStringsSep ":" [
           "${runtimeVenv}/bin"
           "${homeDirectory}/.local/bin"
