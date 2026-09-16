@@ -11,6 +11,7 @@
 
       casks = [
         "finicky" # Browser/URL router — github.com/johnste/finicky
+        "granola" # AI-assisted meeting notes
         "keymapp" # ZSA keyboard configuration and firmware
         "logi-options+" # Logitech device configuration
         "monal"
