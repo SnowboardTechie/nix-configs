@@ -1,7 +1,7 @@
 # Host configuration: mbp (Personal MacBook Pro)
 #
-# Features: fonts, nix-settings, zsh, homebrew, editors, git, cli-tools
-# Host-specific: Personal apps (Bambu Studio, Discord, Steam, etc.)
+# Features: fonts, nix-settings, zsh, homebrew, editors, git, cli-tools, personal desktop
+# Host-specific: Personal apps (Bambu Studio, Steam, etc.)
 { inputs, ... }:
 {
   flake.modules.darwin.mbp = { ... }: {
@@ -16,6 +16,7 @@
       rust
       activation
       openchamber
+      personal-desktop
       # Desktop features
       gaming
       # Service modules
@@ -61,30 +62,21 @@
       # Additional brews
       brews = [
         "exercism"
-        "libfido2" # FIDO2/U2F tools
         "pandoc" # For converting documents
         "texlive" # For converting MD to PDF
         "pinentry-mac" # GPG pinentry for macOS
         "podman" # Container runtime
         "podman-compose" # Compose for podman
         "syncthing"
-        "ykman" # YubiKey Manager CLI
       ];
 
       # Additional casks for this host
       casks = [
         "bambu-studio"
         "claude"
-        "finicky" # Browser/URL router — github.com/johnste/finicky
-        "monal"
         "opencode-desktop" # OpenCode AI coding agent desktop app
         "qobuz"
-        "rectangle-pro"
-        "slack"
-        "vivaldi"
-        "yubico-authenticator"
         "zen"
-        "zoom"
       ];
     };
   };

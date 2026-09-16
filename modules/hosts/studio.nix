@@ -1,6 +1,6 @@
-# Host configuration: studio (Media Server Mac)
+# Host configuration: studio (Home Server and Personal Desktop Mac)
 #
-# Features: fonts, nix-settings, zsh, homebrew, editors, git, cli-tools
+# Features: fonts, nix-settings, zsh, homebrew, editors, git, cli-tools, personal desktop
 # Services: Hermes, ollama, open-webui, monitoring, smb-mount, syncthing, Obsidian Sync, vault backup, iCloud backup
 # Host-specific: Media server tools (cloudflared, etc.)
 { inputs, ... }:
@@ -16,6 +16,7 @@
       git
       cli-tools
       activation
+      personal-desktop
       # Service modules
       ollama
       open-webui

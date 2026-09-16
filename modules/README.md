@@ -27,9 +27,10 @@ System services and background processes:
 - Other daemon services
 
 ### `desktop/`
-NixOS desktop environment and GUI application modules:
+Desktop environment and GUI application modules:
 - GNOME desktop configuration
 - Gaming setup (Steam, Proton, game-specific configs)
+- Shared personal macOS applications
 - GUI applications and preferences
 - Display and window manager settings
 
@@ -37,7 +38,7 @@ NixOS desktop environment and GUI application modules:
 Host-specific configurations:
 - `mbp.nix` - Personal MacBook Pro
 - `a6mbp.nix` - Work MacBook Pro
-- `studio.nix` - Media server Mac
+- `studio.nix` - Home server and personal desktop Mac
 
 Each host module imports and composes the feature modules above.
 

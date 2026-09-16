@@ -10,7 +10,7 @@ This repository uses a **dendritic (tree-like) modular architecture** with [flak
 modules/
 ├── base/       # Core system: fonts, homebrew, nix-settings, zsh
 ├── dev/        # Development: cli-tools, editors, git
-├── desktop/    # GUI: gnome, gaming, audio (NixOS modules; no current system output)
+├── desktop/    # GUI: shared macOS apps plus NixOS gnome, gaming, and audio
 ├── services/   # Daemons/agents: Hermes, Hindsight, Obsidian Sync/backup, ollama, monitoring, SMB, syncthing
 ├── hosts/      # Active nix-darwin hosts: a6mbp, mbp, studio
 └── dev-envs/   # VA project environments
@@ -22,7 +22,7 @@ Each host imports and composes feature modules. See [modules/README.md](modules/
 
 ### mbp (personal macOS)
 
-Personal MacBook Pro with syncthing, Tailscale, a Studio-backed Hermes client, Obsidian Headless Sync for the active `/Users/bryan/second-brain` vault, and personal apps (gaming, messaging, document tools). MBP is a Sync replica and must not automatically commit, pull, or push this vault.
+Personal MacBook Pro and mobile fallback with syncthing, Tailscale, a Studio-backed Hermes client, Obsidian Headless Sync for the active `/Users/bryan/second-brain` vault, and shared personal desktop apps. MBP is a Sync replica and must not automatically commit, pull, or push this vault.
 **Location:** [`modules/hosts/mbp.nix`](modules/hosts/mbp.nix)
 
 ### a6mbp (work macOS)
@@ -30,9 +30,9 @@ Personal MacBook Pro with syncthing, Tailscale, a Studio-backed Hermes client, O
 Work MacBook Pro with syncthing and work tools (AWS, Docker, DDEV, Slack, Zoom).
 **Location:** [`modules/hosts/a6mbp.nix`](modules/hosts/a6mbp.nix)
 
-### studio (media server macOS)
+### studio (home server and personal desktop macOS)
 
-Media server Mac running the primary Hermes gateway and per-user Tailscale-only remote backends, plus ollama, open-webui, monitoring (Prometheus + Grafana), SMB mount, syncthing, and iCloud backup. Prometheus and blackbox-exporter run as user-owned system LaunchDaemons so macOS Local Network Privacy cannot strand their LAN probes when Nix store identities change. They wait for the Nix volume before exec, while activation keeps monitoring state directories owned by the service user. Nix owns Hermes launchd supervision, permissions, ports, and Tailscale exposure; Bryan and Traci use isolated managed runtimes that update nightly and weekly, respectively. Actual updates announce their start and verified completion in Bryan's primary Matrix channel, while no-op checks stay silent. Bryan's primary backend is available at `https://bryans-mac-studio.tail5ba690.ts.net` through Tailscale Serve. Ollama remains bound to loopback and is forwarded tailnet-only at `http://100.121.238.48:11434`.
+Bryan's daily desktop and home server, running the primary Hermes gateway and per-user Tailscale-only remote backends, plus ollama, open-webui, monitoring (Prometheus + Grafana), SMB mount, syncthing, and iCloud backup. It shares Bryan's personal desktop applications with the MBP while retaining the Studio-only service stack. Prometheus and blackbox-exporter run as user-owned system LaunchDaemons so macOS Local Network Privacy cannot strand their LAN probes when Nix store identities change. They wait for the Nix volume before exec, while activation keeps monitoring state directories owned by the service user. Nix owns Hermes launchd supervision, permissions, ports, and Tailscale exposure; Bryan and Traci use isolated managed runtimes that update nightly and weekly, respectively. Actual updates announce their start and verified completion in Bryan's primary Matrix channel, while no-op checks stay silent. Bryan's primary backend is available at `https://bryans-mac-studio.tail5ba690.ts.net` through Tailscale Serve. Ollama remains bound to loopback and is forwarded tailnet-only at `http://100.121.238.48:11434`.
 Traci's isolated headless backend runs under her macOS account and is available at `https://bryans-mac-studio.tail5ba690.ts.net:9120` through Tailscale Serve.
 
 Studio also hosts the self-hosted [Hindsight](https://github.com/vectorize-io/hindsight) shared agent-memory service (bryan instance): dedicated PostgreSQL 17 + pgvector, a uv-locked API on loopback `8888`, and an npm-locked Control Plane on IPv6 loopback `9999`. The API is exposed tailnet-only at `https://bryans-mac-studio.tail5ba690.ts.net:9443` (bearer-authenticated); the key-authenticated Control Plane is exposed at `:9444` through an IPv4 loopback compatibility proxy on `9998` that preserves working locale rewrites behind Tailscale Serve. All extraction/consolidation runs through local Ollama. Six-hourly age-encrypted logical backups with tiered retention (48h/14d/4w + pre-upgrade) live under `~/.local/state/hindsight-bryan/backups/`, with a monthly disposable restore test; `hindsight-bryan-backup-now pre-upgrade` takes the mandatory pre-upgrade snapshot. Versions are pinned by `modules/services/hindsight-env/` lock files; `scripts/check-hindsight-releases.py` is the daily read-only Hermes release watch (register with `hermes cron add`, no-agent mode, workdir this repo). Secrets live in `~/.secrets/hindsight-bryan/` and never enter the store.
@@ -51,6 +51,7 @@ Feature modules define both Darwin and NixOS aspects, but this flake currently p
 - **CLI tools (both platforms):** [`modules/dev/cli-tools.nix`](modules/dev/cli-tools.nix)
 - **Git tools (both platforms):** [`modules/dev/git.nix`](modules/dev/git.nix)
 - **Editor tools (both platforms):** [`modules/dev/editors.nix`](modules/dev/editors.nix)
+- **Personal desktop apps (MBP and Studio):** [`modules/desktop/personal-desktop.nix`](modules/desktop/personal-desktop.nix)
 - **Homebrew infrastructure:** [`modules/base/homebrew.nix`](modules/base/homebrew.nix) (onActivation settings, taps, darwin-only items)
 - **Font:** MesloLGS Nerd Font (see [`modules/base/fonts.nix`](modules/base/fonts.nix))
 
