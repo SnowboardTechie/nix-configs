@@ -6,7 +6,6 @@
     homebrew = {
       brews = [
         "libfido2" # FIDO2/U2F tools
-        "mas" # Mac App Store CLI for declarative applications
         "ykman" # YubiKey Manager CLI
       ];
 
@@ -22,12 +21,6 @@
         "yubico-authenticator"
         "zoom"
       ];
-
-      # Keep the purchased, perpetual Final Cut Pro app available separately
-      # from the Creator Studio subscription build.
-      masApps = {
-        "Final Cut Pro" = 424389933;
-      };
     };
   };
 }
