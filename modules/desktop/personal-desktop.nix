@@ -22,7 +22,6 @@
         "granola" # AI-assisted meeting notes
         "keymapp" # ZSA keyboard configuration and firmware
         "logi-options+" # Logitech device configuration
-        "monal"
         "rectangle-pro"
         "slack"
         "superwhisper"
