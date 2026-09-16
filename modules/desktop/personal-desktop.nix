@@ -3,6 +3,14 @@
 { ... }:
 {
   flake.modules.darwin.personal-desktop = { ... }: {
+    system.defaults = {
+      dock.autohide = true;
+      NSGlobalDomain = {
+        KeyRepeat = 2;
+        InitialKeyRepeat = 15;
+      };
+    };
+
     homebrew = {
       brews = [
         "libfido2" # FIDO2/U2F tools
