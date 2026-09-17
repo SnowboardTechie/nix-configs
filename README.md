@@ -11,7 +11,7 @@ modules/
 ├── base/       # Core system: fonts, homebrew, nix-settings, zsh
 ├── dev/        # Development: cli-tools, editors, git
 ├── desktop/    # GUI: shared macOS apps plus NixOS gnome, gaming, and audio
-├── services/   # Daemons/agents: Hermes, Hindsight, Obsidian Sync/backup, ollama, monitoring, SMB, syncthing
+├── services/   # Daemons/agents: Hermes, Hindsight, ollama, monitoring, SMB, syncthing (Obsidian Sync/backup modules retained, unused)
 ├── hosts/      # Active nix-darwin hosts: a6mbp, mbp, studio
 └── dev-envs/   # VA project environments
 ```
@@ -22,7 +22,7 @@ Each host imports and composes feature modules. See [modules/README.md](modules/
 
 ### mbp (personal macOS)
 
-Personal MacBook Pro and mobile fallback with syncthing, Tailscale, a Studio-backed Hermes client, Obsidian Headless Sync for the active `/Users/bryan/second-brain` vault, and shared personal desktop apps. MBP is a Sync replica and must not automatically commit, pull, or push this vault.
+Personal MacBook Pro and mobile fallback with syncthing, Tailscale, a Studio-backed Hermes client, and shared personal desktop apps. Obsidian Headless Sync was retired on 2026-09-16 when the personal second brain moved to Apple Notes; `/Users/bryan/second-brain` is a frozen rollback archive that nothing on MBP synchronizes, commits, or pushes.
 **Location:** [`modules/hosts/mbp.nix`](modules/hosts/mbp.nix)
 
 ### a6mbp (work macOS)
@@ -39,7 +39,7 @@ Studio also hosts the self-hosted [Hindsight](https://github.com/vectorize-io/hi
 
 The private Studio service portal is available over Tailscale at `http://100.121.238.48:8088`. It uses the immutable Nixpkgs Dashy static build for links and a read-only local adapter for health state from the model-free Hermes service watchdog; it has no public ingress, arbitrary proxy, or mutable web configuration.
 
-Studio and MBP use Obsidian Headless for live synchronization of `/Users/bryan/second-brain`. Separately, Studio is the sole Git writer and takes a conservative snapshot nightly at 03:00 local time before pushing normally to the existing `origin/main`. The Git job refuses divergent history, staged work, in-progress operations, or an existing backup lock; it never pulls or rewrites history.
+The personal second brain lives in Apple Notes (iCloud folder `Second Brain`) since 2026-09-16 (decision record in the frozen archive: `~/second-brain/Decisions/2026-09-16-decision-apple-notes-personal-second-brain.md`). Studio no longer runs Obsidian Headless Sync or the nightly `vault-git-backup` snapshot for `/Users/bryan/second-brain`; the archive repository and its remote are preserved unchanged as rollback history. After `update-system`, `launchctl print gui/$(id -u)/md.obsidian.headless-sync` and `…/com.snowboardtechie.vault-git-backup` should both report the agents as absent.
 **Location:** [`modules/hosts/studio.nix`](modules/hosts/studio.nix)
 
 ### Shared Configuration
@@ -96,11 +96,11 @@ darwin-rebuild switch --flake '.#mbp'
 
 ## Usage
 
-### Obsidian Headless migration
+### Obsidian Headless (retired 2026-09-16; procedure kept for rollback)
 
-Live Obsidian synchronization and nightly Git backup are independent. Headless Sync runs on Studio and MBP; only Studio performs the Git backup. Do not use the stale Syncthing copy at `/Users/bryan/notes/second-brain`. Phone Sync remains enabled. The Mac Headless clients exclude the `core-plugin` category so the phone's enabled state and each Mac's disabled desktop state remain device-specific.
+The `obsidian-headless` and `vault-git-backup` modules remain in `modules/services/` but no host enables them: the personal vault they served is frozen and Apple Notes is authoritative. Re-enabling them on a host is the rollback path and requires the steps below again. Do not use the stale Syncthing copy at `/Users/bryan/notes/second-brain`.
 
-Perform these steps on one host at a time. Start with Studio, verify it fully, and then repeat on MBP:
+Historical procedure (one host at a time, Studio first, then MBP):
 
 1. In desktop Obsidian, open `/Users/bryan/second-brain`, disable the core **Sync** plugin, and quit Obsidian. Disable automatic commit, pull, and push actions in the Obsidian Git community plugin as well. Desktop Obsidian may be reopened after Headless Sync is healthy, but its Sync plugin must remain off.
 2. Verify `.obsidian/core-plugins.json` contains `"sync": false`. Do not continue while it is `true`.
@@ -121,7 +121,7 @@ git -C /Users/bryan/second-brain ls-files --others --exclude-standard
 
 The nightly job logs to `/tmp/vault-git-backup.log` and `/tmp/vault-git-backup.error.log`. Any nonzero result requires manual investigation; do not respond by pulling, rebasing, resetting, or force-pushing automatically. MBP's `.git` directory remains untouched, but no agent or plugin on MBP may commit, pull, or push this vault.
 
-Follow-up outside this repository: update `/Users/bryan/second-brain/AGENTS.md` so agents treat Studio as the sole Git writer, do not commit or push from MBP, and regard the nightly Studio snapshot as the fallback for uncommitted vault edits. That policy change belongs in the `second-brain` repository and is intentionally not part of this `nix-configs` change.
+The corresponding agent policy lives in the `second-brain` repository's `AGENTS.md`, which now marks that vault as a frozen archive.
 
 ### Inkling-Small release watchdog
 

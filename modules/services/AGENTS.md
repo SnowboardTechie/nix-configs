@@ -90,8 +90,8 @@ but does not execute.
 | syncthing | 8384, 22000 | `/opt/homebrew/bin/syncthing` | Always-on | NixOS uses native module directly |
 | smb-mount | — | mount_smbfs | Event-driven (WatchPaths) | Soft mount, no polling |
 | icloud-backup | — | /usr/bin/rsync | Calendar (2:00 AM) | Excludes .stversions/.syncthing* |
-| obsidian-headless | — | nixpkgs `obsidian-headless` (`ob`) | Always-on after interactive setup | Studio and MBP synchronize `/Users/bryan/second-brain`. Desktop Obsidian Sync must be disabled first. Credentials and E2E passwords stay machine-local and interactive. |
-| vault-git-backup | — | nixpkgs Git | Calendar (3:00 AM) | Studio-only independent backup of `/Users/bryan/second-brain` to `origin/main`; refuses staged, divergent, locked, or in-progress repositories. |
+| obsidian-headless | — | nixpkgs `obsidian-headless` (`ob`) | Always-on after interactive setup | **Retired 2026-09-16 (no host enables it).** Synchronized `/Users/bryan/second-brain` on Studio and MBP until the personal second brain moved to Apple Notes. Module kept as the rollback path. |
+| vault-git-backup | — | nixpkgs Git | Calendar (3:00 AM) | **Retired 2026-09-16 (no host enables it).** Studio-only snapshot of `/Users/bryan/second-brain` to `origin/main`; `scripts/test_vault_git_backup.py` still guards the script for rollback. |
 | hindsight | 8888 (API), 9999 (Control Plane on `::1`), 9998 (IPv4 Control Plane compatibility proxy), 5433 (PostgreSQL) — loopback; 9443/9444 Tailscale Serve HTTPS | uv-locked venv `hindsight-api` + npm-locked Control Plane + Caddy compatibility proxy + nixpkgs postgresql_17+pgvector | Always-on + 6-hourly backup + monthly restore test | Named per-user instances (`services.hindsight.instances.bryan`). Locks in `hindsight-env/` (uv.lock + package-lock.json); service start applies them exactly (`uv sync --locked`, `npm ci`). Studio's `upgrade-system` refreshes coordinated Hindsight locks and takes a pre-upgrade backup before rebuilding; `update-system` applies committed versions only. Hindsight's packaged next-intl middleware requires the literal `localhost` server hostname for internal locale rewrites; on macOS that binds `::1`. The `9998` proxy provides Tailscale Serve an IPv4 loopback target, dials `::1`, and keeps internal rewrites on plain HTTP. Secrets read at exec time from `~/.secrets/hindsight-<name>/` — never in plists/derivations. Backups age-encrypted to declared public recipient; tiered retention 48h/14d/4w + pre-upgrade via `hindsight-<name>-backup-now pre-upgrade`. PostgreSQL major upgrades are explicit migrations, never routine rebuilds. |
 | hermes | 443, 9119, 9120 (Studio Tailscale only) | Nix client package + isolated per-user managed runtimes + Caddy proxies | Always-on on Studio; Bryan updates nightly, Traci weekly | Studio runs Bryan's gateway/dashboard plus per-user headless remote backends. Nix owns launchd, permissions, ports, and Tailscale while each server runtime updates independently with a hard-gated state backup and clean-checkout check. Bryan's dashboard remains bound to its Tailscale IP so Hermes keeps its authentication gate enabled; Tailscale Serve and Caddy add HTTPS on port 443. Traci's backend remains loopback-only behind its own authenticated proxy. MBP is a native client; Linux clients are managed outside this repository. |
 | dashy | 8088 (Studio Tailscale), 8089 (loopback status adapter) | Nixpkgs `dashy-ui` static build + Caddy + Python status adapter | Always-on | Private service homepage. Configuration is compiled into the immutable static build; mutable UI editing and upstream proxy endpoints are absent. Status dots read only the allowlisted Hermes watchdog state. |
@@ -104,9 +104,9 @@ imports = [ ... syncthing ... ];
 services.syncthing.enable = true;
 ```
 
-Only **studio** enables the full stack (ollama, open-webui, monitoring, smb-mount, icloud-backup) and nightly vault Git backup.
+Only **studio** enables the full stack (ollama, open-webui, monitoring, smb-mount, icloud-backup).
 All darwin hosts enable **syncthing**.
-Studio and MBP enable **obsidian-headless** for live vault synchronization. Studio is the sole automated Git writer for that vault; MBP must not automatically commit, pull, or push it.
+No host enables **obsidian-headless** or **vault-git-backup** any more (retired 2026-09-16; the personal second brain is Apple Notes and `/Users/bryan/second-brain` is a frozen archive). Nothing may automatically commit, pull, push, or sync that archive.
 
 ## Alerting (monitoring module)
 
@@ -143,9 +143,9 @@ Three launchd scheduling modes used (match existing when adding):
 | Event-driven one-shot | `RunAtLoad=true` + `KeepAlive=false` + `WatchPaths` | smb-mount |
 | Calendar-scheduled | `StartCalendarInterval` only | icloud-backup, vault-git-backup |
 
-## Obsidian Vault Sync and Backup
+## Obsidian Vault Sync and Backup (retired; rollback reference)
 
-Obsidian Headless Sync and Git snapshots are separate layers:
+Retired 2026-09-16: neither module is enabled on any host. The description below is how they worked and what re-enabling would require. Obsidian Headless Sync and Git snapshots are separate layers:
 
 - `obsidian-headless` provides live bidirectional synchronization through the existing Obsidian remote vault.
 - `vault-git-backup` creates a nightly Studio-only Git snapshot and normally pushes it to `origin/main`.
@@ -163,8 +163,9 @@ The Git backup exits successfully when there is nothing to commit. Before stagin
 - **NEVER** use Nix store paths for ProgramArguments for Homebrew packages — use `/opt/homebrew/bin/` (exception: tools not in Homebrew, like blackbox_exporter, use nixpkgs derivations).
 - **ALWAYS** include both darwin and nixos aspects (even if nixos is a stub).
 - User services log to `/tmp/{name}.log` and `/tmp/{name}.error.log` so alloy can discover them. Root LaunchDaemons must instead use a root-owned, non-world-writable directory under `/var/log` to prevent predictable-path symlink attacks.
-- **NEVER** run desktop Obsidian Sync and `obsidian-headless` against the same local vault concurrently.
-- **NEVER** enable `vault-git-backup` on an Obsidian replica; Studio is the sole Git writer for `second-brain`.
+- **NEVER** run desktop Obsidian Sync and `obsidian-headless` against the same local vault concurrently (rollback only; both retired).
+- **NEVER** enable `vault-git-backup` on an Obsidian replica; if ever re-enabled, Studio is the sole Git writer for `second-brain`.
+- **NEVER** re-enable either module for `/Users/bryan/second-brain` without reopening the 2026-09-16 Apple Notes decision; the archive is frozen.
 - **NEVER** rely on `pip install --user` for background services. The transitive dep tree is un-pinned and can rot invisibly. Use `uv tool install` (isolated venv + lockfile) or a Nix-packaged equivalent.
 - NixOS stubs marked `# TODO` are intentional — use native NixOS modules when implementing.
 - open-webui depends implicitly on ollama via `ollamaUrl` default — no hard dependency declared.

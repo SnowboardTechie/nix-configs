@@ -22,7 +22,6 @@
       # Service modules
       syncthing
       hermes
-      obsidian-headless
     ];
 
     # === Core System Settings ===
@@ -45,10 +44,6 @@
     # === Enable Services ===
 
     services.syncthing.enable = true;
-    services.obsidian-headless = {
-      enable = true;
-      vaultPath = "/Users/bryan/second-brain";
-    };
     services.tailscale.enable = true;
     services.hermes = {
       enable = true;

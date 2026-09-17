@@ -1,7 +1,9 @@
 # Host configuration: studio (Home Server and Personal Desktop Mac)
 #
 # Features: fonts, nix-settings, zsh, homebrew, editors, git, cli-tools, personal desktop
-# Services: Hermes, ollama, open-webui, monitoring, smb-mount, syncthing, Obsidian Sync, vault backup, iCloud backup
+# Services: Hermes, ollama, open-webui, monitoring, smb-mount, syncthing, iCloud backup
+# (Obsidian Headless Sync and the vault Git backup were retired 2026-09-16: the personal
+# second brain moved to Apple Notes; ~/second-brain is a frozen archive.)
 # Host-specific: Media server tools (cloudflared, etc.)
 { inputs, ... }:
 {
@@ -27,8 +29,6 @@
       hermes
       hindsight
       dashy
-      obsidian-headless
-      vault-git-backup
     ];
 
     # === Core System Settings ===
@@ -60,14 +60,6 @@
     services.monitoring.enable = true;
     services.smb-mount.enable = true;
     services.syncthing.enable = true;
-    services.obsidian-headless = {
-      enable = true;
-      vaultPath = "/Users/bryan/second-brain";
-    };
-    services.vault-git-backup = {
-      enable = true;
-      vaultPath = "/Users/bryan/second-brain";
-    };
     services.tailscale.enable = true;
     services.icloud-backup.enable = true;
     services.hermes = {
