@@ -7,7 +7,7 @@
 # Host-specific: Media server tools (cloudflared, etc.)
 { inputs, ... }:
 {
-  flake.modules.darwin.studio = { ... }: {
+  flake.modules.darwin.studio = { config, ... }: {
     imports = with inputs.self.modules.darwin; [
       # Base features
       fonts
@@ -154,6 +154,8 @@
     services.dashy = {
       enable = true;
       host = "100.121.238.48";
+      # Derived so the portal links follow the one authoritative Grafana port.
+      grafanaBaseUrl = "http://${config.services.dashy.host}:${toString config.services.monitoring.grafana.port}";
     };
 
     # === Service Health & UNRAID NAS Monitoring ===
@@ -162,6 +164,10 @@
     # localhost:9093) dedups/routes → email via smtp2go. Requires one secret:
     #   ~/.secrets/grafana-smtp-password   (smtp2go password, shared with Grafana)
     services.monitoring.alertEmail = "bryan@snowboardtechie.com";
+
+    # Studio host policy: keep Grafana clear of the 3000/3001 development-server
+    # range. The monitoring module's reusable default stays 3000.
+    services.monitoring.grafana.port = 33000;
 
     services.monitoring.blackbox.targets = [
       "http://localhost:11434/api/tags" # Ollama
