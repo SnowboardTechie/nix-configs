@@ -91,6 +91,25 @@ class MonitoringBootSafetyTests(unittest.TestCase):
                 self.assertIn(path, monitoring_activation)
 
 
+class StudioGrafanaPortContractTests(unittest.TestCase):
+    """Studio pins Grafana off the 3000/3001 development-server range."""
+
+    def test_studio_grafana_port_is_33000(self):
+        self.assertEqual(33000, nix_eval_json(f"{STUDIO}.services.monitoring.grafana.port"))
+
+    def test_grafana_launchagent_environment_uses_the_studio_port(self):
+        environment = nix_eval_json(
+            f"{STUDIO}.launchd.user.agents.grafana.serviceConfig.EnvironmentVariables"
+        )
+        self.assertEqual("33000", environment["GF_SERVER_HTTP_PORT"])
+
+    def test_dashy_grafana_base_url_derives_from_the_studio_port(self):
+        self.assertEqual(
+            "http://100.121.238.48:33000",
+            nix_eval_json(f"{STUDIO}.services.dashy.grafanaBaseUrl"),
+        )
+
+
 class MonitoringStorageMigrationTests(unittest.TestCase):
     def run_migration(self, owner_group, *paths):
         return subprocess.run(

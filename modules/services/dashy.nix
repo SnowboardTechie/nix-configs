@@ -10,7 +10,7 @@
     let
       cfg = config.services.dashy;
       statusState = "/Users/${config.system.primaryUser}/.local/state/hermes/studio-service-watchdog.json";
-      grafanaBase = "http://100.121.238.48:3000";
+      grafanaBase = cfg.grafanaBaseUrl;
       grafanaHealth = "${grafanaBase}/d/service-health/service-health";
       grafanaLogs = "${grafanaBase}/d/studio-logs/studio-service-logs";
       statusTarget = name: "watchdog:///${lib.replaceStrings [ " " ] [ "%20" ] name}";
@@ -216,6 +216,15 @@
           type = lib.types.port;
           default = 8088;
           description = "Port for the Dashy portal.";
+        };
+        grafanaBaseUrl = lib.mkOption {
+          type = lib.types.str;
+          default = "http://127.0.0.1:3000";
+          description = ''
+            Base URL every Grafana-backed portal link is built from. Hosts
+            should derive this from services.monitoring.grafana.port so the
+            listener and the portal links cannot drift apart.
+          '';
         };
         statusPort = lib.mkOption {
           type = lib.types.port;
