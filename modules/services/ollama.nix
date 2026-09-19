@@ -89,15 +89,15 @@
         };
       };
 
-      # Firewall rules + restart-on-rebuild, folded into extraActivation because
+      # Firewall rules + Tailscale Serve, folded into extraActivation because
       # nix-darwin's system.activationScripts only composes a fixed set of named
       # phases into the activate script (custom names like `ollama-firewall` are
       # silently ignored). See services/AGENTS.md for the full footgun writeup.
       #
-      # The restart covers brew-upgrade-without-plist-change: when brew bumps
-      # /opt/homebrew/bin/ollama, the plist file is unchanged so nix-darwin
-      # doesn't reload the agent. Without this kickstart, ollama keeps running
-      # the old binary until something else restarts it.
+      # Picking up brew binary upgrades is deliberately NOT handled here:
+      # extraActivation runs long before the homebrew phase, so a restart here
+      # races the upgrade it is meant to react to. base/homebrew.nix re-pins
+      # every brew-backed agent in postActivation instead.
       system.activationScripts.extraActivation.text = lib.mkAfter ''
         # === ollama firewall ===
         /usr/libexec/ApplicationFirewall/socketfilterfw --add /opt/homebrew/bin/ollama >/dev/null 2>&1 || true
@@ -114,13 +114,6 @@
             exit 1
           fi
         ''}
-
-        # === ollama restart on rebuild (picks up brew binary upgrades) ===
-        ollama_uid=$(/usr/bin/id -u ${config.system.primaryUser})
-        if /bin/launchctl print "gui/$ollama_uid/org.nixos.ollama" >/dev/null 2>&1; then
-          echo "Restarting Ollama to pick up any binary updates..."
-          /bin/launchctl kickstart -k "gui/$ollama_uid/org.nixos.ollama" || true
-        fi
       '';
     };
   };
