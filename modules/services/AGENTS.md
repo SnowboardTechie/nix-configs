@@ -80,11 +80,47 @@ before/after ordering relative to the rest of the activate script.
 **Do NOT use** `system.activationScripts.{my-custom-name}.text` — it compiles
 but does not execute.
 
+### Homebrew upgrades and launchd cdhash pins
+
+The phase list above has a second edge. `homebrew` is **second to last**, so
+anything that must react to a brew upgrade cannot live in `extraActivation`
+near the start — it has to be `postActivation`.
+
+This matters because launchd pins every job to the **cdhash** of the binary
+present when the job was bootstrapped. Homebrew kegs are ad-hoc signed
+(`Signature=adhoc`, TeamIdentifier not set), so every upgrade mints a fresh
+cdhash. `homebrew.onActivation.upgrade` replaces the binary in place without
+changing the plist, so nix-darwin's `userLaunchd` phase leaves the job alone
+and the pin goes stale. The job then dies with `EX_CONFIG` (78) and
+`job state = spawn failed` on its next respawn — permanently, because
+`KeepAlive` just retries the same rejected exec. Diagnostic tell: the job's
+`runs` counter climbs while its `StandardErrorPath` log stays untouched,
+because the process never actually executes.
+
+`launchctl kickstart` **cannot** repair this. It restarts a job without
+re-registering it, so it never re-reads the plist or re-takes the cdhash.
+Only `bootout` + `bootstrap` does.
+
+`modules/base/homebrew.nix` handles this centrally in `postActivation`: it
+derives the brew-backed agents by filtering `config.launchd.user.agents` for a
+`/opt/homebrew` program path, then re-pins each one after the homebrew phase.
+The filter sees evaluated paths, so an agent written as
+`"${config.homebrew.prefix}/bin/foo"` is covered too. **Service modules must
+not add their own restart block** — a module-local one runs in the wrong phase
+and duplicates the shared work.
+
+**Ollama lost ~85 minutes to this on 2026-09-19**: brew poured 0.34.2 at
+10:37:23, the running 0.34.1 process died at 10:42, and launchd then failed to
+spawn it 1034 times until the agent was booted out and bootstrapped. The
+pre-existing mitigation was wrong twice over — it sat in `extraActivation`
+(before the upgrade it meant to react to) and used `kickstart` (which cannot
+re-pin). Fixed in `824b9ad`.
+
 ## Services
 
 | Service | Port(s) | Binary | Scheduling | Notes |
 |---------|---------|--------|------------|-------|
-| ollama | 11434 | `/opt/homebrew/bin/ollama` | Always-on | Flash attention, q8_0 KV cache. Auto-restarts on rebuild to pick up brew upgrades. Studio forwards the loopback listener tailnet-only through Tailscale Serve. |
+| ollama | 11434 | `/opt/homebrew/bin/ollama` | Always-on | Flash attention, q8_0 KV cache. Re-pinned after brew upgrades by the shared `postActivation` block in `base/homebrew.nix`, not by a module-local restart. Studio forwards the loopback listener tailnet-only through Tailscale Serve. |
 | open-webui | 8080 | uv tool venv `~/.local/bin/open-webui` | Always-on + daily updater | Installed via `uv tool install`. Updater has an import probe — refuses to kickstart a broken install. |
 | monitoring | 9090, 9093, 9100, 33000 (Studio Grafana; module default 3000), 3100, 12345, 9115 | prometheus, alertmanager, node_exporter, grafana, loki, alloy, blackbox_exporter | Always-on | Binds 0.0.0.0 (except Alertmanager — loopback-only, its silence API is unauthenticated); 7 agents; SMTP via smtp2go; alertmanager + blackbox_exporter via nixpkgs derivations; alloy replaced promtail (EOL March 2026). Grafana's reusable default is 3000, but `hosts/studio.nix` overrides `services.monitoring.grafana.port = 33000` to keep port 3000 free for development servers; the launchd `GF_SERVER_HTTP_PORT`, the Prometheus scrape target, and `services.dashy.grafanaBaseUrl` all derive from that one option. Alerts: Prometheus → Alertmanager → email. |
 | syncthing | 8384, 22000 | `/opt/homebrew/bin/syncthing` | Always-on | NixOS uses native module directly |
@@ -158,7 +194,9 @@ The Git backup exits successfully when there is nothing to commit. Before stagin
 
 ## Anti-Patterns
 
-- **NEVER** use arbitrary names for `system.activationScripts.{foo}.text` — see footgun above. Use `extraActivation.text = lib.mkAfter …` instead.
+- **NEVER** use arbitrary names for `system.activationScripts.{foo}.text` — see footgun above. Use `extraActivation.text = lib.mkAfter …` instead — **except** for work that must follow a Homebrew upgrade, which belongs in `postActivation` because the `homebrew` phase is second to last.
+- **NEVER** add a module-local restart block for a brew-backed launchd agent. `base/homebrew.nix` re-pins them all in `postActivation`; a per-service block runs in the wrong phase and duplicates the shared work.
+- **NEVER** use `launchctl kickstart` to pick up a replaced binary. It restarts a job without re-registering it, so it cannot refresh launchd's cdhash pin. Use `bootout` + `bootstrap`.
 - **NEVER** point a boot-time system LaunchDaemon directly at `/nix/store`. The Nix volume may not be mounted when launchd first spawns it, causing `EX_CONFIG` and a persistent penalty-box state. Start through `/bin/sh` and wait for the real executable before `exec` (see `hermes.nix`).
 - **NEVER** use Nix store paths for ProgramArguments for Homebrew packages — use `/opt/homebrew/bin/` (exception: tools not in Homebrew, like blackbox_exporter, use nixpkgs derivations).
 - **ALWAYS** include both darwin and nixos aspects (even if nixos is a stub).
