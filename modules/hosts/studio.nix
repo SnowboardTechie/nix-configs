@@ -29,6 +29,7 @@
       hermes
       hindsight
       dashy
+      summit-point-gallery
     ];
 
     # === Core System Settings ===
@@ -157,6 +158,13 @@
       # Derived so the portal links follow the one authoritative Grafana port.
       grafanaBaseUrl = "http://${config.services.dashy.host}:${toString config.services.monitoring.grafana.port}";
     };
+
+    # Loopback-only static review service for the Summit Point website
+    # concepts. Six thompson.codes hostnames reach it through the existing
+    # remotely managed Cloudflare Tunnel; Caddy does the five root rewrites.
+    # Content is published by the site repo's scripts/publish-review.sh into
+    # an immutable releases/<sha>/ directory, never from a working tree.
+    services.summit-point-gallery.enable = true;
 
     # === Service Health & UNRAID NAS Monitoring ===
 
