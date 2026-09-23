@@ -160,8 +160,8 @@
     };
 
     # Loopback-only static review service for the Summit Point website
-    # concepts. Six thompson.codes hostnames reach it through the existing
-    # remotely managed Cloudflare Tunnel; Caddy does the five root rewrites.
+    # concept preview. Only summitpoint.thompson.codes reaches it, through the
+    # existing remotely managed Cloudflare Tunnel; other hosts get a 404.
     # Content is published by the site repo's scripts/publish-review.sh into
     # an immutable releases/<sha>/ directory, never from a working tree.
     services.summit-point-gallery.enable = true;

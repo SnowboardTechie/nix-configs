@@ -1,18 +1,12 @@
-# Summit Point concept gallery — loopback-only static review service.
+# Summit Point concept preview — loopback-only static review service.
 #
 # Serves one immutable, commit-addressed static build of the Summit Point
-# website concepts (repository: bryan/summit-point-site) to the existing
-# remotely managed Cloudflare Tunnel.
+# website concept preview (repository: bryan/summit-point-site) to the
+# existing remotely managed Cloudflare Tunnel.
 #
-# Six public hostnames map to this ONE origin. Caddy — not Cloudflare —
-# performs the five concept root rewrites, so the tunnel holds no path rules.
-#
-#   summitpoint.thompson.codes            -> /index.html
-#   summitpoint-ledger.thompson.codes     -> /concepts/builders-ledger/index.html
-#   summitpoint-blueprint.thompson.codes  -> /concepts/blueprint-to-payoff/index.html
-#   summitpoint-horizon.thompson.codes    -> /concepts/institutional-horizon/index.html
-#   summitpoint-desk.thompson.codes       -> /concepts/capital-desk/index.html
-#   summitpoint-standard.thompson.codes   -> /concepts/summit-point-standard/index.html
+# Exactly one public hostname reaches this origin: summitpoint.thompson.codes.
+# Any request carrying another Host header gets a 404, so a stale tunnel route
+# or DNS record can never serve the preview under a different name.
 #
 # Port owner: this module owns 127.0.0.1:4321. Astro's dev server uses 4322
 # and must NEVER be tunneled.
@@ -39,18 +33,9 @@
     let
       cfg = config.services.summit-point-gallery;
 
-      # Public hostname label -> generated file served at that host's root.
-      conceptHosts = {
-        "summitpoint-ledger" = "/concepts/builders-ledger/index.html";
-        "summitpoint-blueprint" = "/concepts/blueprint-to-payoff/index.html";
-        "summitpoint-horizon" = "/concepts/institutional-horizon/index.html";
-        "summitpoint-desk" = "/concepts/capital-desk/index.html";
-        "summitpoint-standard" = "/concepts/summit-point-standard/index.html";
-      };
+      hostname = "summitpoint.${cfg.domain}";
 
-      fqdn = label: "${label}.${cfg.domain}";
-
-      # Review-phase response safety. Applied to every response on every host:
+      # Review-phase response safety. Applied to every response, 404s included:
       # the preview must not be indexed, archived, cached, sniffed, or allowed
       # to reach the network for anything.
       securityHeaders = {
@@ -61,33 +46,15 @@
           "X-Content-Type-Options" = [ "nosniff" ];
           "Referrer-Policy" = [ "no-referrer" ];
           "Permissions-Policy" = [ "camera=(), microphone=(), geolocation=()" ];
-          # Static-site CSP. frame-ancestors/frame-src stay 'self' because the
-          # gallery previews each concept in a same-origin iframe.
+          # Static-site CSP. Nothing on the site frames or is framed, so
+          # framing is refused both ways.
           "Content-Security-Policy" = [
             ("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
-              + "script-src 'self'; frame-src 'self'; frame-ancestors 'self'; "
+              + "script-src 'self'; frame-src 'none'; frame-ancestors 'none'; "
               + "base-uri 'none'; form-action 'none'")
           ];
         };
       };
-
-      # One route per concept host: rewrite ONLY that host's root to its
-      # generated page. Assets and deeper path routes fall through to the
-      # shared file server untouched, so a concept host still serves
-      # /_astro/*.css and /favicon.svg normally.
-      conceptRoutes = lib.mapAttrsToList
-        (label: target: {
-          match = [{
-            host = [ (fqdn label) ];
-            path = [ "/" ];
-          }];
-          handle = [{
-            handler = "rewrite";
-            uri = target;
-          }];
-          # Fall through to the file server below rather than terminating.
-        })
-        conceptHosts;
 
       caddyConfig = pkgs.writeText "summit-point-gallery-caddy.json" (builtins.toJSON {
         admin.disabled = true;
@@ -97,15 +64,22 @@
           automatic_https.disable = true;
           routes = [
             { handle = [ securityHeaders ]; }
-          ]
-          ++ conceptRoutes
-          ++ [
             {
+              match = [{ host = [ hostname ]; }];
               handle = [{
                 handler = "file_server";
                 root = cfg.root;
-                # An unknown path must 404, never fall back to a concept page.
+                # An unknown path must 404, never fall back to another page.
                 pass_thru = false;
+              }];
+              terminal = true;
+            }
+            {
+              # Any other Host. Caddy answers a request no route handles with
+              # an empty 200, so the 404 has to be explicit.
+              handle = [{
+                handler = "static_response";
+                status_code = 404;
               }];
               terminal = true;
             }
@@ -115,7 +89,7 @@
     in
     {
       options.services.summit-point-gallery = {
-        enable = lib.mkEnableOption "loopback-only Summit Point concept review service";
+        enable = lib.mkEnableOption "loopback-only Summit Point concept preview service";
 
         root = lib.mkOption {
           type = lib.types.str;
@@ -152,9 +126,8 @@
           type = lib.types.str;
           default = "thompson.codes";
           description = ''
-            Parent domain for the six first-level review hostnames. Concept
-            hosts are first-level labels below it (summitpoint-ledger.<domain>),
-            never multi-level names.
+            Parent domain for the one review hostname, summitpoint.<domain>.
+            Requests for any other host are answered with a 404.
           '';
         };
       };
