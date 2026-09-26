@@ -1,6 +1,6 @@
 # Nix Configuration
 
-Declarative, reproducible system configuration for three macOS hosts using nix-darwin, plus cross-platform development environments for VA projects.
+Declarative, reproducible system configuration for three macOS hosts using nix-darwin and Gnarbox using NixOS, plus cross-platform development environments for VA projects.
 
 ## Architecture
 
@@ -12,7 +12,7 @@ modules/
 ├── dev/        # Development: cli-tools, editors, git
 ├── desktop/    # GUI: shared macOS apps plus NixOS gnome, gaming, and audio
 ├── services/   # Daemons/agents: Hermes, Hindsight, ollama, monitoring, SMB, syncthing (Obsidian Sync/backup modules retained, unused)
-├── hosts/      # Active nix-darwin hosts: a6mbp, mbp, studio
+├── hosts/      # Compositions: a6mbp, mbp, studio (Darwin), gnarbox (NixOS)
 └── dev-envs/   # VA project environments
 ```
 
@@ -44,11 +44,16 @@ Studio also serves the **Summit Point concept preview** (`services.summit-point-
 The personal second brain lives in Apple Notes (iCloud folder `Second Brain`) since 2026-09-16 (decision record in the frozen archive: `~/second-brain/Decisions/2026-09-16-decision-apple-notes-personal-second-brain.md`). Studio no longer runs Obsidian Headless Sync or the nightly `vault-git-backup` snapshot for `/Users/bryan/second-brain`; the archive repository and its remote are preserved unchanged as rollback history. After `update-system`, `launchctl print gui/$(id -u)/md.obsidian.headless-sync` and `…/com.snowboardtechie.vault-git-backup` should both report the agents as absent.
 **Location:** [`modules/hosts/studio.nix`](modules/hosts/studio.nix)
 
+### gnarbox (NixOS desktop)
+
+Gnarbox is a GNOME gaming desktop with Tailscale and a Hermes Desktop/CLI client of Studio's primary backend. Its fresh 26.05 installation supplies the storage layout in [`hardware-configs/gnarbox.nix`](hardware-configs/gnarbox.nix); do not reuse the pre-Omarchy disk UUIDs or LUKS configuration. SSH is key-only, sudo still requires a password, and GNOME uses its normal screen-lock defaults. Syncthing is installed but has no folder/device configuration until Bryan sets it up; do not sync the retired personal second-brain archive.
+**Location:** [`modules/hosts/gnarbox.nix`](modules/hosts/gnarbox.nix)
+
 ### Shared Configuration
 
-All managed hosts are Macs and share common packages through feature modules.
+Managed hosts share common packages through feature modules on both Darwin and NixOS.
 
-Feature modules define both Darwin and NixOS aspects, but this flake currently publishes no NixOS system output. Linux machines consume this repository through development flakes while their operating systems and packages are managed separately.
+Feature modules define both Darwin and NixOS aspects. Gnarbox is the published NixOS system output; other Linux machines use only the development flakes and manage their operating systems separately.
 
 - **CLI tools (both platforms):** [`modules/dev/cli-tools.nix`](modules/dev/cli-tools.nix)
 - **Git tools (both platforms):** [`modules/dev/git.nix`](modules/dev/git.nix)
@@ -70,6 +75,8 @@ curl -fsSL https://install.determinate.systems/nix | sh -s -- install --determin
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 ```
+
+**Gnarbox:** NixOS is already installed. Before any flake activation, compare `hardware-configs/gnarbox.nix` with the live `/etc/nixos/hardware-configuration.nix`, especially the root, EFI, and swap UUIDs. Preserve the fresh installation's `system.stateVersion = "26.05"`.
 
 ## Installation
 
@@ -95,6 +102,19 @@ Subsequent rebuilds:
 ```bash
 darwin-rebuild switch --flake '.#mbp'
 ```
+
+**Gnarbox (on the NixOS machine):** Clone this repository to `~/code/nix-configs`, then evaluate and build before switching. Keep `/etc/nixos` and the prior boot generation available for rollback.
+
+```bash
+cd ~/code/nix-configs
+nix --extra-experimental-features 'nix-command flakes' flake check --no-build
+nix --extra-experimental-features 'nix-command flakes' build --no-link '.#nixosConfigurations.gnarbox.config.system.build.toplevel'
+sudo env NIX_CONFIG='experimental-features = nix-command flakes' nixos-rebuild switch --flake '.#gnarbox'
+```
+
+After switching, authenticate the existing tailnet interactively with `sudo tailscale up` (do not put auth keys in Git or command history). Verify `tailscale status` and SSH access before rebooting. Hermes is client-only; connect the Desktop app to Studio's authenticated remote backend at `https://bryans-mac-studio.tail5ba690.ts.net` using its normal login flow, not a second local gateway. Confirm remote authentication in the app rather than inferring it from a successful Nix build.
+
+Next, clone the [dotfiles](https://git.snowboardtechie.com/bryan/dotfiles) to `~/code/dotfiles` and follow its NixOS full-ownership Stow preflight (`stow -n -v` before apply) and setup script. Git identity and any signing credentials are machine-local and must not go into this flake. OpenCode and Zed use Studio Ollama over the tailnet at `http://100.121.238.48:11434`; Gnarbox does not run another Ollama server. Verify `/api/tags` from Gnarbox after Tailscale authentication before claiming that AI connections work.
 
 ## Usage
 

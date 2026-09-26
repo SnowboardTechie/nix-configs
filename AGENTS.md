@@ -4,7 +4,7 @@
 
 ## Overview
 
-Declarative system configs for 3 macOS hosts using nix-darwin, plus cross-platform development flakes. Uses **flake-parts** + **import-tree** for automatic module discovery.
+Declarative system configs for 3 macOS hosts using nix-darwin and Gnarbox using NixOS, plus cross-platform development flakes. Uses **flake-parts** + **import-tree** for automatic module discovery.
 
 ### Dendritic Architecture
 
@@ -36,7 +36,7 @@ nix-configs/
 │   ├── dev/               # Dev tools: cli-tools, editors, git
 │   ├── desktop/           # NixOS-only modules: gnome, gaming, audio
 │   ├── services/          # Daemons: ollama, open-webui, monitoring, smb-mount, syncthing, icloud-backup
-│   ├── hosts/             # Active nix-darwin compositions: a6mbp, mbp, studio
+│   ├── hosts/             # Darwin: a6mbp, mbp, studio; NixOS: gnarbox
 │   └── dev-envs/          # VA project shells (see dev-envs/AGENTS.md)
 └── overlays/              # Single overlay: nixpkgs-unstable → pkgs.unstable
 ```
@@ -87,6 +87,8 @@ Is this a host-specific setting (only one host needs it)?
 ```bash
 # macOS
 darwin-rebuild switch --flake '.#mbp'     # or a6mbp, studio
+# NixOS (on Gnarbox, after verifying hardware UUIDs)
+sudo nixos-rebuild switch --flake '.#gnarbox'
 # Validate
 nix flake check
 # Format
@@ -166,7 +168,7 @@ README.md is kept **high-level** — it describes architecture and host purposes
 | Change | README Section |
 |--------|----------------|
 | Service module in `modules/services/` | Architecture tree + host sections |
-| Host packages in `modules/hosts/*.nix` | Host section (mbp, a6mbp, studio) |
+| Host packages in `modules/hosts/*.nix` | Host section (mbp, a6mbp, studio, gnarbox) |
 | Dev-env versions in `modules/dev-envs/*.nix` | "Development Environments" |
 
 Verify with:

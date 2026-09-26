@@ -76,6 +76,14 @@
         };
       };
 
+      nixosConfigurations.gnarbox = inputs.nixpkgs.lib.nixosSystem {
+        specialArgs = {
+          inherit inputs;
+          outputs = inputs.self;
+        };
+        modules = [ inputs.self.modules.nixos.gnarbox ];
+      };
+
     };
   };
 }

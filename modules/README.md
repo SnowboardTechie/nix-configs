@@ -1,6 +1,6 @@
 # Dendritic Modules Structure
 
-This directory implements a **dendritic (tree-like) module organization** pattern for the nix-configs repository. Instead of organizing code by active host (mbp, a6mbp, studio), we organize by **feature/capability**, with modules defining Darwin and NixOS aspects. The current published hosts are Darwin; Linux consumers can use the development flakes.
+This directory implements a **dendritic (tree-like) module organization** pattern for the nix-configs repository. Instead of organizing code by host, we organize by **feature/capability**, with modules defining Darwin and NixOS aspects. The published hosts are three Darwin systems and the Gnarbox NixOS desktop; other Linux systems can use the development flakes.
 
 ## Directory Organization
 
@@ -39,6 +39,7 @@ Host-specific configurations:
 - `mbp.nix` - Personal MacBook Pro
 - `a6mbp.nix` - Work MacBook Pro
 - `studio.nix` - Home server and personal desktop Mac
+- `gnarbox.nix` - NixOS desktop (hardware configuration in `../hardware-configs/`)
 
 Each host module imports and composes the feature modules above.
 
@@ -55,7 +56,7 @@ Development environment definitions for VA projects:
 This follows the **flake-parts + import-tree** organization:
 
 1. **Feature modules** (base, dev, services, desktop) define reusable configurations
-2. **Host modules** (hosts/) compose features for the currently published machines
+2. **Host modules** (hosts/) compose features for the published Darwin and NixOS machines
 3. **Development environments** (dev-envs/) provide isolated project shells across macOS and Linux
 
 Each module is self-contained and can be:
