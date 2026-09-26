@@ -38,6 +38,15 @@
         };
         kernelPackages = pkgs.linuxPackages_latest;
         resumeDevice = "/dev/disk/by-uuid/79097585-b795-447b-bd1a-c488b8e77f96";
+
+         # ROG Azoth 2.4 GHz dongle (USB 0b05:1a83, full-speed on xHCI 0e:00.0)
+         # drops out periodically, and the whole root hub loses power on resume
+         # ("usb1: root hub lost power or was reset" / "xHC error in resume"
+         # after a deep S3 suspend). Keep USB ports/xHCI out of runtime PM so a
+         # quiescent port can't be pulled and fail to re-enumerate. Mitigation,
+         # not a cure: residual 2.4 GHz dropouts are RF -- use a USB 2.0 port
+         # away from Wi-Fi/BT, or pair the keyboard via Bluetooth instead.
+        kernelParams = [ "usbcore.autosuspend=0" ];
       };
 
       networking = {
