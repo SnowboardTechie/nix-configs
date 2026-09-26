@@ -84,7 +84,6 @@
       bat
       biome
       bun
-      claude-code
       direnv
       dnsutils # dig, nslookup (brew: bind)
       eza
