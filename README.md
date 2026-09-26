@@ -46,7 +46,7 @@ The personal second brain lives in Apple Notes (iCloud folder `Second Brain`) si
 
 ### gnarbox (NixOS desktop)
 
-Gnarbox is a GNOME gaming desktop with Tailscale and a Hermes Desktop/CLI client of Studio's primary backend. Its fresh 26.05 installation supplies the storage layout in [`hardware-configs/gnarbox.nix`](hardware-configs/gnarbox.nix); do not reuse the pre-Omarchy disk UUIDs or LUKS configuration. SSH is key-only, sudo still requires a password, and GNOME uses its normal screen-lock defaults. Syncthing is installed but has no folder/device configuration until Bryan sets it up; do not sync the retired personal second-brain archive.
+Gnarbox is a GNOME gaming desktop with Tailscale, a Hermes Desktop/CLI client of Studio's primary backend, and Pi for local agent work using Studio's Ollama models. Its fresh 26.05 installation supplies the storage layout in [`hardware-configs/gnarbox.nix`](hardware-configs/gnarbox.nix); do not reuse the pre-Omarchy disk UUIDs or LUKS configuration. SSH is key-only, sudo still requires a password, and GNOME uses its normal screen-lock defaults. Syncthing is installed but has no folder/device configuration until Bryan sets it up; do not sync the retired personal second-brain archive.
 **Location:** [`modules/hosts/gnarbox.nix`](modules/hosts/gnarbox.nix)
 
 ### Shared Configuration
@@ -114,7 +114,7 @@ sudo env NIX_CONFIG='experimental-features = nix-command flakes' nixos-rebuild s
 
 After switching, authenticate the existing tailnet interactively with `sudo tailscale up` (do not put auth keys in Git or command history). Verify `tailscale status` and SSH access before rebooting. Hermes is client-only; connect the Desktop app to Studio's authenticated remote backend at `https://bryans-mac-studio.tail5ba690.ts.net` using its normal login flow, not a second local gateway. Confirm remote authentication in the app rather than inferring it from a successful Nix build.
 
-Next, clone the [dotfiles](https://git.snowboardtechie.com/bryan/dotfiles) to `~/code/dotfiles` and follow its NixOS full-ownership Stow preflight (`stow -n -v` before apply) and setup script. Git identity and any signing credentials are machine-local and must not go into this flake. OpenCode and Zed use Studio Ollama over the tailnet at `http://100.121.238.48:11434`; Gnarbox does not run another Ollama server. Verify `/api/tags` from Gnarbox after Tailscale authentication before claiming that AI connections work.
+Next, clone the [dotfiles](https://git.snowboardtechie.com/bryan/dotfiles) to `~/code/dotfiles` and follow its Gnarbox Stow preflight (`stow -n -v` before apply) and setup script. Git identity and any signing credentials are machine-local and must not go into this flake. Pi and Zed use Studio Ollama over the tailnet at `http://100.121.238.48:11434`; Gnarbox does not run another Ollama server or install OpenCode. Verify `/api/tags` and a real completion from Gnarbox after Tailscale authentication before claiming that AI connections work.
 
 ## Usage
 

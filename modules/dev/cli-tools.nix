@@ -104,7 +104,7 @@
       nix-direnv
       nixd
       nodejs
-      opencode
+      pi-coding-agent
       #pipx
       #poetry
       #python3 # (brew: python)
