@@ -93,6 +93,7 @@
       fzf
       gh-dash
       gnupg
+      herdr
       htop
       jq
       just
@@ -102,6 +103,7 @@
       ncurses
       nix-direnv
       nixd
+      nodejs
       opencode
       #pipx
       #poetry
