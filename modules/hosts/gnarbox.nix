@@ -126,6 +126,7 @@
         libfido2
         yubioath-flutter
         yubikey-manager
+        discord
       ];
 
       system.stateVersion = "26.05";
