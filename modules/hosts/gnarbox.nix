@@ -97,17 +97,6 @@
           IdleAction = "ignore";
           IdleActionSec = 0;
         };
-        syncthing = {
-          enable = true;
-          user = "bryan";
-          group = "users";
-          dataDir = "/home/bryan";
-          configDir = "/home/bryan/.config/syncthing";
-          guiAddress = "127.0.0.1:8384";
-          openDefaultPorts = true;
-          overrideDevices = false;
-          overrideFolders = false;
-        };
         # Client only: Studio owns the gateway and authenticated remote backend.
         hermes = {
           enable = true;

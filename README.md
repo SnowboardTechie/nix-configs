@@ -46,7 +46,7 @@ The personal second brain lives in Apple Notes (iCloud folder `Second Brain`) si
 
 ### gnarbox (NixOS desktop)
 
-Gnarbox is a GNOME gaming desktop with Tailscale, a Hermes Desktop/CLI client of Studio's primary backend, and Pi for local agent work using Studio's Ollama models. Its fresh 26.05 installation supplies the storage layout in [`hardware-configs/gnarbox.nix`](hardware-configs/gnarbox.nix); do not reuse the pre-Omarchy disk UUIDs or LUKS configuration. SSH is key-only, sudo still requires a password, and GNOME uses its normal screen-lock defaults. Syncthing is installed but has no folder/device configuration until Bryan sets it up; do not sync the retired personal second-brain archive.
+Gnarbox is a GNOME gaming desktop with Tailscale, a Hermes Desktop/CLI client of Studio's primary backend, and Pi for local agent work using Studio's Ollama models. Its fresh 26.05 installation supplies the storage layout in [`hardware-configs/gnarbox.nix`](hardware-configs/gnarbox.nix); do not reuse the pre-Omarchy disk UUIDs or LUKS configuration. SSH is key-only, sudo still requires a password, and GNOME uses its normal screen-lock defaults. Syncthing is disabled on Gnarbox; its prior local configuration is preserved for rollback, and the retired personal second-brain archive must not be synced.
 **Location:** [`modules/hosts/gnarbox.nix`](modules/hosts/gnarbox.nix)
 
 ### Shared Configuration
