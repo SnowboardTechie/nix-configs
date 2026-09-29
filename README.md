@@ -11,7 +11,7 @@ modules/
 ├── base/       # Core system: fonts, homebrew, nix-settings, zsh
 ├── dev/        # Development: cli-tools, editors, git
 ├── desktop/    # GUI: shared macOS apps plus NixOS gnome, gaming, and audio
-├── services/   # Daemons/agents: Hermes, Hindsight, ollama, monitoring, SMB, syncthing (Obsidian Sync/backup modules retained, unused)
+├── services/   # Daemons/agents: Hermes, ollama, monitoring, SMB, syncthing (Obsidian Sync/backup modules retained, unused)
 ├── hosts/      # Compositions: a6mbp, mbp, studio (Darwin), gnarbox (NixOS)
 └── dev-envs/   # VA project environments
 ```
@@ -35,7 +35,7 @@ Work MacBook Pro with syncthing and work tools (AWS, Docker, DDEV, Slack, Zoom).
 Bryan's daily desktop and home server, running the primary Hermes gateway and per-user Tailscale-only remote backends, plus ollama, open-webui, monitoring (Prometheus + Grafana), SMB mount, syncthing, and iCloud backup. It shares Bryan's personal desktop applications with the MBP while retaining the Studio-only service stack. Prometheus and blackbox-exporter run as user-owned system LaunchDaemons so macOS Local Network Privacy cannot strand their LAN probes when Nix store identities change. They wait for the Nix volume before exec, while activation keeps monitoring state directories owned by the service user. Nix owns Hermes launchd supervision, permissions, ports, and Tailscale exposure; Bryan and Traci use isolated managed runtimes that update nightly and weekly, respectively. Actual updates announce their start and verified completion in Bryan's primary Matrix channel, while no-op checks stay silent. Bryan's primary backend is available at `https://bryans-mac-studio.tail5ba690.ts.net` through Tailscale Serve. Ollama remains bound to loopback and is forwarded tailnet-only at `http://100.121.238.48:11434`.
 Traci's isolated headless backend runs under her macOS account and is available at `https://bryans-mac-studio.tail5ba690.ts.net:9120` through Tailscale Serve.
 
-Studio also hosts the self-hosted [Hindsight](https://github.com/vectorize-io/hindsight) shared agent-memory service (bryan instance): dedicated PostgreSQL 17 + pgvector, a uv-locked API on loopback `8888`, and an npm-locked Control Plane on IPv6 loopback `9999`. The API is exposed tailnet-only at `https://bryans-mac-studio.tail5ba690.ts.net:9443` (bearer-authenticated); the key-authenticated Control Plane is exposed at `:9444` through an IPv4 loopback compatibility proxy on `9998` that preserves working locale rewrites behind Tailscale Serve. All extraction/consolidation runs through local Ollama. Six-hourly age-encrypted logical backups with tiered retention (48h/14d/4w + pre-upgrade) live under `~/.local/state/hindsight-bryan/backups/`, with a monthly disposable restore test; `hindsight-bryan-backup-now pre-upgrade` takes the mandatory pre-upgrade snapshot. Versions are pinned by `modules/services/hindsight-env/` lock files; `scripts/check-hindsight-releases.py` is the daily read-only Hermes release watch (register with `hermes cron add`, no-agent mode, workdir this repo). Secrets live in `~/.secrets/hindsight-bryan/` and never enter the store.
+Third-party agent memory is retired. Agents use their harness-native memory and history plus the existing project vaults and personal Apple Notes. Hindsight's service, dedicated database, proxy and scheduled upkeep are no longer declared; its encrypted backups and inactive local data are preserved, not imported into another memory system. Dotfiles owns removal of the Hindsight, context-mode and claude-mem client integrations.
 
 The private Studio service portal is available over Tailscale at `http://100.121.238.48:8088`. It uses the immutable Nixpkgs Dashy static build for links and a read-only local adapter for health state from the model-free Hermes service watchdog; it has no public ingress, arbitrary proxy, or mutable web configuration.
 
@@ -158,11 +158,6 @@ The Hermes watchdog checks grouped-quality Metal support, a complete compatible 
 ### GitHub incident recovery watchdog
 
 The tracked monitor in [`scripts/check-github-status.py`](scripts/check-github-status.py) polls GitHub's official Statuspage summary every five minutes and emits a timestamp-free snapshot. Hermes suppresses unchanged ticks and uses the OpenAI Codex subscription only when the official status changes. This incident-specific finite watch stays silent for its initial baseline and source-health noise, notifies Bryan in Matrix when service meaningfully improves or worsens, and automatically stops after 36 checks (about three hours). The recreatable job definition is [`scripts/github-status-watch.job.json`](scripts/github-status-watch.job.json).
-
-### Hindsight system upgrades
-
-On Studio, `upgrade-system` updates the Hindsight API and Control Plane locks alongside the flake inputs before rebuilding. [`scripts/update-hindsight-locks.py`](scripts/update-hindsight-locks.py) requires a coordinated upstream release, resolves both package locks in temporary environments, and takes the existing encrypted pre-upgrade PostgreSQL backup before publishing changed locks. `update-system` remains deterministic and applies only committed versions. Coding Agents uses its upstream-supported runtime auto-updater.
-
 ### Apply Changes
 
 ```bash

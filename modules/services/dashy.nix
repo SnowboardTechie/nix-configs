@@ -77,13 +77,7 @@
                   icon = "🤖";
                   statusName = "Hermes Dashboard";
                 })
-                (item {
-                  title = "Hindsight";
-                  description = "Shared agent memory control plane";
-                  url = "https://bryans-mac-studio.tail5ba690.ts.net:9444";
-                  icon = "🧠";
-                  statusName = "Hindsight Control Plane";
-                })
+
                 (item {
                   title = "Open WebUI";
                   description = "Local AI chat and model access";
@@ -141,12 +135,7 @@
                   icon = "🔐";
                   statusCheck = false;
                 }
-                (item {
-                  title = "Hindsight API";
-                  description = "Agent-memory data plane";
-                  url = "https://bryans-mac-studio.tail5ba690.ts.net:9444";
-                  icon = "💾";
-                })
+
                 (item {
                   title = "Alertmanager";
                   description = "Alert routing; inspect through Grafana";
