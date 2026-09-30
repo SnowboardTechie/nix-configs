@@ -21,7 +21,6 @@
       personal-desktop
       # Service modules
       ollama
-      dwarfstar
       open-webui
       monitoring
       smb-mount
@@ -55,10 +54,6 @@
       enable = true;
       contextLength = 65536;
       numParallel = 1;
-      tailscaleServe = true;
-    };
-    services.dwarfstar = {
-      enable = true;
       tailscaleServe = true;
     };
     services.open-webui.enable = true;
