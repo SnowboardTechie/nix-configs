@@ -182,6 +182,7 @@
         "syncthing"
       ];
       casks = [
+        "codex"
         "zen"
       ];
     };
