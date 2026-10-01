@@ -84,6 +84,7 @@
       bat
       biome
       bun
+      codex
       direnv
       dnsutils # dig, nslookup (brew: bind)
       eza
