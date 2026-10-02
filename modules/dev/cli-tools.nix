@@ -127,11 +127,8 @@
       typescript-language-server
       yaml-language-server
     ]) ++ [
-      # herdr 0.9.1 fails to link on nixpkgs-unstable (ld.bfd: overlapping FDEs);
-      # the Linux build fix (nixpkgs 277383a) landed on nixos-unstable first.
-      # Switch back to plain `herdr` once nixpkgs-unstable has it.
-      pkgs.unstable.herdr
       # External flake inputs (not in nixpkgs)
+      inputs.herdr.packages.${pkgs.stdenv.hostPlatform.system}.default
       #inputs.googleworkspace-cli.packages.${pkgs.stdenv.hostPlatform.system}.default
       inputs.worktrunk.packages.${pkgs.stdenv.hostPlatform.system}.default
     ];
