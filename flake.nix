@@ -33,6 +33,14 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    # herdr tracks upstream's default branch on Gnarbox (nixpkgs lags releases).
+    # Follows nixos-unstable, matching upstream's own pin; nixpkgs-unstable's
+    # linker breaks the Linux build (ld.bfd: overlapping FDEs).
+    herdr = {
+      url = "github:herdrdev/herdr";
+      inputs.nixpkgs.follows = "nixpkgs-unstable";
+    };
+
     # Zen Browser (Firefox fork with vertical tabs)
     zen-browser = {
       url = "github:0xc000022070/zen-browser-flake/beta";
