@@ -17,6 +17,7 @@
       activation
       openchamber
       personal-desktop
+      cinny
       # Desktop features
       gaming
       # Service modules

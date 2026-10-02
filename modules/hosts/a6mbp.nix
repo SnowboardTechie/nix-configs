@@ -15,6 +15,7 @@
       cli-tools
       activation
       openchamber
+      cinny
       # Service modules
       syncthing
     ];
