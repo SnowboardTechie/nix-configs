@@ -125,6 +125,7 @@
         yubioath-flutter
         yubikey-manager
         discord
+        cinny-desktop
       ];
 
       system.stateVersion = "26.05";
