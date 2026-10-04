@@ -2,7 +2,7 @@
 #
 # Cross-platform gaming configuration. On macOS, installs Steam via Homebrew cask.
 # On NixOS, configures the full gaming stack: Steam with Proton GE, gamescope,
-# gamemode, and 32-bit graphics support.
+# gamemode, 32-bit graphics support, and XIVLauncher for FFXIV.
 { inputs, ... }:
 {
   # Darwin aspect - Steam Homebrew cask
@@ -35,5 +35,10 @@
       remotePlay.openFirewall = true;
       dedicatedServer.openFirewall = true;
     };
+
+    # FFXIV launcher (XIVLauncher.Core) - manages its own Wine/DXVK
+    environment.systemPackages = [
+      pkgs.xivlauncher
+    ];
   };
 }
