@@ -184,6 +184,7 @@
       ];
       casks = [
         "codex"
+        "jellyfin"
         "zen"
       ];
     };
