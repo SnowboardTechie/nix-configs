@@ -671,6 +671,10 @@ refuses a pinned one.
 `omlx_api` reads the key from `settings.json` and passes it to curl on stdin (`-K -`), so it
 never appears in `ps`.
 
+The pinned CLI sets the native process title to `omlx-server`
+(`omlx/cli.py:184`, `omlx/process_title.py:8-27`). Process probes below match that
+exact title, not the original `omlx serve` command line.
+
 ```bash
 set -euo pipefail
 STATE="$HOME/.local/share/omlx-trial"
@@ -683,7 +687,7 @@ omlx_api() {
 launchctl print "gui/$(id -u)/org.nixos.omlx" | grep -E 'state = |pid = |last exit code'
 tail -n 5 /tmp/omlx.error.log                             # a preflight refusal says why here
 /usr/sbin/lsof -nP -iTCP:8000 -sTCP:LISTEN                # exactly one listener, 127.0.0.1:8000
-pgrep -fl 'omlx serve' | wc -l | tr -d ' '                # 1
+pgrep -x 'omlx-server' | wc -l | tr -d ' '                # 1
 curl -fsS http://127.0.0.1:8000/health
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/v1/models   # 401: the key is enforced
 curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' \
@@ -777,7 +781,7 @@ omlx_api() {
 }
 time omlx_api POST "/v1/models/$MODEL_ID/load"
 grep -E 'moe expert offload: wrapped|Lightning MTP|native|fused' "$STATE/logs/server.log" | tail -n 20
-ps -o pid,rss,vsz,command -p "$(pgrep -f 'omlx serve' | head -n 1)"
+ps -o pid,rss,vsz,command -p "$(pgrep -x 'omlx-server')"
 omlx_api POST /v1/chat/completions -H 'Content-Type: application/json' --data-binary '{
   "model": "GLM-5.3-Flash-MLX-mixed-4_8bit",
   "messages": [{"role": "user", "content": "In two sentences, what is a mixture-of-experts model?"}],
@@ -966,7 +970,7 @@ correctly does not show that every client works.
 set -euo pipefail
 launchctl print "gui/$(id -u)/org.nixos.omlx" >/dev/null 2>&1 && echo "agent still loaded" || echo "agent removed"
 /usr/sbin/lsof -nP -iTCP:8000 -sTCP:LISTEN || echo "no listener on 8000"
-pgrep -fl 'omlx serve' || echo "no omlx process"
+pgrep -x 'omlx-server' || echo "no omlx process"
 curl -fsS http://127.0.0.1:11434/api/version
 curl -fsS http://127.0.0.1:11434/api/tags | /usr/bin/python3 -I -c 'import json, sys; print(sorted(m["name"] for m in json.load(sys.stdin)["models"]))'
 tailscale serve status | grep -n 11434

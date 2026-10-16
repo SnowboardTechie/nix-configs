@@ -476,6 +476,15 @@ class Runbook(unittest.TestCase):
         self.assertIn("maturin>=1,<2", section)
         self.assertIn("STOP", section)
 
+    def test_process_probes_use_the_native_server_title(self):
+        # Pinned oMLX calls setproctitle("omlx-server") before serving.
+        bash = "\n".join(re.findall(r"```bash\n(.*?)\n```", self.TEXT, flags=re.S))
+        probes = [line for line in bash.splitlines() if "pgrep" in line]
+        self.assertEqual(3, len(probes))
+        for line in probes:
+            self.assertIn("pgrep -x 'omlx-server'", line)
+            self.assertNotIn("omlx serve", line)
+
     def test_the_commissioning_seed_satisfies_the_preflight(self):
         seed, = [m.group(1) for m in re.finditer(r"<<'PY'\n(.*?)\nPY\n", self.TEXT, flags=re.S)
                  if '"api_key": secrets.token_hex' in m.group(1)]
