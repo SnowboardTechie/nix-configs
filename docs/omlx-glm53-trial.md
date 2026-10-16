@@ -447,6 +447,21 @@ The extensions are built from source on macOS 27, following `Formula/omlx.rb:68-
 kernels are built the `make install` way (`Makefile:30-37`), against the venv's Python. MCP
 and the other extras are deliberately not installed.
 
+Resolve the build-tool allowlist first, using wheels only so this step cannot run an
+sdist's build backend. It includes mlx-lm's `setuptools>=80` and `setuptools-scm>=9`,
+the other pinned Git projects' setuptools/wheel requirements, the Rust extensions'
+Maturin backend, and oMLX's native-kernel requirements. Inspect the exact selected
+sdists' build declarations against this allowlist before compiling the runtime lock.
+The resulting hashed lock must constrain **isolated** build environments during both
+runtime metadata resolution and installation; merely installing it into the target
+venv does not constrain those environments.
+
+Missing or incompatible build dependencies are a **STOP**, not permission to remove
+constraints or hash checks. Extend and re-review the build allowlist/lock if the
+selected sources require another backend or dynamic build dependency. Metadata
+resolution can execute the pinned projects' build hooks, so it is itself within the
+approved installation window. Runtime execution remains untested here.
+
 ```bash
 set -euo pipefail
 STATE="$HOME/.local/share/omlx-trial"
@@ -464,14 +479,26 @@ export PATH
 NO_BINARY=(--no-binary cohere-melody --no-binary pydantic-core --no-binary rpds-py --no-binary tiktoken --no-binary tokenizers)
 
 uv venv --python "$PYTHON" "$VENV"
+uv pip compile - --python "$VENV/bin/python" --only-binary :all: \
+  --exclude-newer "$CUTOFF" --generate-hashes --output-file "$RUNTIME/build-requirements.lock" <<'BUILD'
+setuptools>=80
+setuptools-scm>=9
+wheel
+cmake>=3.27
+nanobind==3.1.0
+mlx==0.32.4
+maturin>=1,<2
+BUILD
+# STOP: review the build lock (versions, sources, hashes) and selected source build requirements.
 uv pip compile "$RUNTIME/src/pyproject.toml" --python "$VENV/bin/python" \
+  --build-constraints "$RUNTIME/build-requirements.lock" --require-build-hashes \
   --exclude-newer "$CUTOFF" --generate-hashes "${NO_BINARY[@]}" --output-file "$RUNTIME/requirements.lock"
-printf '%s\n' 'setuptools>=61.0' 'wheel' 'cmake>=3.27' 'nanobind==3.1.0' |
-  uv pip compile - --python "$VENV/bin/python" --exclude-newer "$CUTOFF" --generate-hashes \
-    --output-file "$RUNTIME/build-requirements.lock"
-# STOP: review both lock files (versions, sources, hashes) before continuing.
-uv pip sync --python "$VENV/bin/python" "${NO_BINARY[@]}" "$RUNTIME/requirements.lock" "$RUNTIME/build-requirements.lock"
-uv pip install --python "$VENV/bin/python" --no-deps --no-build-isolation -e "$RUNTIME/src"
+# STOP: review the runtime lock and confirm all Git requirements use the reviewed immutable commits.
+uv pip sync --python "$VENV/bin/python" "${NO_BINARY[@]}" \
+  --build-constraints "$RUNTIME/build-requirements.lock" --require-build-hashes --exclude-newer "$CUTOFF" \
+  "$RUNTIME/requirements.lock" "$RUNTIME/build-requirements.lock"
+# Editable oMLX uses the already installed reviewed tools; uv may not resolve/download build deps.
+uv pip install --offline --python "$VENV/bin/python" --no-deps --no-build-isolation -e "$RUNTIME/src"
 (
   cd "$RUNTIME/src"
   OMLX_WITH_CUSTOM_KERNEL=1 CMAKE_ARGS="-DPython_EXECUTABLE=$VENV/bin/python" \

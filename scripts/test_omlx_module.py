@@ -457,6 +457,25 @@ class Runbook(unittest.TestCase):
                 result = subprocess.run(["/bin/bash", "-n"], input=block, text=True, capture_output=True)
                 self.assertEqual(0, result.returncode, result.stderr)
 
+    def test_isolated_builds_use_the_reviewed_hashed_build_lock(self):
+        section = self.TEXT.split("**3c. Locked install", 1)[1].split("**3c'. Verify", 1)[0]
+        # Join continuations so checks cover the actual command, not nearby prose.
+        section = section.replace("\\\n", " ")
+        compile_lines = [line for line in section.splitlines() if line.startswith("uv pip compile")]
+        self.assertEqual(2, len(compile_lines))
+        bootstrap, runtime = compile_lines
+        self.assertIn("--only-binary :all:", bootstrap)
+        self.assertIn("--generate-hashes", bootstrap)
+        self.assertIn("--exclude-newer", bootstrap)
+        for command in [runtime, next(line for line in section.splitlines() if line.startswith("uv pip sync"))]:
+            self.assertIn('--build-constraints "$RUNTIME/build-requirements.lock"', command)
+            self.assertIn("--require-build-hashes", command)
+            self.assertIn('--exclude-newer "$CUTOFF"', command)
+        self.assertIn("setuptools>=80", section)
+        self.assertIn("setuptools-scm>=9", section)
+        self.assertIn("maturin>=1,<2", section)
+        self.assertIn("STOP", section)
+
     def test_the_commissioning_seed_satisfies_the_preflight(self):
         seed, = [m.group(1) for m in re.finditer(r"<<'PY'\n(.*?)\nPY\n", self.TEXT, flags=re.S)
                  if '"api_key": secrets.token_hex' in m.group(1)]
