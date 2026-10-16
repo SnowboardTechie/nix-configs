@@ -1,20 +1,27 @@
 # oMLX + GLM-5.3-Flash trial on Studio: review and runbook
 
-**Status (2026-10-16): prepared, not executed.** The governing plan is
+**Status (2026-10-16): installed and trialled in the foreground; not activated.** The
+governing plan is
 [`.hermes/plans/2026-10-16_113658-omlx-glm53-trial.md`](../.hermes/plans/2026-10-16_113658-omlx-glm53-trial.md).
+§9 is the execution record.
 
 This repository change adds a disabled `services.omlx` capability, and Studio imports it with
 `enable = false`. With it disabled, Studio's system derivation is identical to the one at
 `9fd29a4`, so applying it changes nothing on the host.
 
-Nothing in this document has been run unless it says so:
+After Bryan approved the install bundle, the approved installation workers ran phases 3 and 4
+and then the bounded live trial (phases 6-8) against a **foreground** server started with the
+module's exact preflight, arguments and environment, not the launchd agent. Results are in §9.
 
-- no runtime, dependency, toolchain or weights were installed or downloaded;
-- no oMLX code was executed;
-- no inference ran;
-- no service was started, stopped or activated.
+- The runtime is installed from the pinned source, with native kernels, and verified (phase 3).
+- The checkpoint is downloaded and verified 28/28 (phase 4).
+- GLM-5.3-Flash loaded at 0.10 expert residency and passed the short generation, the
+  two-turn tool round trip and the graded repository task (phases 7-8).
+- The foreground server is stopped and port 8000 is free.
+- **Not executed:** phase 5 (enabling through clean, pushed main), the image fixture (8b),
+  fraction escalation, any context beyond 8K, and phase 10. No service was activated.
 
-Every command block below is **not executed**. The blocks pass `bash -n` only.
+Phase 3c's block was corrected during execution (§9). The blocks pass `bash -n`.
 
 This is a trial of a second, on-demand inference runtime beside Ollama. It is not a
 migration. Ollama, its Tailscale route, its models and every client default stay as they are.
@@ -24,13 +31,13 @@ migration. Ollama, its Tailscale route, its models and every client default stay
 | Gate | Result | Basis |
 |---|---|---|
 | **Safe enough to propose installing** | **Conditionally yes.** Loopback-only, single-user, operator-attended, under the conditions in §3.6. **Not** with oMLX's defaults, which leave the admin plane claimable from any web page. | Static source review of oMLX `53ab0e66`, §3 |
-| **Compatibility established statically** | **Yes**, for the checkpoint against the pinned loader and the MoE-offload validator: every check passes and none is unresolved. **Performance and real loading are not established.** | Hub manifest, all 18 shard headers, pinned source, §4 |
-| **Not yet executed** | Everything at runtime: install, kernel build, download, hash verification, strict load, offload behaviour, memory, speed, tool use, quality. | — |
-| **Parent acceptance** | Not given. This document is the candidate's evidence, not its acceptance. | Plan, "Authority" |
+| **Compatibility established statically** | **Yes**, for the checkpoint against the pinned loader and the MoE-offload validator: every check passes and none is unresolved. Live loading and bounded performance are now exercised separately in §9. | Hub manifest, all 18 shard headers, pinned source, §4 |
+| **Executed** | Phases 3-4 (installs, runtime, kernels, commissioning, checkpoint). Phases 6-8 against a foreground loopback server: load at 0.10 residency, short generation, tool round trip and graded repository task all passed, with no swap and normal kernel memory pressure. Decode ran at 2.2-2.6 tok/s, SSD-bound (§9) | §9 |
+| **Not yet executed** | Phase 5 (launchd through clean, pushed main), the image fixture, fraction escalation, contexts beyond 8K (the 64K workflow is **not** claimed), and Bryan's usability judgement | §9 |
+| **Parent acceptance** | Disabled preparation accepted at `db72c6c`. Publication of this execution record records parent acceptance of the bounded trial, not activation or a decision to keep it. | Plan, "Approved execution continuation"; §9, "Parent verification" |
 
-There is no blocker at the preparation stage. These gates remain open: the runtime
-install (§6, phase 3), the full download and hash verification (phase 4), and the live trial
-(phases 6-8).
+There was no blocker at the preparation stage, and none remains for the bounded trial.
+Bryan's usability decision (§7) remains separate; the persistent service is still disabled.
 
 ## 2. Baseline, identities and pins
 
@@ -46,8 +53,8 @@ Observed read-only on Studio, 2026-10-16:
 | Ollama | 0.40.5 on `127.0.0.1:11434`; `/api/ps` empty. Installed: `qwen3.8:27b-mlx` 16.9 GiB, `gemma4:31b-mlx` 17.4 GiB, `qwen3.6:35b-a3b-coding-nvfp4` 20.4 GiB. Studio sets context 65536, one parallel request and Tailscale Serve; the module defaults keep models loaded forever (`keepAlive -1`) and allow 2 loaded models |
 | oMLX | Absent: not on PATH; no `oMLX.app`, process, launchd job, Homebrew formula or tap. `~/.omlx`, `~/.local/share/omlx-trial` and `~/Library/Application Support/oMLX` do not exist |
 | Port 8000 | No listener. The trial uses it (oMLX's own default) |
-| Toolchain | Full Xcode at `/Applications/Xcode.app`, **but the Metal Toolchain component is missing**: `xcrun metal` says to run `xcodebuild -downloadComponent MetalToolchain` |
-| Rust | No Rust toolchain on PATH (Studio does not import `dev/rust.nix`) |
+| Toolchain | Full Xcode 27.0 (27A266a) at `/Applications/Xcode.app`. The Metal Toolchain component was missing at review; phase 3a installed it (§9) |
+| Rust | No Rust toolchain on PATH (Studio does not import `dev/rust.nix`). Phase 3c uses build-time-only store paths (§9) |
 | Python | uv 0.13.1 (Homebrew); uv-managed CPython 3.12.14 is installed at `~/.local/share/uv/python/cpython-3.12.14-macos-aarch64-none` |
 
 ### Pins
@@ -153,9 +160,13 @@ Further detail:
 - **Unresolved items:**
   - browser Local Network Access behaviour;
   - MarkItDown and STS third-party fetches (disabled or unused here);
-  - CMake helper downloads during the kernel build;
   - transformers 5.15-5.17 sandbox details;
   - a vulnerability scan of the git dependencies.
+- **Resolved in execution (§9).** The kernel build downloads nothing: `mlx.extension`
+  generates a CMake project with no FetchContent, and nanobind and MLX come from the venv.
+- **tiktoken's crates float.** Its sdist ships no `Cargo.lock`, so its five crates resolve
+  within their semver ranges at build time. They are checksum-verified by crates.io but
+  not date-frozen. The other four Rust sdists ship a `Cargo.lock`.
 
 ### 3.6 Verdict
 
@@ -411,9 +422,9 @@ Disk budget:
 
 Never download the source FP8 or BF16 weights, or a second copy.
 
-### Phase 3: install and verify the runtime (not executed)
+### Phase 3: install and verify the runtime (executed 2026-10-16; see §9)
 
-**3a. Preconditions and the approved Metal Toolchain**
+**3a. Preconditions and the approved Metal Toolchain** (executed 2026-10-16; results in §9)
 
 ```bash
 set -euo pipefail
@@ -443,6 +454,11 @@ test -z "$(git -C "$RUNTIME/src" status --porcelain)"
 
 **3c. Locked install, Rust extensions from source, native kernels**
 
+Executed 2026-10-16 (§9). Three corrections were found during execution and are in the
+block below: tiktoken's `setuptools-rust` in the build allowlist, the PyO3 macOS link
+flags that tokenizers' sdist does not deliver, and the locked `cmake` on `PATH` for the
+kernel build. `CARGO_HOME` also keeps crate downloads inside the runtime directory.
+
 The extensions are built from source on macOS 27, following `Formula/omlx.rb:68-83`. The
 kernels are built the `make install` way (`Makefile:30-37`), against the venv's Python. MCP
 and the other extras are deliberately not installed.
@@ -450,7 +466,7 @@ and the other extras are deliberately not installed.
 Resolve the build-tool allowlist first, using wheels only so this step cannot run an
 sdist's build backend. It includes mlx-lm's `setuptools>=80` and `setuptools-scm>=9`,
 the other pinned Git projects' setuptools/wheel requirements, the Rust extensions'
-Maturin backend, and oMLX's native-kernel requirements. Inspect the exact selected
+Maturin backend, tiktoken's `setuptools-rust>=1.5.2`, and oMLX's native-kernel requirements. Inspect the exact selected
 sdists' build declarations against this allowlist before compiling the runtime lock.
 The resulting hashed lock must constrain **isolated** build environments during both
 runtime metadata resolution and installation; merely installing it into the target
@@ -471,6 +487,12 @@ PYTHON="$HOME/.local/share/uv/python/cpython-3.12.14-macos-aarch64-none/bin/pyth
 CUTOFF=2026-10-16T00:00:00Z
 export UV_CACHE_DIR="$RUNTIME/uv-cache" UV_PYTHON_DOWNLOADS=never
 export CARGO_PROFILE_RELEASE_STRIP=false MATURIN_STRIP=false
+export CARGO_HOME="$RUNTIME/cargo-home"                # crate downloads stay out of ~/.cargo
+# PyO3 extension modules resolve libpython at load time on macOS. tokenizers' sdist keeps
+# these flags in bindings/python/.cargo/config.toml, which Cargo never reads from the
+# sdist root, so its link fails without them (2026-10-16). Cargo merges them with
+# pydantic-core's identical root config.
+export CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS="-C link-arg=-undefined -C link-arg=dynamic_lookup"
 for pkg in cargo rustc; do                            # approved item (b), pinned by nix-configs' flake.lock
   out=$(nix build --no-link --print-out-paths --inputs-from /Users/bryan/code/nix-configs "nixpkgs#$pkg.out")
   PATH="$out/bin:$PATH"
@@ -478,7 +500,7 @@ done
 export PATH
 NO_BINARY=(--no-binary cohere-melody --no-binary pydantic-core --no-binary rpds-py --no-binary tiktoken --no-binary tokenizers)
 
-uv venv --python "$PYTHON" "$VENV"
+[ -x "$VENV/bin/python" ] || uv venv --python "$PYTHON" "$VENV"   # uv 0.13 refuses an existing venv
 uv pip compile - --python "$VENV/bin/python" --only-binary :all: \
   --exclude-newer "$CUTOFF" --generate-hashes --output-file "$RUNTIME/build-requirements.lock" <<'BUILD'
 setuptools>=80
@@ -488,6 +510,7 @@ cmake>=3.27
 nanobind==3.1.0
 mlx==0.32.4
 maturin>=1,<2
+setuptools-rust>=1.5.2
 BUILD
 # STOP: review the build lock (versions, sources, hashes) and selected source build requirements.
 uv pip compile "$RUNTIME/src/pyproject.toml" --python "$VENV/bin/python" \
@@ -501,7 +524,9 @@ uv pip sync --python "$VENV/bin/python" "${NO_BINARY[@]}" \
 uv pip install --offline --python "$VENV/bin/python" --no-deps --no-build-isolation -e "$RUNTIME/src"
 (
   cd "$RUNTIME/src"
-  OMLX_WITH_CUSTOM_KERNEL=1 CMAKE_ARGS="-DPython_EXECUTABLE=$VENV/bin/python" \
+  # mlx.extension runs a bare `cmake` (generated project: cmake_minimum_required 3.25);
+  # use the locked cmake 4.4.4, not whatever PATH holds (Studio has none).
+  PATH="$VENV/bin:$PATH" OMLX_WITH_CUSTOM_KERNEL=1 CMAKE_ARGS="-DPython_EXECUTABLE=$VENV/bin/python" \
     "$VENV/bin/python" setup.py build_ext --inplace --force
 )
 ```
@@ -532,6 +557,7 @@ A failed kernel build is a **stop**: do not run the trial on the fallback path w
 deciding to.
 
 **3d. Commission `settings.json` before the first start** (closes R1/R2/R6/R8/R11).
+Executed 2026-10-16: `settings.json` exists, mode 0600.
 
 This step creates the file and refuses to overwrite one. It writes a random 64-hex key that
 is never echoed, with mode 0600, and uses only the system Python's standard library.
@@ -578,10 +604,18 @@ stat -f '%Sp %N' "$STATE/settings.json"                 # expect -rw-------
 `idle_timeout_seconds: 900` unloads an idle model after 15 minutes, so GLM is not left
 resident beside Ollama.
 
-### Phase 4: download and verify the checkpoint (not executed)
+### Phase 4: download and verify the checkpoint (executed 2026-10-16; see §9)
 
-Use the venv's own pinned `hf`, never oMLX's downloader. Keep HF state private to the trial.
-`hf download` resumes an interrupted run; rerun the same command.
+**Done: the checkpoint is present and verified 28/28.** Do not download it again. To
+re-check it, rerun only the verification block below.
+
+The download used a different tool from the one below, because the venv had no `hf` while
+the runtime install was blocked. Each of the 28 files was fetched with `curl` from the
+revision-pinned URL (`…/resolve/d43ea8b4…/<file>`), with no token sent. The verification
+block then ran verbatim and is the integrity gate.
+
+As written, the step uses the venv's own pinned `hf`, never oMLX's downloader, and keeps HF
+state private to the trial. `hf download` resumes an interrupted run; rerun the same command.
 
 ```bash
 set -euo pipefail
@@ -666,7 +700,11 @@ Never activate from a worktree, an alternate flake path, or a temporary store ou
 agent starts at activation. It loads **no** model, because none is pinned and the preflight
 refuses a pinned one.
 
-### Phase 6: verify one loopback server, then commission the model (not executed)
+### Phase 6: verify one loopback server, then commission the model (executed in the foreground; see §9)
+
+On 2026-10-16 these checks ran against a foreground server, not the launchd agent, so the
+`launchctl` and `/tmp/omlx.error.log` lines did not apply. The settings `PUT` ran verbatim
+and persists in `model_settings.json` for the agent.
 
 `omlx_api` reads the key from `settings.json` and passes it to curl on stdin (`-K -`), so it
 never appears in `ps`.
@@ -730,7 +768,7 @@ omlx_api PUT "/admin/api/models/$MODEL_ID/settings" -H 'Content-Type: applicatio
 }'
 ```
 
-### Phase 7: first load and memory evidence (not executed)
+### Phase 7: first load and memory evidence (executed in the foreground; see §9)
 
 **Before loading GLM, confirm Ollama is idle**, and leave its service and routes alone.
 
@@ -835,7 +873,7 @@ omlx_api POST /v1/models/GLM-5.3-Flash-MLX-mixed-4_8bit/unload
 Escalate the fraction at most one step per session (0.125, then 0.15, then 0.20), and only
 after a clean session, by repeating the settings `PUT`, which reloads the engine.
 
-### Phase 8: task evidence (not executed)
+### Phase 8: task evidence (8a and 8c executed in the foreground; 8b not run; see §9)
 
 All three tasks keep one GLM request at a time, use the manual trial client only, and change
 no client configuration. Record cold or warm state, prompt tokens, time to first token,
@@ -1020,3 +1058,204 @@ These checks ran locally without activation; the parent's report lists exact out
   disabled derivation equals the one at `9fd29a4`.
 - **Shell syntax.** `nixpkgs-fmt`, `shellcheck` and `git diff --check`; `bash -n` over every
   bash block here; the Python heredocs compiled.
+
+## 9. Execution record (2026-10-16, approved installation workers)
+
+Bryan approved the four-item bundle (phase 2) and the live trial, per the plan's "Approved
+execution continuation". Raw nonsecret evidence is under
+`~/.local/share/omlx-trial/evidence/`. The workers did not commit, push, activate, register
+launchd or touch Ollama.
+
+### Preconditions, rechecked at 19:54Z
+
+| Check | Result |
+|---|---|
+| Hardware | M2 Ultra, 137,438,953,472 B; macOS 27.0.1 (26A434) |
+| Disk | 458.6 GiB free |
+| Port 8000 | No listener |
+| Ollama | `/api/ps` was `{"models":[]}` |
+| Swap | 0 |
+| `iogpu.wired_limit_mb` | 0 |
+
+### Installs
+
+| Item | Result | Size |
+|---|---|---|
+| (a) Metal Toolchain | **Installed.** `xcodebuild -showComponent` reports Build 27A266a and `Status: installed` (toolchain `com.apple.dt.toolchain.Metal.32023.921.5`). `xcrun -sdk macosx metal -v` prints `Apple metal version 32023.921 (metalfe-32023.921.6)` and exits 0. The 838.9 MB download took 14 s | 872 MiB asset |
+| (b) Rust build tools | **Built** from nix-configs' locked nixpkgs: `cargo-1.98.1` (reports `cargo 1.98.0 (797e8a9bc 2026-08-05)`) and `rustc-1.98.1` (`48a229cea`). They are in the store with `--no-link` only, nothing on PATH | ~0.95 GiB |
+| (c) oMLX runtime | **Installed** from `53ab0e66` with native kernels and verified; see "Runtime" below | 5.4 GiB |
+| (d) Checkpoint | **Downloaded and verified.** See below | 169.59 GiB |
+
+### Checkpoint
+
+- **Source.** `pipenetwork/GLM-5.3-Flash-MLX-mixed-4_8bit` at
+  `d43ea8b407ce4e9c25e6ac9baec3feab70d9f5f3` (the server's `x-repo-commit` header matched).
+- **Download.** Ran from 19:57:16Z to 20:31:01Z (33 min 45 s) at ~94 MiB/s, 4 files at a
+  time, all fetches successful.
+- **Verification.**
+  - The phase-4 block ran verbatim: `checkpoint verified: 28/28 files` in 8 min 52 s.
+  - All 19 LFS files matched SHA-256 and size; all 9 small files matched git blob id and size;
+    the file set was exactly 28.
+  - A separate incremental pass during the download also matched all 28 files.
+- **Totals.** 181,944,533,258 B, equal to the Hub repo total. Disk free went from 458.6 to
+  287.8 GiB.
+- **Loaded** by oMLX at 0.10 residency on 2026-10-16; see "Foreground trial" below.
+
+### Blocker history: the runtime install (resolved)
+
+The first worker's Claude Code auto-mode permission gate refused the phase 3b clone and the
+phase 3d seed ("Untrusted Code Integration", then "Auto-Mode Bypass"). That held when the
+parent relayed Bryan's approval, and again under a `.claude/settings.local.json` exception,
+which the auto-mode classifier does not read. The parent relaunched the worker with the
+supported inline `--settings` form of a pinned-source, action-scoped exception. Under it,
+phase 3b passed the normal gate on its first presentation at 21:30Z. No permission setting
+was changed by a worker.
+
+### Runtime (21:30Z-21:39Z)
+
+- **3b.** `jundot/omlx` cloned with hooks disabled. HEAD is
+  `53ab0e66d75fe46e3cfa7ed7a7762d3bbcf21e9c` (`v0.7.1rc1-6-g53ab0e66`), and the tree is
+  clean. It was still clean after the kernel build.
+- **Build-requirement review.**
+  - The four Git dependencies, at their pinned commits, are plain setuptools projects. mlx-lm
+    also needs setuptools-scm.
+  - All 104 registry packages in the resolution have a usable wheel. Only the five intended
+    Rust packages build from source.
+  - Their sdists declare maturin (cohere-melody `>=1.9,<2`, pydantic-core `>=1.15.0,<2`,
+    rpds-py `>=1.9,<2`, tokenizers `>=1.0,<2`). tiktoken declares setuptools
+    `>=62.4`, wheel and **`setuptools-rust>=1.5.2`**. The last one was missing from the
+    allowlist.
+- **Build lock, re-resolved** wheels-only with the same cutoff and hashes, 12 packages:
+  `cmake 4.4.4`, `maturin 1.15.0`, `mlx 0.32.4`, `mlx-metal 0.32.4`, `nanobind 3.1.0`,
+  `packaging 26.3`, `semantic-version 2.10.0`, `setuptools 84.0.0`, `setuptools-rust 1.13.0`,
+  `setuptools-scm 10.3.4`, `vcs-versioning 2.6.0`, `wheel 0.48.0`. Every declaration above is
+  satisfied.
+- **Runtime lock.** 109 packages, including `transformers 5.17.0`, `huggingface-hub 1.33.0`
+  and `numpy 2.3.5`, with no torch. The four Git requirements are at exactly the reviewed
+  commits.
+- **Sync.**
+  - The first attempt failed linking tokenizers 0.23.3 with undefined `_Py*` symbols. Its
+    sdist keeps `-undefined dynamic_lookup` in `bindings/python/.cargo/config.toml`, which
+    Cargo never reads from the sdist root.
+  - The retry passed `CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS` with those two flags.
+    Those are PyO3's documented macOS setting and the same as pydantic-core's root config.
+    No pin, hash or constraint changed.
+  - The retry took 63 s and installed 118 packages.
+- **Editable install.** Offline, with no build isolation: `omlx 0.7.1rc1`.
+- **Kernels.** `mlx.extension` generates a CMake project requiring 3.25, with no
+  FetchContent. Studio has no `cmake` on `PATH`, so the build put the venv's locked cmake
+  first. In 31 s it built 5 extensions and 6 metallibs, with deprecation warnings only.
+- **3c'.**
+  - Versions: `mlx`/`mlx-metal` 0.32.4, `mlx-lm 0.31.4.dev132+g94cdcae13`,
+    `mlx-vlm 0.7.8`, `transformers 5.17.0`, `huggingface-hub 1.33.0`, `omlx 0.7.1rc1`.
+  - GPU `applegpu_g14d`; `max_recommended_working_set_size` 115,448,725,504 B (107.5 GiB).
+  - The source-built Rust extensions load under macOS 27.0.1's dyld, and all five native
+    kernels are available.
+- **3d.** `settings.json` was commissioned 0600. The key was never printed.
+- **Size.** The runtime directory is 5.4 GiB.
+
+### Foreground trial (21:39Z-21:50Z)
+
+The server was started outside launchd with exactly the module's `ProgramArguments` and
+`EnvironmentVariables`. They were evaluated from the published module with `enable` forced
+on, and the preflight's store copy is byte-identical to `origin/main`. It was healthy after
+~4 s. The memory enforcer started at `safe`, with a 61.9 GB ceiling. oMLX advised raising
+`iogpu.wired_limit_mb`; that was not done (§3, R20; kernel limits are out of scope). Startup
+published `~/.omlx/bin/omlx-cluster-python` (R9).
+
+**Phase 6.** All checks passed:
+
+- one listener, on `127.0.0.1:8000`, owned by the single `omlx-server` process (the
+  preflight `exec`s);
+- `/v1/models` without the key returned 401;
+- `setup-api-key` returned 400;
+- a cross-origin preflight returned 400 with no allow-origin header;
+- `/v1/models` advertises `GLM-5.3-Flash-MLX-mixed-4_8bit`;
+- `/api/status` shows all five native kernels available.
+
+The settings `PUT` returned success, with `requires_reload: false`. It persisted offload
+0.10, MTP off, unpinned, an 8192 context, 4096 max tokens and effort `low`, so the
+preflight's pin check still passes.
+
+**Phase 7.**
+
+- Ollama was idle. Live free+inactive was 76.7 GiB, leaving a weight budget of 27.7 GiB, so
+  only 0.10 fits, as derived.
+- The load took **5.0 s**. The log shows "wrapped 42 layers at 10.0% residency (expert
+  tables: 171.23 GB total, 17.24 GB resident)", which matches §4.5's 159.47 GiB and 16.06
+  GiB. It also shows "skipping gate/up fusion on the VLM path". No Lightning MTP line
+  appeared.
+- The short generation answered correctly in two sentences:
+
+| Request | Prompt | TTFT | Output | Decode | Total | Expert cache |
+|---|---:|---:|---:|---:|---:|---|
+| 7: short generation (cold, `low`) | 25 | 15.21 s | 77 | 2.61 tok/s | 44.7 s | hit 47.3%, 16,111 misses, 228,064 MB fetched |
+| 8a turn 1 (`tool_choice: required`) | 215 | 28.25 s | 13 | 2.18 tok/s | 34.2 s | hit 17.6%, 176,282 MB |
+| 8a turn 2 (213 cached) | 247 | 9.32 s | 10 | 2.49 tok/s | 13.3 s | hit 29.8%, 84,439 MB |
+| 8c: repository task (`high`) | 1007 | 36.78 s | 834 (188 reasoning) | 2.15 tok/s | 424.2 s | hit 41.5%, 2,426,088 MB |
+
+**8a: pass.** There was exactly one `lookup_canonical_fact` call with `{"topic": "fleet"}`,
+it accepted the result, the continuation repeated no call, and the final answer was exactly
+the sentinel. Total time was 47.6 s.
+
+**8c: correct, 3 of 3**, with file:line citations:
+
+- A1: line 47 → `refuse` → `exit 78` at line 26.
+- A2: all six conditions at lines 34-39, with the refusal at 41. It also cited the header
+  rationale.
+- A3: line 30, exit 78, and `exec` at 59 is never reached.
+
+One imprecision: it called line 40 "the `if !`" (the `if` opens at 33).
+
+**8b (image) was not run**, because image input is not proposed as a use.
+
+**Memory** (127 samples, every 5 s):
+
+- Swap stayed 0. The kernel pressure level stayed 1 (normal), and a 5 s watch never fired.
+- The minimum free percentage was 58%. Ollama never loaded a model.
+- Wired memory went from 7.4-10.1 GiB at baseline to a **44.75 GiB peak**. oMLX reported
+  34.49 GB of model memory against a 65.94 GB limit. Process RSS peaked at 11.0 GiB.
+- The compressor grew from 3.3 to 8.8 GiB.
+- Free pages fell to ~0.1 GiB as the page cache filled with checkpoint reads.
+
+No stop criterion was met.
+
+**Reading.** Behaviour, tool protocol and grounded code reading were correct at 0.10.
+Throughput is SSD-bound: decode ran at 2.2-2.6 tok/s, and the expert cache hit 18-47%. The
+repository answer took 7 minutes. Whether that is usable is Bryan's call (§7). Escalating
+the fraction is not possible within today's budget. The 64K workflow is not claimed.
+
+**Shutdown.**
+
+- The model was unloaded, and `SIGTERM` stopped the server in ~2 s.
+- Afterwards, nothing listens on 8000, no `omlx-server` process exists, and
+  `org.nixos.omlx` is not loaded.
+- Ollama is 0.40.5, idle, and its three tags are unchanged.
+- The KV cache holds 580 MiB, and 283.6 GiB of disk is free.
+
+Raw nonsecret evidence is under `~/.local/share/omlx-trial/evidence/` (`03b-*`, `03c-*`,
+`03d-*`, `06-*`, `07-*`, `08a-*`, `08c-*`, `09-shutdown.txt`). API responses there passed a
+key-redaction filter.
+
+### What remains
+
+- Publication of this runbook and test update closes the parent's bounded-trial handoff.
+- **Bryan:** the §7 decision, on this evidence.
+- **Only if Bryan keeps oMLX on demand:** phase 5 (enable through clean, pushed main with
+  `update-system`). Its agent will reuse the commissioned `settings.json` and
+  `model_settings.json`.
+- **Not to rerun:** phases 3 and 4.
+
+### Parent verification (2026-10-16)
+
+The parent independently inspected the raw load, generation, tool round-trip, repository
+answer and memory/shutdown evidence, checked the repository answer against the real
+preflight, and re-ran the installed runtime/version and native-extension checks. All five
+native kernels are available. The runtime source still has the approved HEAD and a clean
+tree. All 92 repository tests and `nix flake check` passed; 17 runbook Bash blocks passed
+`bash -n`, and 18 embedded Python fragments parsed. Existing Nix evaluation/deprecation
+warnings and the omitted incompatible Linux system were reported, not treated as failures.
+
+The parent also rechecked the live post-trial state: no port-8000 listener or `omlx-server`,
+no loaded trial launchd agent, zero swap, and Ollama 0.40.5 idle. This is evidence review
+plus direct runtime and post-trial verification, not a second inference benchmark.

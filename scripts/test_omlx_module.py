@@ -474,6 +474,13 @@ class Runbook(unittest.TestCase):
         self.assertIn("setuptools>=80", section)
         self.assertIn("setuptools-scm>=9", section)
         self.assertIn("maturin>=1,<2", section)
+        # tiktoken's sdist builds with setuptools-rust, not maturin.
+        self.assertIn("setuptools-rust>=1.5.2", section)
+        # tokenizers' sdist keeps its macOS link flags where Cargo never finds them.
+        self.assertIn('CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS="-C link-arg=-undefined -C link-arg=dynamic_lookup"', section)
+        # mlx.extension runs a bare `cmake`: the kernel build must find the locked one.
+        build_ext, = [line for line in section.splitlines() if "setup.py build_ext" in line]
+        self.assertTrue(build_ext.lstrip().startswith('PATH="$VENV/bin:$PATH" '), build_ext)
         self.assertIn("STOP", section)
 
     def test_process_probes_use_the_native_server_title(self):
