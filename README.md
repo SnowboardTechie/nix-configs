@@ -11,7 +11,7 @@ modules/
 ├── base/       # Core system: fonts, homebrew, nix-settings, zsh
 ├── dev/        # Development: cli-tools, editors, git
 ├── desktop/    # GUI: shared macOS apps plus NixOS gnome, gaming, and audio
-├── services/   # Daemons/agents: Hermes, ollama, monitoring, SMB, syncthing (Obsidian Sync/backup modules retained, unused)
+├── services/   # Daemons/agents: Hermes, ollama, monitoring, SMB, syncthing, Pi Durable (imported, disabled; Obsidian Sync/backup modules retained, unused)
 ├── hosts/      # Compositions: a6mbp, mbp, studio (Darwin), gnarbox (NixOS)
 └── dev-envs/   # VA project environments
 ```
@@ -42,6 +42,8 @@ Third-party agent memory is retired. Agents use their harness-native memory and 
 The private Studio service portal is available over Tailscale at `http://100.121.238.48:8088`. It uses the immutable Nixpkgs Dashy static build for links and a read-only local adapter for health state from the model-free Hermes service watchdog; it has no public ingress, arbitrary proxy, or mutable web configuration.
 
 Studio also serves the **Summit Point concept preview** (`services.summit-point-gallery`) on loopback `127.0.0.1:4321`. It is an unlisted, public-by-link design review preview for the separate private repository `bryan/summit-point-site`, exposed through one hostname, `summitpoint.thompson.codes`, on the existing remotely managed Cloudflare Tunnel. Caddy answers any other Host header with a 404. The served tree is the `current` symlink under `~/Library/Application Support/Thompson Codes/Summit Point Gallery/`, staged by that repository's `scripts/publish-review.sh` as an immutable `releases/<sha>/` build; rollback is `scripts/publish-review.sh --rollback <sha>`, an atomic symlink change that needs no rebuild and no activation. Responses are `noindex`/`no-store`. The preview carries no approved Summit Point content.
+
+Studio imports the **Pi Durable SGG PR pre-review** module (`services.pi-durable`) but does not enable it, so a normal update installs, starts, exposes and routes nothing for it. Enabling it, along with its sandbox proxy and its Tailscale page route, is a later decision that needs commissioning inputs. Those are listed in [`modules/services/AGENTS.md`](modules/services/AGENTS.md#pi-durable-commissioning-inputs), and the runbook is the application's `workspaces/sgg/OPERATIONS.md`.
 
 The personal second brain lives in Apple Notes (iCloud folder `Second Brain`) since 2026-09-16 (decision record in the frozen archive: `~/second-brain/Decisions/2026-09-16-decision-apple-notes-personal-second-brain.md`). Studio no longer runs Obsidian Headless Sync or the nightly `vault-git-backup` snapshot for `/Users/bryan/second-brain`; the archive repository and its remote are preserved unchanged as rollback history. After `update-system`, `launchctl print gui/$(id -u)/md.obsidian.headless-sync` and `…/com.snowboardtechie.vault-git-backup` should both report the agents as absent.
 **Location:** [`modules/hosts/studio.nix`](modules/hosts/studio.nix)

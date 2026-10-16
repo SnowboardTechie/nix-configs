@@ -2,6 +2,7 @@
 #
 # Features: fonts, nix-settings, zsh, homebrew, editors, git, cli-tools, personal desktop
 # Services: Hermes, ollama, open-webui, monitoring, smb-mount, syncthing, iCloud backup
+# (Pi Durable SGG pre-review imported but disabled until commissioning.)
 # (Obsidian Headless Sync and the vault Git backup were retired 2026-09-16: the personal
 # second brain moved to Apple Notes; ~/second-brain is a frozen archive.)
 # Host-specific: Media server tools (cloudflared, etc.)
@@ -30,6 +31,7 @@
       hermes
       dashy
       summit-point-gallery
+      pi-durable
     ];
 
     # === Core System Settings ===
@@ -125,6 +127,12 @@
     # Content is published by the site repo's scripts/publish-review.sh into
     # an immutable releases/<sha>/ directory, never from a working tree.
     services.summit-point-gallery.enable = true;
+
+    # Pi Durable SGG PR pre-review (~/code/durable-pi-workspace). Imported, NOT
+    # enabled: enabling is a separate decision after the security and
+    # prerequisite review. Commissioning inputs (proxy gateway and subnet, page
+    # route port) stay unset until then; see modules/services/AGENTS.md.
+    services.pi-durable.enable = false;
 
     # === Service Health & UNRAID NAS Monitoring ===
 
