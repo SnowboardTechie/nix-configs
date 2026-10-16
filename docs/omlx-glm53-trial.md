@@ -1,6 +1,6 @@
 # oMLX + GLM-5.3-Flash trial on Studio: review and runbook
 
-**Status (2026-10-16): installed and trialled in the foreground; not activated.** The
+**Status (2026-10-16): trial closed; not practical for Bryan's current Studio workload.** The
 governing plan is
 [`.hermes/plans/2026-10-16_113658-omlx-glm53-trial.md`](../.hermes/plans/2026-10-16_113658-omlx-glm53-trial.md).
 §9 is the execution record.
@@ -33,11 +33,12 @@ migration. Ollama, its Tailscale route, its models and every client default stay
 | **Safe enough to propose installing** | **Conditionally yes.** Loopback-only, single-user, operator-attended, under the conditions in §3.6. **Not** with oMLX's defaults, which leave the admin plane claimable from any web page. | Static source review of oMLX `53ab0e66`, §3 |
 | **Compatibility established statically** | **Yes**, for the checkpoint against the pinned loader and the MoE-offload validator: every check passes and none is unresolved. Live loading and bounded performance are now exercised separately in §9. | Hub manifest, all 18 shard headers, pinned source, §4 |
 | **Executed** | Phases 3-4 (installs, runtime, kernels, commissioning, checkpoint). Phases 6-8 against a foreground loopback server: load at 0.10 residency, short generation, tool round trip and graded repository task all passed, with no swap and normal kernel memory pressure. Decode ran at 2.2-2.6 tok/s, SSD-bound (§9) | §9 |
-| **Not yet executed** | Phase 5 (launchd through clean, pushed main), the image fixture, fraction escalation, contexts beyond 8K (the 64K workflow is **not** claimed), and Bryan's usability judgement | §9 |
+| **Not executed** | Phase 5 (launchd through clean, pushed main), the image fixture, fraction escalation, and contexts beyond 8K (the 64K workflow is **not** claimed). These are not pending tasks. | §9 |
 | **Parent acceptance** | Disabled preparation accepted at `db72c6c`. Publication of this execution record records parent acceptance of the bounded trial, not activation or a decision to keep it. | Plan, "Approved execution continuation"; §9, "Parent verification" |
 
 There was no blocker at the preparation stage, and none remains for the bounded trial.
-Bryan's usability decision (§7) remains separate; the persistent service is still disabled.
+Bryan decided this model is not practical for the Studio's current shared workload (§7).
+The persistent service stays disabled; a stronger future Mac is a possible revisit, not a commitment.
 
 ## 2. Baseline, identities and pins
 
@@ -1026,6 +1027,14 @@ explicit choice: `rm -rf` of exactly those paths, never other models.
 
 ## 7. Decision table
 
+**Bryan's decision (2026-10-16): do not pursue GLM-5.3-Flash on the current setup.** The
+Studio already has other responsibilities; pushing RAM usage to make this model faster
+does not fit that shared workload. The measured SSD-offload speed is not usable for him.
+Treat this as a possible future-hardware option, not ongoing tuning, a smaller-model
+canary, an activation task, or an Ollama migration. No replacement Mac purchase is decided.
+The trial server is already stopped and the service disabled. Runtime, checkpoint and
+evidence are retained; this decision does not authorize deleting them or uninstalling tools.
+
 These are the possible outcomes after phases 6-8. The trial does not migrate anything.
 
 | Evidence | Decision | Next action |
@@ -1237,13 +1246,12 @@ Raw nonsecret evidence is under `~/.local/share/omlx-trial/evidence/` (`03b-*`, 
 `03d-*`, `06-*`, `07-*`, `08a-*`, `08c-*`, `09-shutdown.txt`). API responses there passed a
 key-redaction filter.
 
-### What remains
+### Closeout
 
-- Publication of this runbook and test update closes the parent's bounded-trial handoff.
-- **Bryan:** the §7 decision, on this evidence.
-- **Only if Bryan keeps oMLX on demand:** phase 5 (enable through clean, pushed main with
-  `update-system`). Its agent will reuse the commissioned `settings.json` and
-  `model_settings.json`.
+- The accepted execution record is published at `168a07a`.
+- Bryan's §7 decision closes the experiment for the current setup; no activation or
+  further tuning is pending.
+- Runtime, checkpoint and evidence remain on disk; any cleanup is a separate decision.
 - **Not to rerun:** phases 3 and 4.
 
 ### Parent verification (2026-10-16)
