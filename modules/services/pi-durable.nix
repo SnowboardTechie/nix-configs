@@ -11,7 +11,8 @@
 # loopback page. The proxy runs only once its listen address and client subnet
 # (from `container network create --internal`) are set; the page is routed only
 # once an HTTPS port is set, and activation refuses a port that already serves
-# anything else. A configured proxy is not proof that the VM cannot bypass it:
+# anything else. With the proxy comes a pf anchor that refuses the network
+# everything but the proxy. Neither is proof that the VM cannot bypass them:
 # that is the application's live sandbox gate.
 #
 # Not installed here: Apple `container`. The application targets 1.5.0, which
@@ -41,6 +42,10 @@
       ipv4 = "${octet}\\.${octet}\\.${octet}\\.${octet}";
       isAddress = s: builtins.match ipv4 s != null && s != "0.0.0.0";
       isClient = s: isAddress s || builtins.match "${ipv4}/([1-9]|[12][0-9]|3[0-2])" s != null;
+      # Lowercase hex and colons with a /1 to /128 prefix: nothing that could
+      # end a pf rule or add one. pfctl checks the address itself at load.
+      hextet = "[0-9a-f]{0,4}";
+      isIpv6Subnet = s: builtins.match "${hextet}(:${hextet}){2,7}/([1-9]|[1-9][0-9]|1[01][0-9]|12[0-8])" s != null;
 
       # Exact hostnames only (fnmatch of a name without wildcards is equality);
       # FilterDefaultDeny makes the list the only reachable destinations.
@@ -53,6 +58,29 @@
         FilterDefaultDeny Yes
         Filter "${pkgs.writeText "pi-durable-proxy-allowlist" (lib.concatLines cfg.proxy.allowedDomains)}"
       '';
+
+      # The sandbox network reaches tinyproxy on its gateway and nothing else:
+      # no service of this host on any address (gateway, LAN, tailnet), no
+      # LAN, tailnet or internet. Without it, a VM on the network reached every
+      # service bound to all interfaces, over IPv4 and IPv6, and the
+      # tailnet-only ones (measured 2026-10-16; the application firewall does
+      # not filter vmnet bridges).
+      #
+      # The rules match the network's addresses, not its interface: vmnet
+      # names the bridge when the first VM attaches (bridge100 or bridge101,
+      # by what else runs), and macOS has no interface groups. lo0 is exempt
+      # so this host's own connections from the gateway address still work.
+      # Link-local IPv6 carries no address of the network, so TCP and UDP from
+      # link-local are refused on every bridge vmnet may use.
+      pfAnchor = "com.apple/100.pi-durable-sgg";
+      pfRules = pkgs.writeText "pi-durable-sgg.pf" ''
+        # Pi Durable SGG sandbox isolation: nix-configs modules/services/pi-durable.nix
+        pass in quick inet proto tcp from { ${lib.concatStringsSep " " cfg.proxy.allowedClients} } to ${toString cfg.proxy.listenAddress} port ${toString cfg.proxy.port} flags S/SA keep state
+        block return in quick on ! lo0 inet from { ${lib.concatStringsSep " " cfg.proxy.allowedClients} } to any
+        block return in quick on ! lo0 inet6 from ${toString cfg.proxy.ipv6Subnet} to any
+        block return in quick on { ${lib.concatMapStringsSep " " (n: "bridge${toString n}") (lib.range 100 115)} } inet6 proto { tcp udp } from fe80::/10 to any
+      '';
+      pfLoader = [ "${pkgs.bash}/bin/bash" "${./pi-durable-pf.sh}" "/sbin/pfctl" pfAnchor "${pfRules}" "/var/run/pi-durable-pf.token" ];
     in
     {
       options.services.pi-durable = {
@@ -95,7 +123,19 @@
           allowedClients = lib.mkOption {
             type = lib.types.listOf lib.types.str;
             default = [ ];
-            description = "Addresses or CIDR ranges allowed to use the proxy: the internal network's subnet.";
+            description = ''
+              Addresses or CIDR ranges allowed to use the proxy: the internal
+              network's subnet. pf refuses them everything else.
+            '';
+          };
+          ipv6Subnet = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = ''
+              The internal network's IPv6 prefix (`container network inspect`:
+              `ipv6Subnet`). The proxy does not listen on it; pf refuses it
+              everything. Required with `listenAddress`.
+            '';
           };
           allowedDomains = lib.mkOption {
             type = lib.types.listOf lib.types.str;
@@ -170,6 +210,10 @@
               assertion = cfg.proxy.allowedClients != [ ] && lib.all isClient cfg.proxy.allowedClients;
               message = "services.pi-durable.proxy.allowedClients must name the internal network's subnet as canonical IPv4 addresses or CIDR ranges with a /1 to /32 prefix";
             }
+            {
+              assertion = cfg.proxy.ipv6Subnet != null && isIpv6Subnet cfg.proxy.ipv6Subnet;
+              message = "services.pi-durable.proxy.ipv6Subnet must name the internal network's IPv6 prefix (`container network inspect`: ipv6Subnet) in lowercase hex with a /1 to /128 prefix, so pf can confine the network";
+            }
           ];
 
           launchd.user.agents.pi-durable-proxy.serviceConfig = {
@@ -186,7 +230,32 @@
             # === pi-durable proxy firewall ===
             /usr/libexec/ApplicationFirewall/socketfilterfw --add ${tinyproxy} >/dev/null 2>&1 || true
             /usr/libexec/ApplicationFirewall/socketfilterfw --unblock ${tinyproxy} >/dev/null 2>&1 || true
+            # === pi-durable sandbox isolation (pf) ===
+            if ! ${lib.escapeShellArgs pfLoader}; then
+              echo "Failed to load the Pi Durable sandbox's pf anchor ${pfAnchor}" >&2
+              exit 1
+            fi
           '';
+
+          # pf rules do not survive a restart, and nix-darwin does not re-run
+          # activation at boot. Retried until the anchor is loaded and checked.
+          launchd.daemons.pi-durable-pf.serviceConfig = {
+            ProgramArguments = [
+              "/bin/sh"
+              "-c"
+              ''
+                while [ ! -x "$1" ]; do
+                  /bin/sleep 1
+                done
+                exec "$@"
+              ''
+              "wait-for-nix-store"
+            ] ++ pfLoader;
+            RunAtLoad = true;
+            KeepAlive.SuccessfulExit = false;
+            StandardOutPath = "/var/log/pi-durable-pf.log";
+            StandardErrorPath = "/var/log/pi-durable-pf.log";
+          };
         })
 
         (lib.mkIf (cfg.page.tailscaleHttpsPort != null) {

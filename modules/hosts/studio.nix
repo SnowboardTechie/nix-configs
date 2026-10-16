@@ -136,10 +136,12 @@
     services.pi-durable = {
       enable = true;
       # `container network create --internal pi-durable-sgg`: its gateway and
-      # subnet. The gateway exists only while a VM is attached; tinyproxy
+      # subnets. The gateway exists only while a VM is attached; tinyproxy
       # retries until the first one, then keeps its socket across VM churn.
+      # pf confines both subnets to the proxy.
       proxy.listenAddress = "192.168.128.1";
       proxy.allowedClients = [ "192.168.128.0/24" ];
+      proxy.ipv6Subnet = "fd85:1c07:74fb:2dc7::/64";
       # Free tailnet HTTPS port (Serve held 443, 9120, 10443 and 11434).
       page.tailscaleHttpsPort = 8790;
     };

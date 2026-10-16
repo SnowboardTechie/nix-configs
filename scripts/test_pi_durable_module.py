@@ -19,7 +19,19 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 ROUTE_SCRIPT = REPO / "modules" / "services" / "pi-durable-page-route.sh"
+PF_SCRIPT = REPO / "modules" / "services" / "pi-durable-pf.sh"
 HOME = "/Users/bryan"
+PF_ANCHOR = "com.apple/100.pi-durable-sgg"
+BRIDGES = [f"bridge{n}" for n in range(100, 116)]
+# Studio's anchor, as measured on 2026-10-16: the sandbox network reached every
+# service bound to all interfaces, over IPv4 and IPv6, and the tailnet-only ones.
+STUDIO_PF_RULES = (
+    "# Pi Durable SGG sandbox isolation: nix-configs modules/services/pi-durable.nix\n"
+    "pass in quick inet proto tcp from { 192.168.128.0/24 } to 192.168.128.1 port 8888 flags S/SA keep state\n"
+    "block return in quick on ! lo0 inet from { 192.168.128.0/24 } to any\n"
+    "block return in quick on ! lo0 inet6 from fd85:1c07:74fb:2dc7::/64 to any\n"
+    f"block return in quick on {{ {' '.join(BRIDGES)} }} inet6 proto {{ tcp udp }} from fe80::/10 to any\n"
+)
 
 
 def nix(*args):
@@ -62,6 +74,8 @@ SUMMARY = f"""{{
     + config.system.activationScripts.postActivation.text;
   failed = {FAILED};
 }}"""
+PF_DAEMON = "config.launchd.daemons.pi-durable-pf.serviceConfig"
+PF_RULES = f'(builtins.head (builtins.filter (lib.hasSuffix "-pi-durable-sgg.pf") {PF_DAEMON}.ProgramArguments))'
 # Studio sets the commissioning inputs, so a scenario forces the ones it is about.
 ENABLED = (
     "{ enable = lib.mkForce true; proxy = { listenAddress = lib.mkForce null; allowedClients = lib.mkForce [ ]; }; "
@@ -82,8 +96,9 @@ class StudioAsCommissioned(unittest.TestCase):
         self.assertEqual([], s["failed"])
         self.assertIn("pi-durable-sgg", s["agents"])
         self.assertIn("pi-durable-proxy", s["agents"])
-        for name in s["system"]:
-            self.assertNotIn("pi-durable", name)
+        # The only root job: the boot-time pf loader.
+        self.assertEqual(["pi-durable-pf"], [name for name in s["system"] if "pi-durable" in name])
+        self.assertIn(f"/sbin/pfctl {PF_ANCHOR} ", s["activation"])
         # Apple container is installed by hand from its signed installer; nothing here installs it or tinyproxy.
         for item in s["brews"] + s["casks"] + s["packages"]:
             self.assertNotIn("tinyproxy", item)
@@ -92,6 +107,7 @@ class StudioAsCommissioned(unittest.TestCase):
         proxy_config = studio("{ }", "builtins.readFile (builtins.elemAt config.launchd.user.agents.pi-durable-proxy.serviceConfig.ProgramArguments 3)")
         self.assertIn("Listen 192.168.128.1\n", proxy_config)
         self.assertIn("Allow 192.168.128.0/24\n", proxy_config)
+        self.assertEqual(STUDIO_PF_RULES, studio("{ }", f"builtins.readFile {PF_RULES}"))
 
 
 class EnabledWithoutCommissioningInputs(unittest.TestCase):
@@ -125,7 +141,9 @@ class EnabledWithoutCommissioningInputs(unittest.TestCase):
         self.assertEqual([], s["failed"])
         self.assertIn("pi-durable-sgg", s["agents"])
         self.assertNotIn("pi-durable-proxy", s["agents"])
+        self.assertEqual([], [name for name in s["system"] if "pi-durable" in name])
         self.assertNotIn("tinyproxy", s["activation"])
+        self.assertNotIn("pfctl", s["activation"])
         self.assertNotIn("pi-durable-page-route", s["activation"])
 
 
@@ -143,8 +161,11 @@ def failures(*settings):
     """))
 
 
-def proxy(listen='"192.168.128.1"', clients='[ "192.168.128.0/24" ]'):
-    return f"{{ enable = lib.mkForce true; proxy = {{ listenAddress = lib.mkForce {listen}; allowedClients = lib.mkForce {clients}; }}; }}"
+def proxy(listen='"192.168.128.1"', clients='[ "192.168.128.0/24" ]', ipv6='"fd85:1c07:74fb:2dc7::/64"'):
+    return (
+        f"{{ enable = lib.mkForce true; proxy = {{ listenAddress = lib.mkForce {listen}; "
+        f"allowedClients = lib.mkForce {clients}; ipv6Subnet = lib.mkForce {ipv6}; }}; }}"
+    )
 
 
 class FailClosedAssertions(unittest.TestCase):
@@ -185,6 +206,17 @@ class FailClosedAssertions(unittest.TestCase):
                 '[ "192.168.128.0/024" ]', '[ "256.168.128.0/24" ]', '[ "010.0.0.0/8" ]', '[ "192.168.128.0/" ]',
                 r'[ "192.168.128.0/24\nConnectPort 22" ]', '[ "192.168.128.0/24 0.0.0.0/0" ]',
                 '[ " 192.168.128.0/24" ]', '[ "192.168.128.0/24" "0.0.0.0" ]', '[ "::/0" ]', '[ "localhost" ]', '[ "" ]',
+            )],
+        )
+
+    def test_ipv6_subnet_is_required_lowercase_hex_with_a_prefix(self):
+        self.assertOnlyRefuses(
+            "proxy.ipv6Subnet",
+            [proxy(ipv6=value) for value in ('"fd85:1c07:74fb:2dc7::/64"', '"fd00::/8"', '"fd85:1c07:74fb:2dc7:0:0:0:0/128"')],
+            [proxy(ipv6=value) for value in (
+                "null", '""', '"fd85:1c07:74fb:2dc7::"', '"fd85:1c07:74fb:2dc7::/0"', '"fd85:1c07:74fb:2dc7::/129"',
+                '"fd85:1c07:74fb:2dc7::/064"', '"FD85:1C07:74FB:2DC7::/64"', '"192.168.128.0/24"', '"fd85::/64 to any"',
+                r'"fd85::/64\npass quick all"', '"fd85::/64 }"', '"{ fd85::/64 }"', '"any"',
             )],
         )
 
@@ -324,6 +356,131 @@ class PageRouteGuard(unittest.TestCase):
         for name, status in cases.items():
             with self.subTest(name):
                 self.assertRefused(status)
+
+
+class SandboxPf(unittest.TestCase):
+    """The pf anchor that confines the sandbox network to the proxy, and how it is loaded.
+
+    Proves the rules this Mac's pfctl accepts and how the loader behaves against
+    a stand-in pfctl. Whether the VM can still reach anything is the live
+    sandbox gate's question, not this test's.
+    """
+
+    def test_this_macs_pfctl_parses_the_anchor_as_intended(self):
+        rules = nix(
+            "build", "--impure", "--no-link", "--print-out-paths", "--expr",
+            studio_expr("{ }", f'pkgs.writeText "pi-durable-sgg.pf" (builtins.readFile {PF_RULES})'),
+        ).strip().splitlines()[-1]
+        parsed = subprocess.run(["/sbin/pfctl", "-nvf", rules], text=True, capture_output=True)
+        self.assertEqual(0, parsed.returncode, parsed.stderr)
+        lines = parsed.stdout.splitlines()
+        passing = "pass in quick inet proto tcp from 192.168.128.0/24 to 192.168.128.1 port = 8888 flags S/SA keep state"
+        blocking = "block return in quick on ! lo0 inet from 192.168.128.0/24 to any"
+        link_local = {
+            f"block return in quick on {bridge} inet6 proto {proto} from fe80::/10 to any"
+            for bridge in BRIDGES for proto in ("tcp", "udp")
+        }
+        self.assertEqual(
+            {passing, blocking, "block return in quick on ! lo0 inet6 from fd85:1c07:74fb:2dc7::/64 to any"} | link_local,
+            set(lines),
+        )
+        self.assertEqual(len(lines), len(set(lines)))
+        # pfctl may reorder rules that cannot both match; the proxy's pass must still come first.
+        self.assertLess(lines.index(passing), lines.index(blocking))
+
+    def test_a_root_daemon_reloads_it_at_every_boot(self):
+        daemon = studio("{ }", PF_DAEMON)
+        args = daemon["ProgramArguments"]
+        # Through /bin/sh until the Nix store is mounted, as every boot-time daemon here.
+        self.assertEqual(["/bin/sh", "-c"], args[:2])
+        self.assertIn('exec "$@"', args[2])
+        self.assertEqual(["/sbin/pfctl", PF_ANCHOR], args[6:8])
+        self.assertTrue(args[5].endswith("-pi-durable-pf.sh"))
+        self.assertEqual("/var/run/pi-durable-pf.token", args[9])
+        self.assertIsNone(daemon["UserName"], "runs as root")
+        self.assertTrue(daemon["RunAtLoad"])
+        self.assertIs(False, daemon["KeepAlive"]["SuccessfulExit"], "retried until it succeeds, then left alone")
+        self.assertEqual("/var/log/pi-durable-pf.log", daemon["StandardErrorPath"])
+
+    # The loader, against a stand-in pfctl that keeps its state in files.
+    FAKE_PFCTL = r"""#!/bin/bash
+printf '%s\n' "$*" >> "$STATE/calls"
+case "$*" in
+  "-nvf "*) printf '%s\n' "$EXPECTED" ;;
+  "-a $ANCHOR -f "*) [ -z "$LOAD_FAILS" ] || { echo "pfctl: Syntax error" >&2; exit 1; }
+                     printf '%s\n' "${LOADED:-$EXPECTED}" > "$STATE/loaded" ;;
+  "-a $ANCHOR -s rules") cat "$STATE/loaded" 2>/dev/null ;;
+  "-s References") echo TOKENS:; cat "$STATE/refs" 2>/dev/null ;;
+  "-E") [ -n "$NO_TOKEN" ] && { echo "pf enabled" >&2; exit 0; }
+        n=$((RANDOM + 100000)); echo "501  pfctl  $n  0 secs" >> "$STATE/refs"
+        printf 'No ALTQ support in kernel\npf enabled\nToken : %s\n' "$n" >&2 ;;
+  "-s info") [ -s "$STATE/refs" ] && echo "Status: Enabled for 0 days" || echo "Status: Disabled" ;;
+  "-s rules") [ -n "$NO_HOOK" ] || echo 'anchor "com.apple/*" all' ;;
+  *) echo "unexpected: $*" >&2; exit 2 ;;
+esac
+"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.pfctl = self.tmp / "pfctl"
+        self.pfctl.write_text(self.FAKE_PFCTL)
+        self.pfctl.chmod(0o755)
+        self.rules = self.tmp / "rules.pf"
+        self.rules.write_text("pass in quick all\n")
+        self.token = self.tmp / "token"
+
+    def load(self, **env):
+        result = subprocess.run(
+            ["/bin/bash", str(PF_SCRIPT), str(self.pfctl), PF_ANCHOR, str(self.rules), str(self.token)],
+            env={**os.environ, "STATE": str(self.tmp), "ANCHOR": PF_ANCHOR, "EXPECTED": "pass in quick all",
+                 "PI_DURABLE_PF_WAIT": "0", **env},
+            text=True,
+            capture_output=True,
+        )
+        calls = (self.tmp / "calls").read_text().splitlines() if (self.tmp / "calls").exists() else []
+        return result, calls
+
+    def test_loads_the_anchor_and_holds_one_enable_reference(self):
+        result, calls = self.load()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn(f"-a {PF_ANCHOR} -f {self.rules}", calls)
+        self.assertEqual(1, calls.count("-E"))
+        token = self.token.read_text().strip()
+        self.assertIn(token, (self.tmp / "refs").read_text())
+        # Activation and the boot daemon both run it: the reference is not taken twice.
+        result, calls = self.load()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(1, calls.count("-E"))
+        self.assertEqual(token, self.token.read_text().strip())
+
+    def test_a_token_from_before_a_restart_is_replaced(self):
+        self.token.write_text("4242\n")
+        result, calls = self.load()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(1, calls.count("-E"))
+        self.assertNotEqual("4242", self.token.read_text().strip())
+
+    def test_fails_closed(self):
+        cases = {
+            "pfctl refuses the rules": ({"LOAD_FAILS": "1"}, "refused"),
+            "no enable token": ({"NO_TOKEN": "1"}, "no enable token"),
+            "nothing evaluates com.apple/*": ({"NO_HOOK": "1"}, 'anchor "com.apple/*"'),
+            "the anchor holds other rules": ({"LOADED": "pass all"}, "does not hold exactly"),
+        }
+        for name, (env, message) in cases.items():
+            with self.subTest(name):
+                for state in ("calls", "loaded", "refs", "token"):
+                    (self.tmp / state).unlink(missing_ok=True)
+                result, calls = self.load(**env)
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("pi-durable:", result.stderr)
+                self.assertIn(message, result.stderr)
+
+    def test_a_refused_load_enables_nothing(self):
+        result, calls = self.load(LOAD_FAILS="1")
+        self.assertNotEqual(0, result.returncode)
+        self.assertNotIn("-E", calls)
 
 
 def free_port():
