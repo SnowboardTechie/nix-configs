@@ -128,11 +128,21 @@
     # an immutable releases/<sha>/ directory, never from a working tree.
     services.summit-point-gallery.enable = true;
 
-    # Pi Durable SGG PR pre-review (~/code/durable-pi-workspace). Imported, NOT
-    # enabled: enabling is a separate decision after the security and
-    # prerequisite review. Commissioning inputs (proxy gateway and subnet, page
-    # route port) stay unset until then; see modules/services/AGENTS.md.
-    services.pi-durable.enable = false;
+    # Pi Durable SGG PR pre-review (~/code/durable-pi-workspace). Enabled
+    # 2026-10-16 for commissioning, after Apple `container` 1.5.0 was approved
+    # and installed from Apple's signed installer (pinned; upgrades are
+    # deliberate). The agent starts paused and holds every side effect until
+    # its own gates are recorded; see modules/services/AGENTS.md.
+    services.pi-durable = {
+      enable = true;
+      # `container network create --internal pi-durable-sgg`: its gateway and
+      # subnet. The gateway exists only while a VM is attached; tinyproxy
+      # retries until the first one, then keeps its socket across VM churn.
+      proxy.listenAddress = "192.168.128.1";
+      proxy.allowedClients = [ "192.168.128.0/24" ];
+      # Free tailnet HTTPS port (Serve held 443, 9120, 10443 and 11434).
+      page.tailscaleHttpsPort = 8790;
+    };
 
     # === Service Health & UNRAID NAS Monitoring ===
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""services.pi-durable: Studio stays uncommissioned; enabling fails closed.
+"""services.pi-durable: Studio as commissioned; every other setting fails closed.
 
 Evaluates through a `path:` flake reference so an uncommitted module is
 evaluated as it is on disk (a git flake hides untracked files).
@@ -62,24 +62,36 @@ SUMMARY = f"""{{
     + config.system.activationScripts.postActivation.text;
   failed = {FAILED};
 }}"""
-ENABLED = "{ enable = lib.mkForce true; }"
-PROXY = '{ enable = lib.mkForce true; proxy = { listenAddress = "192.168.128.1"; allowedClients = [ "192.168.128.0/24" ]; }; }'
+# Studio sets the commissioning inputs, so a scenario forces the ones it is about.
+ENABLED = (
+    "{ enable = lib.mkForce true; proxy = { listenAddress = lib.mkForce null; allowedClients = lib.mkForce [ ]; }; "
+    "page.tailscaleHttpsPort = lib.mkForce null; }"
+)
+PROXY = (
+    '{ enable = lib.mkForce true; proxy = { listenAddress = lib.mkForce "192.168.128.1"; '
+    'allowedClients = lib.mkForce [ "192.168.128.0/24" ]; }; }'
+)
 
 
-class StudioStaysUncommissioned(unittest.TestCase):
-    """The ordinary Studio update installs, starts, exposes and routes nothing."""
+class StudioAsCommissioned(unittest.TestCase):
+    """Studio runs the paused agent, its proxy on the sandbox network's gateway and the page route, and installs nothing."""
 
-    def test_imported_but_disabled(self):
+    def test_enabled_with_its_commissioning_inputs(self):
         s = studio("{ }", SUMMARY)
-        self.assertFalse(s["enable"])
+        self.assertTrue(s["enable"])
         self.assertEqual([], s["failed"])
-        for name in s["agents"] + s["system"]:
+        self.assertIn("pi-durable-sgg", s["agents"])
+        self.assertIn("pi-durable-proxy", s["agents"])
+        for name in s["system"]:
             self.assertNotIn("pi-durable", name)
+        # Apple container is installed by hand from its signed installer; nothing here installs it or tinyproxy.
         for item in s["brews"] + s["casks"] + s["packages"]:
             self.assertNotIn("tinyproxy", item)
             self.assertNotIn("container", item)
-        self.assertNotIn("pi-durable", s["activation"])
-        self.assertNotIn("tinyproxy", s["activation"])
+        self.assertIn("8790 http://127.0.0.1:8790", s["activation"])
+        proxy_config = studio("{ }", "builtins.readFile (builtins.elemAt config.launchd.user.agents.pi-durable-proxy.serviceConfig.ProgramArguments 3)")
+        self.assertIn("Listen 192.168.128.1\n", proxy_config)
+        self.assertIn("Allow 192.168.128.0/24\n", proxy_config)
 
 
 class EnabledWithoutCommissioningInputs(unittest.TestCase):
@@ -132,7 +144,7 @@ def failures(*settings):
 
 
 def proxy(listen='"192.168.128.1"', clients='[ "192.168.128.0/24" ]'):
-    return f"{{ enable = lib.mkForce true; proxy = {{ listenAddress = {listen}; allowedClients = {clients}; }}; }}"
+    return f"{{ enable = lib.mkForce true; proxy = {{ listenAddress = lib.mkForce {listen}; allowedClients = lib.mkForce {clients}; }}; }}"
 
 
 class FailClosedAssertions(unittest.TestCase):
@@ -191,7 +203,7 @@ class FailClosedAssertions(unittest.TestCase):
             studio = (builtins.getFlake "path:{REPO}").darwinConfigurations.studio;
             inherit (studio.pkgs) lib;
             config = (studio.extendModules {{ modules = [ {{
-              services.pi-durable = {{ enable = lib.mkForce true; page.tailscaleHttpsPort = 8443; }};
+              services.pi-durable = {{ enable = lib.mkForce true; page.tailscaleHttpsPort = lib.mkForce 8443; }};
               services.tailscale.enable = lib.mkForce false;
             }} ]; }}).config;
           in {FAILED}
@@ -209,7 +221,7 @@ class CommissionedWiring(unittest.TestCase):
 
     def test_page_route_goes_through_the_guard(self):
         activation = studio(
-            "{ enable = lib.mkForce true; page.tailscaleHttpsPort = 8443; }",
+            "{ enable = lib.mkForce true; page.tailscaleHttpsPort = lib.mkForce 8443; }",
             "config.system.activationScripts.extraActivation.text",
         )
         self.assertIn("pi-durable-page-route.sh", activation)
@@ -345,8 +357,8 @@ class ProxyAllowlist(unittest.TestCase):
 
         self.port = free_port()
         settings = (
-            '{ enable = lib.mkForce true; proxy = { listenAddress = "127.0.0.1"; port = %d; '
-            'allowedClients = [ "127.0.0.1" ]; '
+            '{ enable = lib.mkForce true; proxy = { listenAddress = lib.mkForce "127.0.0.1"; port = %d; '
+            'allowedClients = lib.mkForce [ "127.0.0.1" ]; '
             'allowedDomains = [ "localhost" "github.com" "pypi.org" ]; }; }' % self.port
         )
         built = nix(
