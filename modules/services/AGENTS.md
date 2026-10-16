@@ -132,6 +132,7 @@ re-pin). Fixed in `824b9ad`.
 | dashy | 8088 (Studio Tailscale), 8089 (loopback status adapter) | Nixpkgs `dashy-ui` static build + Caddy + Python status adapter | Always-on | Private service homepage. Configuration is compiled into the immutable static build; mutable UI editing and upstream proxy endpoints are absent. Status dots read only the allowlisted Hermes watchdog state. |
 | summit-point-gallery | 4321 (loopback only) | Nixpkgs `caddy` serving a staged static build | Always-on | Unlisted concept preview for the Summit Point website (repo `bryan/summit-point-site`). Exactly one hostname, `summitpoint.thompson.codes`, reaches the origin through the existing remotely managed Cloudflare Tunnel; Caddy answers any other Host header with a 404, and the tunnel holds no path rules. Serves the `current` symlink under `~/Library/Application Support/Thompson Codes/Summit Point Gallery/`, which always points at an immutable `releases/<sha>/` directory — never a working tree's `dist/`. Publish and roll back with the site repo's `scripts/publish-review.sh` (`--rollback <sha>` is an atomic symlink change, no rebuild, no activation). Every response carries `X-Robots-Tag: noindex, nofollow, noarchive`, `Cache-Control: no-store`, `nosniff`, `no-referrer`, a restrictive `Permissions-Policy`, and a static-site CSP that refuses framing. Loopback-only and deliberately NOT registered with the macOS firewall. Astro's dev server owns 4322 and must never be tunneled (enforced by a module assertion). |
 | pi-durable | 8790 (loopback page); when configured: 8888 (tinyproxy on the sandbox network's gateway) and one Tailscale Serve HTTPS port | Homebrew `node` running `~/code/durable-pi-workspace/dist/workspaces/sgg/src/main.js run`; nixpkgs `tinyproxy`; `/sbin/pfctl` (root, anchor `com.apple/100.pi-durable-sgg`) | Always-on when enabled; pf loader at activation and at boot | **Enabled on Studio for commissioning (2026-10-16).** Supervises the Pi Durable SGG PR pre-review service, which starts paused and holds every side effect until its own commissioning gates are recorded. Secrets stay in the service's 0600 files, never in the store or plist (`EnvironmentVariables` is `HOME` and `PATH` only). The proxy and the page route each stay off until their operator inputs are set; activation refuses a Serve port that already serves anything. With the proxy comes a pf anchor that confines the sandbox network to it, loaded at activation and by the root daemon `org.nixos.pi-durable-pf` at boot. Apple `container` 1.5.0 is installed from Apple's signed installer, pinned; this module never installs it. See [Pi Durable commissioning inputs](#pi-durable-commissioning-inputs). |
+| omlx | 8000 (loopback only) | User-managed venv `<stateDir>/runtime/venv/bin/omlx`, built from a pinned source revision (never the Homebrew tap or the macOS app) | On demand: always-on agent when enabled, no model loaded at startup | **Imported on Studio, disabled (2026-10-16).** Trial runtime for MLX models larger than RAM (MoE expert offload from SSD) beside Ollama. Nix owns one foreground `omlx serve` agent (`org.nixos.omlx`) and nothing else: no install, download, firewall rule, Tailscale route, MCP config or credential. `omlx-preflight.sh` exits 78 with one line on stderr unless the runtime is installed and `settings.json` was commissioned with an API key and `cors_origins = []` (oMLX's defaults let any web page in the operator's browser claim the admin key), no model is pinned, and no model directory carries code (mlx-vlm imports `config.json` `model_file` whatever `trust_remote_code` says). `KeepAlive.Crashed` restarts only crashes, so a refusal does not loop. Hugging Face is offline for the process (`HF_HUB_OFFLINE=1`) with `HF_HOME` under the state directory, and `--no-hf-cache` keeps `~/.cache/huggingface` out of discovery. The API key lives only in oMLX's 0600 `settings.json`, written by the operator; per-model settings (expert offload, MTP) are oMLX's own state, set through its admin API. Review, install route, commissioning and rollback: [`docs/omlx-glm53-trial.md`](../../docs/omlx-glm53-trial.md). Tests: `python3 scripts/test_omlx_module.py`. |
 
 ## Where Enabled
 
@@ -144,6 +145,7 @@ services.syncthing.enable = true;
 Only **studio** enables the full stack (ollama, open-webui, monitoring, smb-mount, icloud-backup).
 Only **studio** enables **summit-point-gallery** (loopback-only concept preview behind the existing Cloudflare Tunnel).
 **studio** enables **pi-durable** for commissioning (2026-10-16): proxy on the `pi-durable-sgg` internal network (`192.168.128.1`, `192.168.128.0/24`, `fd85:1c07:74fb:2dc7::/64`), pf confining that network to the proxy, page on tailnet HTTPS 8790. The service starts paused; its own gates decide what runs.
+**studio** imports **omlx** with explicit trial settings and leaves it disabled until the reviewed runtime and checkpoint are approved, installed and verified. No other host imports it.
 Hindsight is retired: no service module or host enables it. Preserve its inactive data and encrypted backups; do not recreate third-party memory integrations. Agents use harness-native memory/history and established vaults.
 All darwin hosts enable **syncthing**.
 No host enables **obsidian-headless** or **vault-git-backup** any more (retired 2026-09-16; the personal second brain is Apple Notes and `/Users/bryan/second-brain` is a frozen archive). Nothing may automatically commit, pull, push, or sync that archive.
@@ -198,13 +200,14 @@ Alertmanager speaks canonical AM v2.
 
 ## Scheduling Patterns
 
-Three launchd scheduling modes used (match existing when adding):
+Four launchd scheduling modes used (match existing when adding):
 
 | Mode | Config | Used By |
 |------|--------|---------|
 | Always-on daemon | `RunAtLoad=true` + `KeepAlive=true` | ollama, open-webui, syncthing, monitoring |
 | Event-driven one-shot | `RunAtLoad=true` + `KeepAlive=false` + `WatchPaths` | smb-mount |
 | Calendar-scheduled | `StartCalendarInterval` only | icloud-backup, vault-git-backup |
+| Crash-only restart | `RunAtLoad=true` + `KeepAlive.Crashed=true` | omlx (a refused preflight or configuration error stays down instead of looping) |
 
 ## Obsidian Vault Sync and Backup (retired; rollback reference)
 

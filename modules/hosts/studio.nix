@@ -3,6 +3,7 @@
 # Features: fonts, nix-settings, zsh, homebrew, editors, git, cli-tools, personal desktop
 # Services: Hermes, ollama, open-webui, monitoring, smb-mount, syncthing, iCloud backup
 # (Pi Durable SGG pre-review imported but disabled until commissioning.)
+# (oMLX imported for an isolated GLM-5.3-Flash trial; disabled until commissioning.)
 # (Obsidian Headless Sync and the vault Git backup were retired 2026-09-16: the personal
 # second brain moved to Apple Notes; ~/second-brain is a frozen archive.)
 # Host-specific: Media server tools (cloudflared, etc.)
@@ -32,6 +33,7 @@
       dashy
       summit-point-gallery
       pi-durable
+      omlx
     ];
 
     # === Core System Settings ===
@@ -144,6 +146,19 @@
       proxy.ipv6Subnet = "fd85:1c07:74fb:2dc7::/64";
       # Free tailnet HTTPS port (Serve held 443, 9120, 10443 and 11434).
       page.tailscaleHttpsPort = 8790;
+    };
+
+    # oMLX trial server (docs/omlx-glm53-trial.md): an on-demand, loopback-only
+    # second inference runtime for GLM-5.3-Flash with SSD expert offload.
+    # Disabled until the reviewed runtime and checkpoint are approved,
+    # installed and verified; Ollama, its routes and every client stay as they
+    # are. Port 8000 had no listener on 2026-10-16.
+    services.omlx = {
+      enable = false;
+      port = 8000;
+      stateDir = "/Users/${config.system.primaryUser}/.local/share/omlx-trial";
+      memoryGuard = "safe";
+      ssdCacheGB = 20;
     };
 
     # === Service Health & UNRAID NAS Monitoring ===
