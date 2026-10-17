@@ -67,6 +67,7 @@
       lib.optionalString (brewAgents != [ ]) ''
         # === re-pin brew-backed launchd agents ===
         brew_agent_uid=$(/usr/bin/id -u ${config.system.primaryUser})
+        # shellcheck disable=SC2043 # generated list may hold a single agent
         for brew_agent in ${lib.escapeShellArgs brewAgents}; do
           brew_agent_label="org.nixos.$brew_agent"
           brew_agent_plist="${homeDir}/Library/LaunchAgents/$brew_agent_label.plist"
