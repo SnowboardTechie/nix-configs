@@ -30,9 +30,10 @@
     let
       cfg = config.services.pi-durable;
       home = "/Users/${config.system.primaryUser}";
-      # The application's notices, plugin path and submit flow all name this
-      # checkout, so it is the deployment path, never a worktree.
-      checkout = "${home}/code/durable-pi-workspace";
+      # Dedicated clean, pushed-main checkout; human/agent work stays in ~/code.
+      # Prepare and verify its build before Bryan activates with update-system.
+      # Do not substitute a temporary worktree or an installed-plist override.
+      checkout = "${home}/.local/share/pi-durable/sgg-deployment";
       tinyproxy = "${pkgs.tinyproxy}/bin/tinyproxy";
 
       # Canonical dotted-quad only (octets 0-255, no leading zeros, whitespace

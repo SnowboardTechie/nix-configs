@@ -2,7 +2,7 @@
 #
 # Features: fonts, nix-settings, zsh, homebrew, editors, git, cli-tools, personal desktop
 # Services: Hermes, ollama, open-webui, monitoring, smb-mount, syncthing, iCloud backup
-# (Pi Durable SGG pre-review imported but disabled until commissioning.)
+# (Pi Durable SGG pre-review enabled after commissioning.)
 # (oMLX imported for an isolated GLM-5.3-Flash trial; disabled until commissioning.)
 # (Obsidian Headless Sync and the vault Git backup were retired 2026-09-16: the personal
 # second brain moved to Apple Notes; ~/second-brain is a frozen archive.)
@@ -130,7 +130,7 @@
     # an immutable releases/<sha>/ directory, never from a working tree.
     services.summit-point-gallery.enable = true;
 
-    # Pi Durable SGG PR pre-review (~/code/durable-pi-workspace). Enabled
+    # Pi Durable SGG pre-review (dedicated ~/.local/share/pi-durable/sgg-deployment checkout). Enabled
     # 2026-10-16 for commissioning, after Apple `container` 1.5.0 was approved
     # and installed from Apple's signed installer (pinned; upgrades are
     # deliberate). The agent starts paused and holds every side effect until

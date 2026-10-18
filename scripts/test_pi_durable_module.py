@@ -118,7 +118,7 @@ class EnabledWithoutCommissioningInputs(unittest.TestCase):
         self.assertEqual(
             [
                 "/opt/homebrew/bin/node",
-                f"{HOME}/code/durable-pi-workspace/dist/workspaces/sgg/src/main.js",
+                f"{HOME}/.local/share/pi-durable/sgg-deployment/dist/workspaces/sgg/src/main.js",
                 "run",
                 "--config",
                 f"{HOME}/.config/pi-durable/sgg.json",
