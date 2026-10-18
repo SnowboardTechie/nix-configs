@@ -10,11 +10,7 @@ Config: `/Users/bryan/.config/pi-durable/sgg.json` (unchanged by this Nix change
 State: `/Users/bryan/.local/state/pi-durable/sgg` (one writer).
 Source of live acceptance: application `workspaces/sgg/OPERATIONS.md` and `vault/INDEX.md`.
 
-The Nix change only selects the dedicated checkout. Evidence-location migration is a separate application/configuration operation: do not infer it happened because the launch path changed. Historical recorded case paths and old Matrix notice commands may still name the source workspace. Preserve that workspace and those records; its tools can access the same explicit config/state. Existing plugin commands must remain available until separately reconciled.
-
-## Prepared baseline
-
-The dedicated checkout was cloned from the real origin at pushed main `086e5d5ec7db8ba4b9c17e410fd86b83b46d8e57`. Existing installed locked dependencies were copied, not downloaded, and `npm run build` produced a clean commit-bound stamp. No writer was launched from it. The source application was rebuilt/restarted at the same commit in a bounded window after proving all five tasks terminal and no case VM present; starts/polling resumed and the TailNet dashboard returned HTTP 200. These are preparation observations, not activation evidence and not a promise of unchanged state.
+The Nix change only selects the dedicated service checkout. Evidence migration and submission-path reconciliation are separate application operations. Until those land, every new notice (`PLUGIN_DIR`), `/pilot:submit`, and the Hermes submit plugin still name the source checkout, not just historical notices; those submit CLIs do not verify their build identity. Keep that canonical source checkout on clean pushed main with a verified build, and develop only in linked worktrees. Do not delete old case paths or infer complete runtime separation from changing launchd alone.
 
 ## Operator activation — Studio, independent terminal
 
@@ -25,7 +21,7 @@ set -eu
 DEPLOY=/Users/bryan/.local/share/pi-durable/sgg-deployment
 SOURCE=/Users/bryan/code/durable-pi-workspace
 NIX=/Users/bryan/code/nix-configs
-AGENT="gui/$(id -u)/org.nixos.pi-durable-sgg"
+
 test -z "$(git -C "$NIX" status --porcelain)"
 git -C "$NIX" fetch origin main
 test "$(git -C "$NIX" branch --show-current)" = main
@@ -54,10 +50,6 @@ Readback must show the ProgramArguments path under `sgg-deployment`, one running
 
 ## Failure and rollback
 
-If `update-system` fails, inspect `launchctl print` before acting: activation may have partially completed. Keep starts paused while identifying the actual command path and build. Do not start another writer manually. Restoring the prior source deployment means reverting only the dedicated-checkout declaration in `modules/services/pi-durable.nix` through a reviewed, committed/pushed change on clean `nix-configs/main`, then Bryan running the standard `update-system` again. First prove the original source build verifies; never silently restore an old compiled tree over newer code.
+If `update-system` fails, inspect `launchctl print` before acting: activation may have partially completed. Keep starts paused while identifying the actual command path and build. Do not start another writer manually. Restoring the prior source deployment means reverting the separation changes together (module declaration, matching test, README and service/host guidance) through a reviewed, committed/pushed change on clean `nix-configs/main`, then Bryan running the standard `update-system` again. First prove the original source build verifies; never silently restore an old compiled tree over newer code. Preserve unrelated changes, including any intervening system fixes.
 
 The config/state/evidence were not moved by this Nix change, so no stale SQLite restore or data copy is part of rollback. If a later evidence migration processed new records, preserve/reconcile the newest evidence and receipts before changing its path. Never roll back mutable state to an old snapshot while retaining newer external effects.
-
-## Verification
-
-`python3 scripts/test_pi_durable_module.py` covers the exact launch command and existing proxy/firewall/route controls. `nix flake check` and exact Studio option evaluation validate declarations without activation. A targeted independent deployment-boundary review precedes publication. Live activation remains pending until the exact installed command, process and HTTP/status readbacks establish it.

@@ -2,7 +2,7 @@
 #
 # Features: fonts, nix-settings, zsh, homebrew, editors, git, cli-tools, personal desktop
 # Services: Hermes, ollama, open-webui, monitoring, smb-mount, syncthing, iCloud backup
-# (Pi Durable SGG pre-review enabled after commissioning.)
+# (Pi Durable SGG pre-review enabled for commissioning 2026-10-16; now commissioned.)
 # (oMLX imported for an isolated GLM-5.3-Flash trial; disabled until commissioning.)
 # (Obsidian Headless Sync and the vault Git backup were retired 2026-09-16: the personal
 # second brain moved to Apple Notes; ~/second-brain is a frozen archive.)
