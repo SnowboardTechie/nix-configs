@@ -2,7 +2,7 @@
 
 ## Authority and current boundary
 
-Bryan approved repository closeout and workspace separation on 2026-10-18. Nix owns launchd; Bryan activates only through the standard `update-system` from clean pushed `nix-configs/main`. Do not hand-edit the installed plist, use a temporary worktree/store path, start a second service, or change credentials, firewall, sandbox, page route, provider or room policy.
+After clarification of the applied changes and remaining scope, Bryan explicitly authorized completing the separation on 2026-10-18 and performed standard `update-system` from clean pushed main `7fb90e0`. Live launchctl readback names the dedicated deployment path; the service is restored to unpaused operation. The application runbook §3.12 owns detailed acceptance. Nix owns launchd; future activations likewise use Bryan's standard `update-system`, never a hand-edited plist, temporary service override or second writer. Credentials, firewall, sandbox, page route, provider and room policy remain outside this path change.
 
 Source workspace: `/Users/bryan/code/durable-pi-workspace`.
 Dedicated deployment: `/Users/bryan/.local/share/pi-durable/sgg-deployment` (independent Git checkout).
@@ -10,7 +10,7 @@ Config: `/Users/bryan/.config/pi-durable/sgg.json` (unchanged by this Nix change
 State: `/Users/bryan/.local/state/pi-durable/sgg` (one writer).
 Source of live acceptance: application `workspaces/sgg/OPERATIONS.md` and `vault/INDEX.md`.
 
-The Nix change only selects the dedicated service checkout. Evidence migration and submission-path reconciliation are separate application operations. Until those land, every new notice (`PLUGIN_DIR`), `/pilot:submit`, and the Hermes submit plugin still name the source checkout, not just historical notices; those submit CLIs do not verify their build identity. Keep that canonical source checkout on clean pushed main with a verified build, and develop only in linked worktrees. Do not delete old case paths or infer complete runtime separation from changing launchd alone.
+The Nix change selects only the dedicated service checkout. Application PR42 separately supplies the evidence relocation and submission-path reconciliation; both are now applied and verified in the application runbook. New notice commands, terminal skills and the installed Hermes plugin use the deployment checkout. Historical notes remain unchanged and bind through the configured evidence root. Do not delete historical tracked evidence or infer runtime health from the Nix declaration alone. The procedure below is retained for future activation and rollback, not a pending initial migration.
 
 ## Operator activation — Studio, independent terminal
 
