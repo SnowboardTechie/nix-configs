@@ -1,7 +1,8 @@
 # Host configuration: studio (Home Server and Personal Desktop Mac)
 #
 # Features: fonts, nix-settings, zsh, homebrew, editors, git, cli-tools, personal desktop
-# Services: Hermes, ollama, open-webui, monitoring, smb-mount, syncthing, iCloud backup
+# Services: Hermes, ollama, open-webui, monitoring, smb-mount, syncthing, iCloud backup,
+# Cloudflare Tunnel connector
 # (Pi Durable SGG pre-review enabled for commissioning 2026-10-16; now commissioned.)
 # (oMLX imported for an isolated GLM-5.3-Flash trial; disabled until commissioning.)
 # (Obsidian Headless Sync and the vault Git backup were retired 2026-09-16: the personal
@@ -34,6 +35,7 @@
       summit-point-gallery
       pi-durable
       omlx
+      cloudflared-tunnel
     ];
 
     # === Core System Settings ===
@@ -62,6 +64,10 @@
       tailscaleServe = true;
     };
     services.open-webui.enable = true;
+    # Connector for the remotely managed tunnel behind ai.thompson.codes and
+    # summitpoint.thompson.codes. Its token is read from root-only
+    # /etc/cloudflared/tunnel-token (migration steps in the module).
+    services.cloudflared-tunnel.enable = true;
     services.monitoring.enable = true;
     services.smb-mount.enable = true;
     services.syncthing.enable = true;
