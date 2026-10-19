@@ -9,8 +9,10 @@
 #
 # Alerting pipeline:
 #   Prometheus (rule eval) → Alertmanager (dedup/group/route) → smtp2go → email
+#                                                            ↘ matrix-alertmanager-receiver → Matrix room
 # Grafana stays as pure visualization (Alertmanager added as datasource for alert-state
-# view in UI). Set services.monitoring.alertEmail in the host config to enable.
+# view in UI). Set services.monitoring.alertEmail in the host config to enable, and
+# services.monitoring.alertMatrix to also post every notification into a Matrix room.
 { inputs, ... }:
 {
   # Darwin aspect - full configuration from modules/darwin/services/monitoring.nix
@@ -19,6 +21,7 @@
     cfg = config.services.monitoring;
     homeDir = "/Users/${config.system.primaryUser}";
     alertingEnabled = cfg.alertEmail != null;
+    matrixAlertingEnabled = alertingEnabled && cfg.alertMatrix != null;
     monitoringStoragePaths = [
       cfg.prometheus.storagePath
       cfg.grafana.dataPath
@@ -123,7 +126,26 @@
               description = "{{ $labels.instance }} (job {{ $labels.job }}) has been down for 5 minutes.";
             };
           }
-        ];
+        ] ++ lib.optional matrixAlertingEnabled {
+          # The Matrix bridge answers Alertmanager 200 even when its join or
+          # send fails, so Alertmanager never retries and never counts a
+          # failure. The bridge's own counters are the only signal; this alert
+          # still arrives by email. The join counter is labelled by room and
+          # only appears on the first failure, so a series that did not exist
+          # 15m ago counts as a failure too. A crashed or uncommissioned
+          # bridge surfaces as PrometheusTargetDown instead.
+          alert = "MatrixAlertDeliveryFailed";
+          expr = lib.concatStringsSep " or " [
+            "increase(matrix_alertmanager_receiver_send_failure_total[15m]) > 0"
+            "increase(matrix_alertmanager_receiver_join_room_failure_total[15m]) > 0"
+            "(matrix_alertmanager_receiver_join_room_failure_total unless matrix_alertmanager_receiver_join_room_failure_total offset 15m)"
+          ];
+          labels = { severity = "warning"; };
+          annotations = {
+            summary = "Alert notifications are not reaching Matrix";
+            description = "The Matrix bridge failed to join the alert room or send a message in the last 15 minutes. Email delivery is unaffected; see /tmp/matrix-alertmanager-receiver.log.";
+          };
+        };
       }];
     });
 
@@ -177,7 +199,10 @@
           job_name = "blackbox_exporter";
           static_configs = [{ targets = [ "127.0.0.1:${toString cfg.blackbox.port}" ]; }];
         }
-      ] ++ cfg.extraScrapeConfigs;
+      ] ++ lib.optional matrixAlertingEnabled {
+        job_name = "matrix-alertmanager-receiver";
+        static_configs = [{ targets = [ "127.0.0.1:${toString cfg.alertMatrix.port}" ]; }];
+      } ++ cfg.extraScrapeConfigs;
     } // lib.optionalAttrs alertingEnabled {
       alerting = {
         alertmanagers = [{
@@ -269,20 +294,76 @@
         smtp_require_tls = true;
       };
       route = {
-        receiver = "email-primary";
+        receiver = "primary";
         group_by = [ "alertname" "instance" ];
         group_wait = "30s";
         group_interval = "5m";
         repeat_interval = "4h";
       };
-      receivers = [{
-        name = "email-primary";
+      # Alertmanager notifies and retries each integration of a receiver
+      # independently, so a Matrix outage never delays or blocks email.
+      receivers = [({
+        name = "primary";
         email_configs = [{
           to = cfg.alertEmail;
           send_resolved = true;
         }];
-      }];
+      } // lib.optionalAttrs matrixAlertingEnabled {
+        webhook_configs = [{
+          url = "http://127.0.0.1:${toString cfg.alertMatrix.port}/alerts/primary";
+          send_resolved = true;
+        }];
+      })];
     });
+
+    # matrix-alertmanager-receiver — turns Alertmanager webhooks into Matrix
+    # messages. The token never enters the store or the plist: the bridge
+    # expands ${VAR} references in its config from its environment, and the
+    # launcher exports the token from a 0600 file just before exec. Messages
+    # are sent unencrypted (the bridge has no E2EE), so the room must be an
+    # unencrypted one. html/template escapes label and annotation values.
+    matrixReceiverConfigFile = pkgs.writeText "matrix-alertmanager-receiver.json" (builtins.toJSON {
+      http = {
+        address = "127.0.0.1";
+        port = cfg.alertMatrix.port;
+        "metrics-enabled" = true;
+      };
+      matrix = {
+        "homeserver-url" = cfg.alertMatrix.homeserverUrl;
+        "user-id" = cfg.alertMatrix.userId;
+        "access-token" = "\${MATRIX_ALERTMANAGER_ACCESS_TOKEN}";
+        "room-mapping" = { primary = cfg.alertMatrix.roomId; };
+      };
+      templating = {
+        "computed-values" = [
+          { values = { icon = "🔔"; }; }
+          { values = { icon = "🟠"; }; "when-matching-labels" = { severity = "warning"; }; }
+          { values = { icon = "🔴"; }; "when-matching-labels" = { severity = "critical"; }; }
+          { values = { icon = "✅"; }; "when-matching-status" = "resolved"; }
+        ];
+        "firing-template" = ''<p>{{ .ComputedValues.icon }} <strong>{{ .Alert.Labels.alertname }}</strong>{{ if .Alert.Labels.severity }} ({{ .Alert.Labels.severity }}){{ end }}: {{ .Alert.Annotations.summary }}</p>{{ if .Alert.Annotations.description }}<p>{{ .Alert.Annotations.description }}</p>{{ end }}'';
+        # Descriptions are written in the firing tense ("has been unreachable"),
+        # so a resolution carries only the summary.
+        "resolved-template" = ''<p>{{ .ComputedValues.icon }} <strong>Resolved: {{ .Alert.Labels.alertname }}</strong>: {{ .Alert.Annotations.summary }}</p>'';
+      };
+    });
+
+    # Waits for the token instead of exiting into a launchd restart loop, so an
+    # uncommissioned bridge logs once and shows as a down Prometheus target.
+    matrixReceiverLauncher = pkgs.writeShellScript "matrix-alertmanager-receiver-launcher" ''
+      set -eu
+      token_file=${lib.escapeShellArg cfg.alertMatrix.accessTokenFile}
+      if [ ! -s "$token_file" ]; then
+        echo "matrix-alertmanager-receiver: waiting for $token_file" >&2
+        while [ ! -s "$token_file" ]; do
+          /bin/sleep 300
+        done
+      fi
+      MATRIX_ALERTMANAGER_ACCESS_TOKEN=$(/bin/cat "$token_file")
+      export MATRIX_ALERTMANAGER_ACCESS_TOKEN
+      exec ${pkgs.matrix-alertmanager-receiver}/bin/matrix-alertmanager-receiver \
+        -config-path ${matrixReceiverConfigFile}
+    '';
 
     # Loki configuration
     lokiConfigFile = pkgs.writeText "loki-local-config.yaml" (builtins.toJSON {
@@ -437,6 +518,51 @@
         '';
       };
 
+      alertMatrix = lib.mkOption {
+        type = lib.types.nullOr (lib.types.submodule {
+          options = {
+            homeserverUrl = lib.mkOption {
+              type = lib.types.strMatching "https?://[^[:space:]]+";
+              example = "https://matrix.example.com";
+              description = "Client-server API base URL of the homeserver.";
+            };
+            userId = lib.mkOption {
+              type = lib.types.strMatching "@[^[:space:]:]+:[^[:space:]]+";
+              example = "@alerts:example.com";
+              description = "Dedicated bot account that posts the alerts.";
+            };
+            roomId = lib.mkOption {
+              type = lib.types.strMatching "![^[:space:]]+";
+              example = "!AbCdEfGhIjKlMnOp:example.com";
+              description = ''
+                Internal room ID (starts with `!`), not an alias. The room must
+                be unencrypted, and the bot must be invited; it joins on its
+                first delivery.
+              '';
+            };
+            accessTokenFile = lib.mkOption {
+              type = lib.types.str;
+              default = "${homeDir}/.secrets/matrix-alertmanager-token";
+              description = "0600 file holding the bot's access token, read at launch.";
+            };
+            port = lib.mkOption {
+              type = lib.types.port;
+              default = 9097;
+              description = "Loopback port for the bridge's webhook and /metrics.";
+            };
+          };
+        });
+        default = null;
+        description = ''
+          Also post every alert notification (firing and resolved) into a
+          Matrix room, alongside email. Null leaves delivery email-only.
+
+          Wiring: Alertmanager → webhook → matrix-alertmanager-receiver
+          (loopback only) → homeserver. Requires alertEmail, since this adds an
+          integration to the existing receiver rather than replacing it.
+        '';
+      };
+
       prometheus = {
         port = lib.mkOption {
           type = lib.types.port;
@@ -538,6 +664,11 @@
     };
 
     config = lib.mkIf cfg.enable {
+      assertions = [{
+        assertion = cfg.alertMatrix == null || alertingEnabled;
+        message = "services.monitoring.alertMatrix adds Matrix to email delivery; set services.monitoring.alertEmail too.";
+      }];
+
       # Ensure storage directories exist + run firewall rules, via the only
       # nix-darwin activation extension point that actually executes:
       # `extraActivation`. (nix-darwin's system.activationScripts only composes
@@ -572,6 +703,14 @@
         if [ ! -s "${homeDir}/.secrets/grafana-smtp-password" ]; then
           echo "WARNING: services.monitoring.alertEmail is set but ${homeDir}/.secrets/grafana-smtp-password" >&2
           echo "         is missing. Alertmanager will start but email delivery will fail." >&2
+        fi
+      '' + lib.optionalString matrixAlertingEnabled ''
+
+        # === matrix-alertmanager-receiver: preflight ===
+        # No app-firewall rule: the bridge binds 127.0.0.1.
+        if [ ! -s ${lib.escapeShellArg cfg.alertMatrix.accessTokenFile} ]; then
+          echo "WARNING: services.monitoring.alertMatrix is set but ${cfg.alertMatrix.accessTokenFile}" >&2
+          echo "         is missing. The Matrix bridge will wait for it; email delivery is unaffected." >&2
         fi
       '');
 
@@ -717,6 +856,21 @@
           KeepAlive = true;
           StandardOutPath = "/tmp/alertmanager.log";
           StandardErrorPath = "/tmp/alertmanager.error.log";
+        };
+      };
+
+      # Matrix bridge — loopback-only, like Alertmanager, because anything that
+      # can reach its webhook can post into the room as the bot. A user agent
+      # suits a public homeserver; one on the LAN would need the system-domain
+      # treatment Prometheus gets (Local Network Privacy). The bridge exits
+      # when the homeserver is unreachable at startup; KeepAlive brings it back.
+      launchd.user.agents.matrix-alertmanager-receiver = lib.mkIf matrixAlertingEnabled {
+        serviceConfig = {
+          ProgramArguments = [ "${matrixReceiverLauncher}" ];
+          RunAtLoad = true;
+          KeepAlive = true;
+          StandardOutPath = "/tmp/matrix-alertmanager-receiver.log";
+          StandardErrorPath = "/tmp/matrix-alertmanager-receiver.error.log";
         };
       };
     };
