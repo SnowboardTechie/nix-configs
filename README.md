@@ -229,9 +229,9 @@ opencode
 - [Nixpkgs Package Search](https://search.nixos.org/packages)
 - [flake-parts Documentation](https://flake.parts/)
 
-## 3 gits, one repo
+## 2 gits, one repo
 
-This repository syncs to multiple remotes. The primary repository is at [git.snowboardtechie.com](https://git.snowboardtechie.com/bryan/nix-configs), with backups on [Codeberg](https://codeberg.org/SnowboardTechie/nix-configs) and [GitHub](https://github.com/bryan-thompsoncodes/nix-configs).
+The primary repository is at [git.snowboardtechie.com](https://git.snowboardtechie.com/bryan/nix-configs), with a push mirror on [GitHub](https://github.com/bryan-thompsoncodes/nix-configs).
 
 ## License
 

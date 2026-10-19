@@ -182,4 +182,4 @@ grep -E "services\." modules/hosts/*.nix
 - Darwin services that reference Homebrew binaries should use `${config.homebrew.prefix}/bin/{tool}` (see `services/syncthing.nix`) rather than hardcoding the Homebrew prefix
 - Darwin services require the tool installed via Homebrew first (Nix packages alone aren't enough for launchd)
 - NixOS stubs exist in service modules (`# TODO: Implement NixOS equivalent`) — these are intentional placeholders
-- 3 git remotes: primary on git.snowboardtechie.com, mirrors on Codeberg and GitHub
+- 2 git remotes: primary on git.snowboardtechie.com, push mirror on GitHub
