@@ -21,6 +21,7 @@
       "ffmpeg"
       "fzf"
       "git-lfs"
+      "gitleaks" # Secret scan in the global pre-commit hook (dotfiles)
       "gnupg"
       "googleworkspace-cli"
       "herdr"
@@ -92,6 +93,7 @@
       ffmpeg
       fzf
       gh-dash
+      gitleaks # Secret scan in the global pre-commit hook (dotfiles)
       gnupg
       htop
       jq
