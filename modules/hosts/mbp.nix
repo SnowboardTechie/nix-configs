@@ -15,7 +15,6 @@
       cli-tools
       rust
       activation
-      openchamber
       personal-desktop
       cinny
       # Desktop features
