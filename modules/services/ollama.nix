@@ -78,7 +78,9 @@
           StandardErrorPath = "/tmp/ollama.error.log";
           EnvironmentVariables = {
             OLLAMA_HOST = "${cfg.host}:${toString cfg.port}";
-            OLLAMA_ORIGINS = "*";
+            # OLLAMA_ORIGINS stays at Ollama's default (localhost origins only).
+            # Its clients call the API server-side, where CORS doesn't apply;
+            # "*" let any web page open in a browser drive the unauthenticated API.
             OLLAMA_FLASH_ATTENTION = if cfg.flashAttention then "1" else "0";
             OLLAMA_KV_CACHE_TYPE = cfg.kvCacheType;
             OLLAMA_KEEP_ALIVE = cfg.keepAlive;

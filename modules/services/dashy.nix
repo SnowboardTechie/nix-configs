@@ -119,13 +119,13 @@
                 (item {
                   title = "Prometheus";
                   description = "Metrics and alert rules";
-                  url = "http://100.121.238.48:9090";
+                  url = cfg.prometheusUrl;
                   icon = "🔥";
                 })
                 (item {
                   title = "Grafana Alloy";
                   description = "Studio telemetry collector";
-                  url = "http://100.121.238.48:12345";
+                  url = cfg.alloyUrl;
                   icon = "🧪";
                 })
                 {
@@ -214,6 +214,16 @@
             should derive this from services.monitoring.grafana.port so the
             listener and the portal links cannot drift apart.
           '';
+        };
+        prometheusUrl = lib.mkOption {
+          type = lib.types.str;
+          default = "http://127.0.0.1:9090";
+          description = "Prometheus portal link. Hosts should derive it from services.monitoring, like grafanaBaseUrl.";
+        };
+        alloyUrl = lib.mkOption {
+          type = lib.types.str;
+          default = "http://127.0.0.1:12345";
+          description = "Grafana Alloy portal link. Hosts should derive it from services.monitoring, like grafanaBaseUrl.";
         };
         statusPort = lib.mkOption {
           type = lib.types.port;

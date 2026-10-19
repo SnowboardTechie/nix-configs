@@ -105,7 +105,7 @@ class StudioGrafanaPortContractTests(unittest.TestCase):
 
     def test_dashy_grafana_base_url_derives_from_the_studio_port(self):
         self.assertEqual(
-            "http://100.121.238.48:33000",
+            "https://bryans-mac-studio.tail5ba690.ts.net:33000",
             nix_eval_json(f"{STUDIO}.services.dashy.grafanaBaseUrl"),
         )
 

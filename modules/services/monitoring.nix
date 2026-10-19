@@ -4,8 +4,10 @@
 # Provides metrics collection, log aggregation, visualization, and alerting. Grafana,
 # node_exporter, Loki, and Alloy use Homebrew. Prometheus, Alertmanager, and
 # blackbox_exporter use nixpkgs derivations (Homebrew Prometheus builds with netgo which
-# breaks multi-interface routing on macOS; Alertmanager isn't in Homebrew). All services
-# bind to 0.0.0.0 for network access. Configuration is fully declarative.
+# breaks multi-interface routing on macOS; Alertmanager isn't in Homebrew). Every listener
+# binds 127.0.0.1 except Alloy's syslog receiver (UDP 0.0.0.0:1514, for Unraid). With
+# tailscaleServe, Grafana, Prometheus and the Alloy UI are reachable tailnet-only over
+# HTTPS through Tailscale Serve. Configuration is fully declarative.
 #
 # Alerting pipeline:
 #   Prometheus (rule eval) → Alertmanager (dedup/group/route) → smtp2go → email
@@ -31,6 +33,15 @@
     installMonitoringStorageCommand = lib.escapeShellArgs (
       [ "/usr/bin/install" "-d" "-m" "0750" ] ++ monitoringStoragePaths
     );
+    # Loopback web UIs published tailnet-only through Tailscale Serve, each on
+    # an HTTPS port equal to its local port.
+    tailscaleServeEnabled = cfg.tailscaleServe.enable;
+    tailnetUrl = port: "https://${cfg.tailscaleServe.hostName}:${toString port}";
+    servedWebUis = [
+      { name = "Grafana"; port = cfg.grafana.port; }
+      { name = "Prometheus"; port = cfg.prometheus.port; }
+      { name = "Alloy"; port = cfg.alloy.port; }
+    ];
     # System LaunchDaemons are loaded before the Nix volume is guaranteed to
     # be mounted. Keep launchd pointed at the always-available system shell and
     # wait there for the real Nix-store executable instead of entering the
@@ -315,9 +326,12 @@
 
     # Loki configuration
     lokiConfigFile = pkgs.writeText "loki-local-config.yaml" (builtins.toJSON {
+      # No auth, so loopback-only: Alloy and Grafana are its only clients.
       auth_enabled = false;
       server = {
+        http_listen_address = "127.0.0.1";
         http_listen_port = cfg.loki.port;
+        grpc_listen_address = "127.0.0.1";
       };
       common = {
         path_prefix = cfg.loki.storagePath;
@@ -598,13 +612,38 @@
         default = [];
         description = "Additional Prometheus scrape configurations for remote targets";
       };
+
+      tailscaleServe = {
+        enable = lib.mkEnableOption ''
+          tailnet-only HTTPS for Grafana, Prometheus and the Alloy UI through
+          Tailscale Serve. Each listener stays on 127.0.0.1 and is published on
+          the tailnet HTTPS port equal to its local port
+        '';
+        hostName = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "studio.example.ts.net";
+          description = ''
+            This machine's tailnet DNS name. Grafana's root URL and Prometheus's
+            external URL are built from it, so links in the UIs and in alert
+            notifications open over the tailnet.
+          '';
+        };
+      };
     };
 
     config = lib.mkIf cfg.enable {
-      assertions = [{
-        assertion = cfg.alertWebhook == null || alertingEnabled;
-        message = "services.monitoring.alertWebhook adds a webhook to email delivery; set services.monitoring.alertEmail too.";
-      }];
+      assertions = [
+        {
+          assertion = cfg.alertWebhook == null || alertingEnabled;
+          message = "services.monitoring.alertWebhook adds a webhook to email delivery; set services.monitoring.alertEmail too.";
+        }
+        {
+          assertion = !tailscaleServeEnabled
+            || (config.services.tailscale.enable && cfg.tailscaleServe.hostName != null);
+          message = "services.monitoring.tailscaleServe requires services.tailscale and services.monitoring.tailscaleServe.hostName";
+        }
+      ];
 
       # Ensure storage directories exist + run firewall rules, via the only
       # nix-darwin activation extension point that actually executes:
@@ -621,19 +660,23 @@
         /usr/bin/su - ${config.system.primaryUser} -c ${lib.escapeShellArg installMonitoringStorageCommand}
 
         # === monitoring: firewall rules ===
-        /usr/libexec/ApplicationFirewall/socketfilterfw --add ${pkgs.prometheus}/bin/prometheus >/dev/null 2>&1 || true
-        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock ${pkgs.prometheus}/bin/prometheus >/dev/null 2>&1 || true
-        /usr/libexec/ApplicationFirewall/socketfilterfw --add /opt/homebrew/opt/grafana/bin/grafana >/dev/null 2>&1 || true
-        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock /opt/homebrew/opt/grafana/bin/grafana >/dev/null 2>&1 || true
-        /usr/libexec/ApplicationFirewall/socketfilterfw --add /opt/homebrew/opt/node_exporter/bin/node_exporter >/dev/null 2>&1 || true
-        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock /opt/homebrew/opt/node_exporter/bin/node_exporter >/dev/null 2>&1 || true
-        /usr/libexec/ApplicationFirewall/socketfilterfw --add /opt/homebrew/opt/loki/bin/loki >/dev/null 2>&1 || true
-        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock /opt/homebrew/opt/loki/bin/loki >/dev/null 2>&1 || true
+        # Only Alloy needs one, for Unraid's syslog on UDP 1514. Every other
+        # listener binds 127.0.0.1, and loopback isn't filtered.
         /usr/libexec/ApplicationFirewall/socketfilterfw --add /opt/homebrew/opt/grafana-alloy/bin/alloy >/dev/null 2>&1 || true
         /usr/libexec/ApplicationFirewall/socketfilterfw --unblock /opt/homebrew/opt/grafana-alloy/bin/alloy >/dev/null 2>&1 || true
-        /usr/libexec/ApplicationFirewall/socketfilterfw --add ${pkgs.prometheus-blackbox-exporter}/bin/blackbox_exporter >/dev/null 2>&1 || true
-        /usr/libexec/ApplicationFirewall/socketfilterfw --unblock ${pkgs.prometheus-blackbox-exporter}/bin/blackbox_exporter >/dev/null 2>&1 || true
-      '' + lib.optionalString alertingEnabled ''
+      '' + lib.optionalString tailscaleServeEnabled (lib.concatMapStrings (ui: ''
+
+        # === monitoring: ${ui.name} via Tailscale Serve ===
+        if ! ${pkgs.coreutils}/bin/timeout --foreground 30s \
+          ${config.services.tailscale.package}/bin/tailscale serve \
+            --bg \
+            --yes \
+            --https=${toString ui.port} \
+            http://127.0.0.1:${toString ui.port}; then
+          echo "Failed to configure Tailscale Serve for ${ui.name} on port ${toString ui.port}" >&2
+          exit 1
+        fi
+      '') servedWebUis) + lib.optionalString alertingEnabled ''
 
         # === alertmanager: storage + preflight ===
         # No app-firewall rule: AM binds 127.0.0.1, and loopback isn't filtered.
@@ -657,13 +700,14 @@
       launchd.daemons.prometheus = {
         serviceConfig = {
           UserName = config.system.primaryUser;
-          ProgramArguments = waitForNixStoreProgram [
+          ProgramArguments = waitForNixStoreProgram ([
             "${pkgs.prometheus}/bin/prometheus"
             "--config.file=${prometheusConfigFile}"
-            "--web.listen-address=0.0.0.0:${toString cfg.prometheus.port}"
+            "--web.listen-address=127.0.0.1:${toString cfg.prometheus.port}"
             "--storage.tsdb.path=${cfg.prometheus.storagePath}"
             "--storage.tsdb.retention.time=30d"
-          ];
+          ] ++ lib.optional tailscaleServeEnabled
+            "--web.external-url=${tailnetUrl cfg.prometheus.port}/");
           RunAtLoad = true;
           KeepAlive = true;
           StandardOutPath = "/tmp/prometheus.log";
@@ -688,7 +732,7 @@
           StandardOutPath = "/tmp/grafana.log";
           StandardErrorPath = "/tmp/grafana.error.log";
           EnvironmentVariables = {
-            GF_SERVER_HTTP_ADDR = "0.0.0.0";
+            GF_SERVER_HTTP_ADDR = "127.0.0.1";
             GF_SERVER_HTTP_PORT = toString cfg.grafana.port;
             GF_PATHS_PROVISIONING = "${grafanaProvisioning}";
             GF_PATHS_DATA = cfg.grafana.dataPath;
@@ -696,10 +740,12 @@
             GF_SMTP_HOST = "mail.smtp2go.com:2525";
             GF_SMTP_FROM_ADDRESS = "grafana@snowboardtechie.com";
             GF_SMTP_FROM_NAME = "Studio Grafana";
+          } // lib.optionalAttrs tailscaleServeEnabled {
+            GF_SERVER_ROOT_URL = "${tailnetUrl cfg.grafana.port}/";
           };
-          # Note: Grafana is visualization-only here — alerting runs through the
-          # real Alertmanager, not Grafana's embedded one — so there's no reason to
-          # set GF_SECURITY_ADMIN_PASSWORD__FILE; the default admin login is untouched.
+          # Note: GF_SECURITY_ADMIN_PASSWORD__FILE is deliberately unset. The admin
+          # password was changed out-of-band and lives in Grafana's database
+          # (admin/admin is rejected); this module never manages it.
         };
       };
 
@@ -712,7 +758,7 @@
         serviceConfig = {
           ProgramArguments = [
             "/opt/homebrew/opt/node_exporter/bin/node_exporter"
-            "--web.listen-address=0.0.0.0:${toString cfg.nodeExporter.port}"
+            "--web.listen-address=127.0.0.1:${toString cfg.nodeExporter.port}"
             "--no-collector.thermal"
           ];
           RunAtLoad = true;
@@ -744,7 +790,7 @@
             "run"
             "${alloyConfigFile}"
             "--storage.path=${homeDir}/.alloy/data"
-            "--server.http.listen-addr=0.0.0.0:${toString cfg.alloy.port}"
+            "--server.http.listen-addr=127.0.0.1:${toString cfg.alloy.port}"
           ];
           RunAtLoad = true;
           KeepAlive = true;
@@ -761,7 +807,7 @@
           ProgramArguments = waitForNixStoreProgram [
             "${pkgs.prometheus-blackbox-exporter}/bin/blackbox_exporter"
             "--config.file=${blackboxConfigFile}"
-            "--web.listen-address=0.0.0.0:${toString cfg.blackbox.port}"
+            "--web.listen-address=127.0.0.1:${toString cfg.blackbox.port}"
           ];
           RunAtLoad = true;
           KeepAlive = true;
@@ -772,11 +818,11 @@
 
       # Alertmanager — receives alerts from Prometheus, dedups/groups/routes
       # and delivers via SMTP. Only started when alertEmail is configured.
-      # Bound to 127.0.0.1 (unlike the other 0.0.0.0 agents): AM's web UI and
-      # /api/v2/silences are unauthenticated, so anyone who can reach the port
-      # could suppress every alert. All consumers are local (Prometheus, the
-      # activation preflight, and Grafana's datasource all use localhost:9093),
-      # so loopback-only closes that hole with no functional loss.
+      # Bound to 127.0.0.1 and never published through Tailscale Serve: AM's web
+      # UI and /api/v2/silences are unauthenticated, so anyone who can reach the
+      # port could suppress every alert. All consumers are local (Prometheus,
+      # the activation preflight, and Grafana's datasource all use
+      # localhost:9093), so loopback-only closes that hole with no functional loss.
       # `--cluster.listen-address=` intentionally empty: single-node, skip
       # gossip/HA which would otherwise bind on UDP:9094.
       launchd.user.agents.alertmanager = lib.mkIf alertingEnabled {

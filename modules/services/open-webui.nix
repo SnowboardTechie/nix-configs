@@ -158,7 +158,8 @@
         chmod 600 "${secretKeyFile}"
       fi
 
-      exec "${toolBin}" serve
+      # `serve` ignores HOST/PORT in the environment and defaults to 0.0.0.0.
+      exec "${toolBin}" serve --host ${lib.escapeShellArg cfg.host} --port ${toString cfg.port}
     '';
 
     # Updater with import probe.
@@ -223,6 +224,15 @@
   {
     options.services.open-webui = {
       enable = lib.mkEnableOption "Open WebUI LLM interface";
+
+      host = lib.mkOption {
+        type = lib.types.str;
+        default = "127.0.0.1";
+        description = ''
+          Address for Open WebUI to bind to. Loopback by default: the Cloudflare
+          Tunnel connector on the same host is its only client.
+        '';
+      };
 
       port = lib.mkOption {
         type = lib.types.port;
@@ -300,13 +310,14 @@
       # system.activationScripts only composes a fixed set of named phases into
       # the activate script. See services/AGENTS.md for the full explanation.
       # Firewall target is now uv's tool venv python, not the system python3.11.
-      system.activationScripts.extraActivation.text = lib.mkAfter ''
+      # A loopback listener needs no rule (loopback isn't filtered).
+      system.activationScripts.extraActivation.text = lib.mkIf (cfg.host != "127.0.0.1") (lib.mkAfter ''
         # === open-webui firewall ===
         if [ -x "${toolVenvPython}" ]; then
           /usr/libexec/ApplicationFirewall/socketfilterfw --add "${toolVenvPython}" >/dev/null 2>&1 || true
           /usr/libexec/ApplicationFirewall/socketfilterfw --unblock "${toolVenvPython}" >/dev/null 2>&1 || true
         fi
-      '';
+      '');
     };
   };
 

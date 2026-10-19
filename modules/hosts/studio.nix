@@ -116,12 +116,20 @@
       };
     };
 
-    services.dashy = {
-      enable = true;
-      host = "100.121.238.48";
-      # Derived so the portal links follow the one authoritative Grafana port.
-      grafanaBaseUrl = "http://${config.services.dashy.host}:${toString config.services.monitoring.grafana.port}";
-    };
+    services.dashy =
+      let
+        monitoring = config.services.monitoring;
+        tailnetUrl = port: "https://${monitoring.tailscaleServe.hostName}:${toString port}";
+      in
+      {
+        enable = true;
+        host = "100.121.238.48";
+        # Derived so the portal links follow the authoritative monitoring ports,
+        # which Tailscale Serve publishes tailnet-only over HTTPS.
+        grafanaBaseUrl = tailnetUrl monitoring.grafana.port;
+        prometheusUrl = tailnetUrl monitoring.prometheus.port;
+        alloyUrl = tailnetUrl monitoring.alloy.port;
+      };
 
     # Loopback-only static review service for the Summit Point website
     # concept preview. Only summitpoint.thompson.codes reaches it, through the
@@ -182,6 +190,15 @@
     # Studio host policy: keep Grafana clear of the 3000/3001 development-server
     # range. The monitoring module's reusable default stays 3000.
     services.monitoring.grafana.port = 33000;
+
+    # Every monitoring listener is loopback-only. Grafana (33000), Prometheus
+    # (9090) and the Alloy UI (12345) are published tailnet-only over HTTPS on
+    # the same port numbers (Serve also holds 443, 8790, 9120, 10443 and TCP
+    # 11434).
+    services.monitoring.tailscaleServe = {
+      enable = true;
+      hostName = "bryans-mac-studio.tail5ba690.ts.net";
+    };
 
     services.monitoring.blackbox.targets = [
       "http://localhost:11434/api/tags" # Ollama
