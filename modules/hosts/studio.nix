@@ -168,6 +168,17 @@
     #   ~/.secrets/grafana-smtp-password   (smtp2go password, shared with Grafana)
     services.monitoring.alertEmail = "bryan@snowboardtechie.com";
 
+    # Every notification also goes to Hermes's loopback `studio-alerts` webhook
+    # route (deliver-only, no agent run), which posts it into the encrypted
+    # "Studio Alerts" Matrix room (!BY2yuFPzB-GFM6e1MCD33kHk-YH2c1H3Ga-R59PCTUg).
+    # Hermes owns the route, the room and the token; its route config lives in
+    # ~/.hermes/config.yaml, not here.
+    services.monitoring.alertWebhook = {
+      url = "http://127.0.0.1:8644/webhooks/studio-alerts";
+      tokenHeader = "X-Gitlab-Token";
+      tokenFile = "/Users/bryan/.secrets/hermes-alertmanager-webhook-token";
+    };
+
     # Studio host policy: keep Grafana clear of the 3000/3001 development-server
     # range. The monitoring module's reusable default stays 3000.
     services.monitoring.grafana.port = 33000;

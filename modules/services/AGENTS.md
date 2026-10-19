@@ -122,7 +122,7 @@ re-pin). Fixed in `824b9ad`.
 |---------|---------|--------|------------|-------|
 | ollama | 11434 | `/opt/homebrew/bin/ollama` | Always-on | Flash attention, q8_0 KV cache. Re-pinned after brew upgrades by the shared `postActivation` block in `base/homebrew.nix`, not by a module-local restart. Studio forwards the loopback listener tailnet-only through Tailscale Serve. |
 | open-webui | 8080 | uv tool venv `~/.local/bin/open-webui` | Always-on + daily updater | Installed via `uv tool install`. Updater has an import probe — refuses to kickstart a broken install. |
-| monitoring | 9090, 9093, 9100, 33000 (Studio Grafana; module default 3000), 3100, 12345, 9115; 9097 (Matrix bridge, loopback, when `alertMatrix` is set) | prometheus, alertmanager, node_exporter, grafana, loki, alloy, blackbox_exporter, matrix-alertmanager-receiver | Always-on | Binds 0.0.0.0 (except Alertmanager and the Matrix bridge — loopback-only: AM's silence API is unauthenticated, and anything reaching the bridge's webhook posts as the bot); 7 agents, 8 with Matrix; SMTP via smtp2go; alertmanager + blackbox_exporter via nixpkgs derivations; alloy replaced promtail (EOL March 2026). Grafana's reusable default is 3000, but `hosts/studio.nix` overrides `services.monitoring.grafana.port = 33000` to keep port 3000 free for development servers; the launchd `GF_SERVER_HTTP_PORT`, the Prometheus scrape target, and `services.dashy.grafanaBaseUrl` all derive from that one option. Alerts: Prometheus → Alertmanager → email, plus a Matrix room when `alertMatrix` is set. |
+| monitoring | 9090, 9093, 9100, 33000 (Studio Grafana; module default 3000), 3100, 12345, 9115 | prometheus, alertmanager, node_exporter, grafana, loki, alloy, blackbox_exporter | Always-on | Binds 0.0.0.0 (except Alertmanager — loopback-only, its silence API is unauthenticated); 7 agents; SMTP via smtp2go; alertmanager + blackbox_exporter via nixpkgs derivations; alloy replaced promtail (EOL March 2026). Grafana's reusable default is 3000, but `hosts/studio.nix` overrides `services.monitoring.grafana.port = 33000` to keep port 3000 free for development servers; the launchd `GF_SERVER_HTTP_PORT`, the Prometheus scrape target, and `services.dashy.grafanaBaseUrl` all derive from that one option. Alerts: Prometheus → Alertmanager → email, plus a token-authenticated webhook when `alertWebhook` is set (Studio: Hermes → encrypted Matrix room). |
 | syncthing | 8384, 22000 | `/opt/homebrew/bin/syncthing` | Always-on | NixOS uses native module directly |
 | smb-mount | — | mount_smbfs | Event-driven (WatchPaths) | Soft mount, no polling |
 | icloud-backup | — | /usr/bin/rsync | Calendar (2:00 AM) | Excludes .stversions/.syncthing* |
@@ -185,67 +185,49 @@ have the SMTP password on disk:
                                    # Alertmanager via smtp_auth_password_file)
 ```
 
-### Matrix room (optional, alongside email)
+### Webhook / Matrix (optional, alongside email)
 
-`services.monitoring.alertMatrix = { homeserverUrl; userId; roomId; }` adds a
+`services.monitoring.alertWebhook = { url; tokenHeader; tokenFile; }` adds a
 webhook integration to the same Alertmanager receiver, so every notification
-(firing and resolved, plus the 4h repeats) goes to both email and the room.
-Alertmanager retries each integration independently: a Matrix outage never
-delays email. Alertmanager has no native Matrix receiver (checked on 0.33.1), so
-nixpkgs' `matrix-alertmanager-receiver` bridges it, as the user agent
-`matrix-alertmanager-receiver` on `127.0.0.1:9097`. It requires `alertEmail`.
+(firing and resolved, plus the 4h repeats) goes to both email and the webhook,
+as Alertmanager's standard JSON payload. Alertmanager retries each integration
+independently: a webhook outage never delays email. It requires `alertEmail`.
+Alertmanager reads the token from `tokenFile` and sends it in `tokenHeader`
+(trailing newline stripped); it never enters the store or the plist.
 
-- **Token:** `~/.secrets/matrix-alertmanager-token` (0600, overridable with
-  `accessTokenFile`). The launcher exports it into the bridge's environment just
-  before exec; the bridge expands `${MATRIX_ALERTMANAGER_ACCESS_TOKEN}` in its
-  store config. The token never enters the store or the plist. Without the file
-  the launcher logs once and waits, re-checking every 5 minutes.
-- **Room:** use the internal ID (`!…`), not an alias. The bridge has no E2EE, so
-  create the room **unencrypted**. Invite the bot; it joins on its first delivery.
-- **Failure signals:** the bridge answers Alertmanager 200 even when its join or
-  send fails, so Alertmanager never retries. Prometheus scrapes the bridge, and
-  `MatrixAlertDeliveryFailed` (by email) fires on its failure counters. A
-  crashed, uncommissioned or token-rejected bridge shows as
-  `PrometheusTargetDown` on job `matrix-alertmanager-receiver`.
-- **Logs:** `/tmp/matrix-alertmanager-receiver.log` (JSON; never logs the token).
+**Studio: Hermes → encrypted Matrix room.** Studio points the webhook at
+Hermes's `studio-alerts` route, `http://127.0.0.1:8644/webhooks/studio-alerts`,
+with the token in `X-Gitlab-Token` from
+`~/.secrets/hermes-alertmanager-webhook-token`. The route is deliver-only (the
+rendered template is the message; no agent or LLM run) and posts through the
+running gateway's Matrix adapter, so messages are end-to-end encrypted, into the
+"Studio Alerts" room (`!BY2yuFPzB-GFM6e1MCD33kHk-YH2c1H3Ga-R59PCTUg`) as
+`@hermes`. Hermes created the room, the route, the token and its config backup;
+the route lives in `~/.hermes/config.yaml`, not in this repo, and changes to it
+go through Hermes. Its template reads `status`, `commonLabels` (alertname,
+severity, instance) and `commonAnnotations` (summary, description), which hold
+the alert's own values because notifications group by alertname + instance.
 
-Commissioning:
+**Failure signal:** Prometheus scrapes Alertmanager, and `AlertDeliveryFailed`
+fires per integration when Alertmanager gives up on a notification after its
+retries. Each channel reports the other: a webhook failure (Hermes down, or
+answering 502 because the Matrix send failed) arrives by email, and an email
+failure through the webhook. Matrix alerts depend on the Hermes gateway, which
+restarts during its nightly 04:00 update; Alertmanager keeps retrying a
+notification for up to the 5m group interval, which covers a normal restart.
 
-1. Create a dedicated, non-admin bot account on the homeserver (Synapse:
-   `register_new_matrix_user --no-admin`).
-2. From your own client, create an unencrypted room, invite the bot, and copy
-   the room's internal ID.
-3. Log in as the bot once and store the token without putting the password in
-   shell history or a process argument list:
+**Rollback:** unset `alertWebhook` and run `update-system`. The Hermes route and
+room are Hermes's to remove.
 
-   ```zsh
-   read -rs 'pw?Bot password: '; echo
-   ( umask 077
-     jq -n --arg pw "$pw" '{type: "m.login.password", identifier: {type: "m.id.user", user: "alerts"}, password: $pw, initial_device_display_name: "Alertmanager bridge"}' \
-       | curl -fsS -H 'Content-Type: application/json' --data @- https://matrix.example.com/_matrix/client/v3/login \
-       | jq -er .access_token > ~/.secrets/matrix-alertmanager-token )
-   unset pw
-   ```
-
-4. Set `services.monitoring.alertMatrix` in the host and run `update-system`.
-5. Fire a test alert through the whole pipeline (it also emails):
-
-   ```zsh
-   curl -fsS -H 'Content-Type: application/json' http://127.0.0.1:9093/api/v2/alerts \
-     -d '[{"labels": {"alertname": "MatrixDeliveryTest", "severity": "warning"}, "annotations": {"summary": "Test alert from Alertmanager"}}]'
-   ```
-
-   It posts after the 30s `group_wait`. Rollback: unset `alertMatrix` and run
-   `update-system`; then revoke the token by logging the bot's device out.
-
-Tests: `python3 scripts/test_monitoring_matrix_alerts.py`. It checks the
-receiver and scrape wiring with and without `alertMatrix`, the refusals
-(no email, alias room, malformed values), that the token stays out of the
-store and plist, `amtool`/`promtool` acceptance of the generated configs, and
-`promtool test rules` cases for the failure rule. It also runs the real bridge
-through its launcher against a stand-in homeserver on loopback: the token comes
-from the file, firing and resolved messages render with label values
-HTML-escaped, and a missing token makes the launcher wait instead of exiting.
+Tests: `python3 scripts/test_monitoring_alert_webhook.py`. It checks the
+receiver and scrape wiring with and without `alertWebhook`, the refusals
+(no email, malformed URL, header or token path), that the token stays out of
+the store and plist, `amtool`/`promtool` acceptance of the generated configs,
+and `promtool test rules` cases for the failure rule. It also runs the real
+Alertmanager with Studio's generated webhook integration against a stand-in
+endpoint on loopback: the token arrives without its file's trailing newline,
+the payload carries the fields Hermes's template reads, and a 502 makes
+Alertmanager retry.
 
 Alert rules live in Prometheus (`monitoring.nix`) as declarative PromQL under
 version control. Alertmanager handles delivery via a simple declarative
