@@ -46,7 +46,6 @@ Each host module imports and composes the feature modules above.
 ### `dev-envs/`
 Development environment definitions for VA projects:
 - `vets-website.nix` - Node 22.22.0, Yarn 1.x, Cypress
-- `vets-api.nix` - Ruby 3.3.6, PostgreSQL, Redis, Kafka
 - `next-build.nix` - Node 24, Yarn 3.x, Playwright
 - `component-library.nix` - Node 22, Yarn 4.x, Puppeteer
 - `content-build.nix` - Node 14.15.0, Yarn 1.x, Cypress

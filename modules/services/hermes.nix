@@ -758,7 +758,7 @@
         gateway.enable = lib.mkOption {
           type = lib.types.bool;
           default = false;
-          description = "Run the canonical Hermes messaging gateway at login.";
+          description = "Ensure the canonical Hermes messaging gateway LaunchAgent exists; Hermes owns its definition.";
         };
 
         dashboard = {
@@ -980,33 +980,47 @@
         })
 
         (lib.mkIf cfg.gateway.enable {
-          launchd.user.agents.hermes-gateway = {
-            serviceConfig = {
-              # Match the label and plist name used by `hermes gateway install`
-              # so nix-darwin adopts the existing service instead of creating a
-              # second canonical gateway.
-              Label = "ai.hermes.gateway";
-              ProgramArguments = [
-                runtimePython
-                "-m"
-                "hermes_cli.main"
-                "gateway"
-                "run"
-                "--replace"
-                "--external-supervisor"
-              ];
-              RunAtLoad = true;
-              KeepAlive = true;
-              WorkingDirectory = homeDirectory;
-              EnvironmentVariables = serviceEnvironment;
-              StandardOutPath = "${hermesHome}/logs/gateway.log";
-              StandardErrorPath = "${hermesHome}/logs/gateway.error.log";
-              SoftResourceLimits.NumberOfFiles = 65536;
-              HardResourceLimits.NumberOfFiles = 65536;
-              ProcessType = "Background";
-              ThrottleInterval = 10;
-            };
-          };
+          # Hermes owns the primary gateway's LaunchAgent. `hermes update` and
+          # every gateway start regenerate ~/Library/LaunchAgents/ai.hermes.gateway.plist
+          # from the live runtime (managed interpreter, PATH, the osascript
+          # Local Network wrapper) and rewrite it whenever it differs, so a
+          # Nix-declared copy was overwritten nightly and reasserted at every
+          # activation. Nix only ensures the service exists. Non-secret gateway
+          # environment (GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND) lives in the
+          # Hermes .env via `hermes config set`.
+          #
+          # postActivation runs after nix-darwin's userLaunchd phase, so on the
+          # first activation without the old Nix agent this reinstalls the
+          # plist that phase just removed.
+          system.activationScripts.postActivation.text = lib.mkAfter ''
+            # === Ensure the Hermes-owned gateway LaunchAgent exists ===
+            hermes_gateway_plist=${lib.escapeShellArg "${homeDirectory}/Library/LaunchAgents/ai.hermes.gateway.plist"}
+            hermes_gateway_cli=${lib.escapeShellArg "${homeDirectory}/.local/bin/hermes"}
+            if [ ! -f "$hermes_gateway_plist" ]; then
+              hermes_gateway_uid=$(/usr/bin/id -u ${lib.escapeShellArg cfg.user})
+              # A bootstrap while the old job drains fails EIO, which Hermes
+              # treats as "launchd unsupported" and answers with an
+              # unsupervised gateway. Wait for the label to leave the domain.
+              for _ in $(/usr/bin/seq 1 90); do
+                /bin/launchctl print "gui/$hermes_gateway_uid/ai.hermes.gateway" >/dev/null 2>&1 || break
+                /bin/sleep 1
+              done
+              if [ -x "$hermes_gateway_cli" ]; then
+                echo "Installing the Hermes-owned gateway LaunchAgent..."
+                if ! /bin/launchctl asuser "$hermes_gateway_uid" \
+                  /usr/bin/sudo -u ${lib.escapeShellArg cfg.user} -H \
+                  /usr/bin/env \
+                    HOME=${lib.escapeShellArg homeDirectory} \
+                    HERMES_HOME=${lib.escapeShellArg hermesHome} \
+                    PATH=${lib.escapeShellArg serviceEnvironment.PATH} \
+                    "$hermes_gateway_cli" gateway install --if-missing; then
+                  echo "WARNING: hermes gateway install failed; run it as ${cfg.user}" >&2
+                fi
+              else
+                echo "WARNING: $hermes_gateway_cli is missing; Hermes gateway LaunchAgent not installed" >&2
+              fi
+            fi
+          '';
         })
 
         (lib.mkIf cfg.autoUpdate.enable {

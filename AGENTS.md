@@ -96,7 +96,7 @@ nixpkgs-fmt .
 # Update inputs
 nix flake update
 # Dev shells
-nix develop '.#vets-website'              # or vets-api, next-build, etc.
+nix develop '.#vets-website'              # or next-build, component-library, etc.
 ```
 
 ## Repository Delivery

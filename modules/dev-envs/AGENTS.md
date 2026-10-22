@@ -41,7 +41,6 @@ Underscore prefix = internal, not a flake output. Provides:
 | Shell | Node | Package Manager | Browser Tests |
 |-------|------|-----------------|---------------|
 | vets-website | 22.22.0 | Yarn 1.x | Cypress |
-| vets-api | — (Ruby 3.3.6) | Bundler | — |
 | next-build | 24 (nixpkgs) | Yarn 3.x | Playwright |
 | component-library | 22 (nixpkgs) | Yarn 4.x | Puppeteer |
 | content-build | 14.15.0 | Yarn 1.x | Cypress |
@@ -53,6 +52,5 @@ Underscore prefix = internal, not a flake output. Provides:
 - npm lifecycle scripts **disabled by default** (`npm_config_ignore_scripts=true`) for supply chain security
 - Re-enable selectively with `npm rebuild <package>` or use `yarn-install-with-scripts`
 - `browserTestingDeps` only applies on Linux (`lib.optionals stdenv.isLinux`)
-- vets-api uses Ruby + clang 18 — has known bundler/foreman workarounds
 - simpler-grants uses corepack for pnpm — has nix-store limitation workaround
 - When changing Node versions, update both `_nodeLib.nix` and README "Development Environments" section

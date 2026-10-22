@@ -185,7 +185,6 @@ Cross-platform development environments for VA projects:
 Linux machines use these `nix develop` outputs without consuming a system configuration from this repository.
 
 - **vets-website:** Node 22.22.0, Yarn 1.x, Cypress → [vets-website](https://github.com/department-of-veterans-affairs/vets-website)
-- **vets-api:** Ruby 3.3.6, PostgreSQL, Redis, Kafka → [vets-api](https://github.com/department-of-veterans-affairs/vets-api)
 - **next-build:** Node 24, Yarn 3.x, Playwright → [next-build](https://github.com/department-of-veterans-affairs/next-build)
 - **component-library:** Node 22, Yarn 4.x, Puppeteer → [component-library](https://github.com/department-of-veterans-affairs/component-library)
 - **content-build:** Node 14.15.0, Yarn 1.x, Cypress → content-build
