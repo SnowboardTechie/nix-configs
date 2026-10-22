@@ -72,7 +72,7 @@
                 enable = lib.mkOption {
                   type = lib.types.bool;
                   default = false;
-                  description = "Announce actual update start and verified completion through the primary Hermes runtime.";
+                  description = "Announce actual update start, verified completion, and any failure or refusal through the primary Hermes runtime.";
                 };
                 target = lib.mkOption {
                   type = lib.types.str;
@@ -215,6 +215,8 @@
         , updaterRuntimePython
         , healthUrl
         , supervisedServiceLabel ? null
+        , gatewayServiceLabel ? null
+        , errorLog
         , notifications ? null
         }:
         let
@@ -325,6 +327,17 @@
 
           ${lib.optionalString (supervisedServiceLabel != null) "service_stopped=0"}
           cleanup() {
+            exit_status=$?
+            ${lib.optionalString (notifications != null) ''
+              # Refusals and failures used to exit silently: Traci's runtime
+              # sat eight weeks behind while every weekly run refused.
+              if [ "$exit_status" -ne 0 ]; then
+                notify ${lib.escapeShellArg (
+                  lib.optionalString (notifications.mention != null) "${notifications.mention} "
+                  + "Hermes automatic update FAILED for ${name}"
+                )}" (exit $exit_status). See ${errorLog}." || true
+              fi
+            ''}
             ${lib.optionalString (supervisedServiceLabel != null) ''
               if [ "$service_stopped" -eq 1 ]; then
                 /bin/launchctl bootstrap system ${lib.escapeShellArg servicePlist} >/dev/null 2>&1 || true
@@ -355,6 +368,13 @@
           if [ -n "$(as_user ${pkgs.git}/bin/git -C ${lib.escapeShellArg installDirectory} status --porcelain)" ]; then
             echo "Refusing to update ${name}: managed checkout is dirty." >&2
             exit 1
+          fi
+
+          # A shallow install has no common ancestor with origin/main, so the
+          # divergence check below misreads its grafted tip as "1 ahead".
+          if [ "$(as_user ${pkgs.git}/bin/git -C ${lib.escapeShellArg installDirectory} rev-parse --is-shallow-repository)" = true ]; then
+            echo "Deepening shallow Hermes checkout for ${name}..."
+            as_user ${pkgs.git}/bin/git -C ${lib.escapeShellArg installDirectory} fetch --quiet --unshallow origin
           fi
 
           # The supported check fetches the target branch and records the
@@ -408,6 +428,14 @@
             service_stopped=0
           ''}
 
+          ${lib.optionalString (gatewayServiceLabel != null) ''
+            # The gateway is a separate daemon; without a restart it keeps
+            # running the pre-update code and interpreter.
+            if /bin/launchctl print system/${lib.escapeShellArg gatewayServiceLabel} >/dev/null 2>&1; then
+              /bin/launchctl kickstart -k system/${lib.escapeShellArg gatewayServiceLabel}
+            fi
+          ''}
+
           if [ -n "$(as_user ${pkgs.git}/bin/git -C ${lib.escapeShellArg installDirectory} status --porcelain)" ]; then
             echo "Hermes update left ${name}'s managed checkout dirty." >&2
             exit 1
@@ -420,7 +448,7 @@
             exit 1
           fi
 
-          as_user ${lib.escapeShellArg updaterRuntimePython} - ${lib.escapeShellArg healthUrl} <<'PY'
+          as_user ${lib.escapeShellArg updaterRuntimePython} - ${lib.escapeShellArg healthUrl} ${if gatewayServiceLabel != null then "gateway" else "no-gateway"} <<'PY'
           import json
           import sys
           import time
@@ -429,15 +457,21 @@
 
           expected = version("hermes-agent")
           url = sys.argv[1]
+          require_gateway = sys.argv[2] == "gateway"
           error = None
           for _ in range(60):
               try:
                   with urllib.request.urlopen(url, timeout=5) as response:
-                      actual = str(json.load(response).get("version", ""))
-                  if actual == expected:
-                      print(f"Hermes backend healthy at {url} (v{actual})")
+                      status = json.load(response)
+                  actual = str(status.get("version", ""))
+                  gateway_state = status.get("gateway_state")
+                  if actual == expected and (not require_gateway or gateway_state == "running"):
+                      print(f"Hermes backend healthy at {url} (v{actual}, gateway {gateway_state})")
                       raise SystemExit(0)
-                  error = f"running v{actual or 'unknown'}, expected v{expected}"
+                  if actual != expected:
+                      error = f"running v{actual or 'unknown'}, expected v{expected}"
+                  else:
+                      error = f"gateway state {gateway_state!r}, expected 'running'"
               except Exception as exc:
                   error = str(exc)
               time.sleep(1)
@@ -456,6 +490,7 @@
         updaterHome = homeDirectory;
         updaterRuntimePython = runtimePython;
         healthUrl = "http://${cfg.dashboard.host}:${toString cfg.dashboard.port}/api/status";
+        errorLog = "/tmp/hermes-${cfg.user}-updater.error.log";
         notifications =
           if cfg.autoUpdate.notifications.enable then {
             inherit (cfg.autoUpdate.notifications) target mention;
@@ -568,6 +603,9 @@
               updaterRuntimePython = headlessRuntimePython instance;
               healthUrl = "http://${instance.serve.host}:${toString instance.serve.port}/api/status";
               supervisedServiceLabel = "ai.hermes.serve-${name}";
+              gatewayServiceLabel =
+                if instance.gateway.enable then "ai.hermes.gateway-${name}" else null;
+              errorLog = "${headlessUpdateLogDirectory}/${name}.error.log";
               notifications =
                 if instance.autoUpdate.notifications.enable then {
                   inherit (instance.autoUpdate.notifications) target mention;
@@ -702,7 +740,7 @@
             enable = lib.mkOption {
               type = lib.types.bool;
               default = false;
-              description = "Announce actual update start and verified completion through the primary Hermes runtime.";
+              description = "Announce actual update start, verified completion, and any failure or refusal through the primary Hermes runtime.";
             };
             target = lib.mkOption {
               type = lib.types.str;
