@@ -394,8 +394,12 @@
           # Unlike the updater's best-effort internal snapshot, this explicit
           # quick backup is a hard gate: no successful backup, no update.
           backup_label="auto-update-$(/bin/date -u +%Y%m%dT%H%M%SZ)"
-          as_user ${lib.escapeShellArg updaterRuntimePython} - "$backup_label" <<'PY'
+          as_user ${lib.escapeShellArg updaterRuntimePython} - "$backup_label" ${lib.escapeShellArg installDirectory} <<'PY'
           import sys
+
+          # Legacy editable venvs do not discover new top-level Hermes modules.
+          # Bind the leaf backup import to the same source checkout being updated.
+          sys.path.insert(0, sys.argv[2])
           from hermes_cli.backup import create_quick_snapshot
 
           snapshot_id = create_quick_snapshot(label=sys.argv[1])

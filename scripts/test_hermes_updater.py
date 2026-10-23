@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -268,6 +269,29 @@ class NixUpdaterTests(unittest.TestCase):
         calendar = {key: value for key, value in config["StartCalendarInterval"].items()
                     if value is not None}
         self.assertEqual(calendar, {"Weekday": 0, "Hour": 5, "Minute": 0})
+
+    def test_backup_gate_resolves_adjacent_modules_and_requires_snapshot(self):
+        script = generated_updater()
+        [backup] = [body for body in re.findall(r"<<'PY'\n(.*?)\nPY", script, re.S)
+                    if "from hermes_cli.backup import create_quick_snapshot" in body]
+        with tempfile.TemporaryDirectory(prefix="hermes-backup-test-",
+                                         dir=Path.home() / ".hermes/cache/scratch") as directory:
+            root = Path(directory)
+            (root / "hermes_cli").mkdir()
+            (root / "hermes_cli/__init__.py").write_text("")
+            (root / "hermes_cli/backup.py").write_text(
+                "from snapshot_support import snapshot\n"
+                "def create_quick_snapshot(label):\n    return snapshot(label)\n")
+            for value, expected_code in (("test-snapshot", 0), (None, 1)):
+                (root / "snapshot_support.py").write_text(
+                    f"def snapshot(label):\n    return {value!r}\n")
+                result = subprocess.run([sys.executable, "-I", "-B", "-", "test-label", str(root)],
+                                        input=backup, text=True, capture_output=True)
+                self.assertEqual(result.returncode, expected_code, result.stderr)
+                if value:
+                    self.assertIn("test-snapshot", result.stdout)
+                else:
+                    self.assertIn("produced no backup", result.stderr)
 
     def test_generated_wrapper_preserves_patch_and_checks_channel_target(self):
         script = generated_updater()
