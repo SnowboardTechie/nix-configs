@@ -183,3 +183,4 @@ grep -E "services\." modules/hosts/*.nix
 - Darwin services require the tool installed via Homebrew first (Nix packages alone aren't enough for launchd)
 - NixOS stubs exist in service modules (`# TODO: Implement NixOS equivalent`) — these are intentional placeholders
 - 2 git remotes: primary on git.snowboardtechie.com, push mirror on GitHub
+- **Gnarbox is not running this flake.** Since Oct 2026 the live Gnarbox (tailnet node `gnarbox-1`, LAN 192.168.1.4) is an Omarchy install; `modules/hosts/gnarbox.nix`, `hardware-configs/gnarbox.nix`, and the Gnarbox sections here and in README.md are stale. Never plan fixes for Gnarbox as Nix changes or `update-system`; manage it with the dotfiles Omarchy profile (`scripts/setup-omarchy.sh`) and machine-local changes. The offline tailnet node named `gnarbox` is the retired NixOS install.
