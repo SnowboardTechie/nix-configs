@@ -448,14 +448,21 @@
             exit 1
           fi
 
-          as_user ${lib.escapeShellArg updaterRuntimePython} - ${lib.escapeShellArg healthUrl} ${if gatewayServiceLabel != null then "gateway" else "no-gateway"} <<'PY'
+          # The expected version comes from the checkout's install stamp, which
+          # Hermes itself serves as its version. The legacy venv's package
+          # metadata freezes at the pre-migration release once Hermes moves to
+          # its managed runtime, so it misreported every good update as failed.
+          install_stamp=${lib.escapeShellArg "${installDirectory}/install-stamp.json"}
+          as_user /usr/bin/python3 - ${lib.escapeShellArg healthUrl} ${if gatewayServiceLabel != null then "gateway" else "no-gateway"} "$install_stamp" <<'PY'
           import json
           import sys
           import time
           import urllib.request
-          from importlib.metadata import version
 
-          expected = version("hermes-agent")
+          with open(sys.argv[3], encoding="utf-8-sig") as stamp:
+              expected = str(json.load(stamp).get("baseVersion") or "")
+          if not expected:
+              raise SystemExit(f"No baseVersion in {sys.argv[3]}")
           url = sys.argv[1]
           require_gateway = sys.argv[2] == "gateway"
           error = None
@@ -479,8 +486,9 @@
           PY
 
           ${lib.optionalString (notifications != null) ''
-            updated_version=$(as_user ${lib.escapeShellArg updaterRuntimePython} -c \
-              'from importlib.metadata import version; print(version("hermes-agent"))')
+            updated_version=$(as_user /usr/bin/python3 -c \
+              'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8-sig")).get("baseVersion"))' \
+              "$install_stamp")
             notify "${lib.optionalString (notifications.mention != null) "${notifications.mention} "}Hermes automatic update completed successfully for ${name}. The backend is healthy on v$updated_version."
           ''}
         '';
