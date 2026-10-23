@@ -72,10 +72,9 @@
       secureHome = true;
       gateway.enable = true;
       autoUpdate = {
-        # Preserve the approved hold in desired state: nix-darwin reloads changed
-        # agents with `launchctl load -w`, clearing a runtime-only disable.
-        # Release gates and the stable-channel mismatch: docs/hermes-update-hold.md.
-        enable = false;
+        # The guarded updater follows this install's channel and preserves only
+        # the reviewed classic /status patch; unrelated drift still refuses.
+        enable = true;
         calendar = { Hour = 4; Minute = 0; };
         notifications = {
           enable = true;

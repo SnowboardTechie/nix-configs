@@ -227,6 +227,7 @@
         , healthUrl
         , supervisedServiceLabel ? null
         , gatewayServiceLabel ? null
+        , requireGateway ? false
         , errorLog
         , notifications ? null
         }:
@@ -371,34 +372,22 @@
             exit 1
           fi
 
-          branch=$(as_user ${pkgs.git}/bin/git -C ${lib.escapeShellArg installDirectory} branch --show-current)
-          if [ "$branch" != main ]; then
-            echo "Refusing to update ${name}: checkout is on branch '$branch', not main." >&2
-            exit 1
-          fi
-          if [ -n "$(as_user ${pkgs.git}/bin/git -C ${lib.escapeShellArg installDirectory} status --porcelain)" ]; then
-            echo "Refusing to update ${name}: managed checkout is dirty." >&2
-            exit 1
-          fi
-
-          # A shallow install has no common ancestor with origin/main, so the
-          # divergence check below misreads its grafted tip as "1 ahead".
+          # Restore complete ancestry before validating installed upstream
+          # commits; a shallow graft must not look like local divergence.
           if [ "$(as_user ${pkgs.git}/bin/git -C ${lib.escapeShellArg installDirectory} rev-parse --is-shallow-repository)" = true ]; then
             echo "Deepening shallow Hermes checkout for ${name}..."
             as_user ${pkgs.git}/bin/git -C ${lib.escapeShellArg installDirectory} fetch --quiet --unshallow origin
           fi
 
-          # The supported check fetches the target branch and records the
-          # updater's own read-only assessment before we inspect divergence.
+          # The channel, not the current branch name, owns the update target.
+          # The helper admits detached releases and only the reviewed /status
+          # patch, and predicts its stash merge before any service downtime.
           as_user ${lib.escapeShellArg updaterRuntimePython} -m hermes_cli.main update --check
-          counts=$(as_user ${pkgs.git}/bin/git -C ${lib.escapeShellArg installDirectory} rev-list --left-right --count HEAD...origin/main)
-          ahead="''${counts%%[[:space:]]*}"
-          behind="''${counts##*[[:space:]]}"
-          if [ "$ahead" -ne 0 ]; then
-            echo "Refusing to update ${name}: checkout is $ahead commit(s) ahead of origin/main." >&2
-            exit 1
-          fi
-          if [ "$behind" -eq 0 ]; then
+          update_plan=$(as_user ${lib.escapeShellArg updaterRuntimePython} \
+            ${../../scripts/hermes-update-preflight.py} plan \
+            --root ${lib.escapeShellArg installDirectory} \
+            --config "$HERMES_HOME/config.yaml")
+          if [ -z "$update_plan" ]; then
             exit 0
           fi
 
@@ -432,7 +421,12 @@
             service_stopped=1
           ''}
 
-          as_user ${lib.escapeShellArg updaterRuntimePython} -m hermes_cli.main update --yes --no-backup --keep-stash
+          # Hermes's supported noninteractive stash/restore preserves the
+          # admitted patch. --keep-stash would silently park that required fix.
+          as_user ${lib.escapeShellArg updaterRuntimePython} -m hermes_cli.main update --yes --no-backup
+          as_user ${lib.escapeShellArg updaterRuntimePython} \
+            ${../../scripts/hermes-update-preflight.py} verify \
+            --root ${lib.escapeShellArg installDirectory} --plan-json "$update_plan"
 
           ${lib.optionalString (supervisedServiceLabel != null) ''
             /bin/launchctl bootstrap system ${lib.escapeShellArg servicePlist}
@@ -447,24 +441,12 @@
             fi
           ''}
 
-          if [ -n "$(as_user ${pkgs.git}/bin/git -C ${lib.escapeShellArg installDirectory} status --porcelain)" ]; then
-            echo "Hermes update left ${name}'s managed checkout dirty." >&2
-            exit 1
-          fi
-          counts=$(as_user ${pkgs.git}/bin/git -C ${lib.escapeShellArg installDirectory} rev-list --left-right --count HEAD...origin/main)
-          ahead="''${counts%%[[:space:]]*}"
-          behind="''${counts##*[[:space:]]}"
-          if [ "$ahead" -ne 0 ] || [ "$behind" -ne 0 ]; then
-            echo "Hermes update left ${name}'s checkout out of sync with origin/main." >&2
-            exit 1
-          fi
-
           # The expected version comes from the checkout's install stamp, which
           # Hermes itself serves as its version. The legacy venv's package
           # metadata freezes at the pre-migration release once Hermes moves to
           # its managed runtime, so it misreported every good update as failed.
           install_stamp=${lib.escapeShellArg "${installDirectory}/install-stamp.json"}
-          as_user /usr/bin/python3 - ${lib.escapeShellArg healthUrl} ${if gatewayServiceLabel != null then "gateway" else "no-gateway"} "$install_stamp" <<'PY'
+          as_user /usr/bin/python3 - ${lib.escapeShellArg healthUrl} ${if requireGateway || gatewayServiceLabel != null then "gateway" else "no-gateway"} "$install_stamp" <<'PY'
           import json
           import sys
           import time
@@ -509,6 +491,7 @@
         updaterHome = homeDirectory;
         updaterRuntimePython = runtimePython;
         healthUrl = "http://${cfg.dashboard.host}:${toString cfg.dashboard.port}/api/status";
+        requireGateway = cfg.gateway.enable;
         errorLog = "/tmp/hermes-${cfg.user}-updater.error.log";
         notifications =
           if cfg.autoUpdate.notifications.enable then {
