@@ -57,3 +57,24 @@ retained patch, healthy services, and a silent subsequent no-op check.
 Regression: `python3 scripts/test_hermes_updater.py` exercises real Git release,
 patch-preservation/absorption, refusal and verification cases, plus the generated
 Nix schedule and wrapper. It does not replace the live update acceptance run.
+
+## Verified Studio rollout — 2026-10-23
+
+The repair through `d7bd4b2` was independently reviewed with 23 passing
+regressions, `nix flake check`, a Studio system build, and syntax/ShellCheck
+validation of both generated updaters. The actual software upgrade reached
+v0.22.5 at `bf0203a794a07aac3ff764972ab9087baa4e4f4e`; the install stamp,
+exact retained status patch, pre-update snapshot and current gateway code
+identity were read back. The initial gateway-owned terminal test was interrupted
+by its gateway restart after source verification; that interruption was not
+reported as a successful wrapper exit.
+
+After Bryan ran `update-system`, the installed plist and loaded user job were
+independently verified against the repaired Nix program. The disabled override
+is released and the calendar remains 04:00 daily. A manual kickstart of that
+actual launchd job exited 0 on an already-current release, with no new backup
+or gateway restart. The HTTPS backend and supervised gateway both report
+v0.22.5; the gateway is running without a pending restart request.
+
+The obsolete upstream-fix hold watcher was removed from live cron and its
+installed script, with retirement declared in dotfiles commit `e3ed0f7`.
