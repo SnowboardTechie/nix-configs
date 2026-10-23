@@ -4,9 +4,12 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
+import types
 import unittest
 from functools import cache
+from unittest.mock import patch as mock_patch
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -186,6 +189,36 @@ class CheckoutTests(unittest.TestCase):
             self.plan(discard_changes=True)
         self.assertEqual(self.git("rev-parse", "HEAD"), self.base)
         self.assertTrue(preflight.checkout_patch(self.root))
+
+    def test_resolver_refuses_case_insensitive_discard_policy(self):
+        self.patch()
+        self.git("remote", "add", "origin", str(self.root))
+        config_path = self.root.parent / "config.json"
+        # Stub only external Hermes release/config APIs; exercise this helper's
+        # full resolver and real Git admission without network or bootstrapping.
+        package = types.ModuleType("hermes_cli")
+        package.__path__ = []
+        modules = {
+            "yaml": types.SimpleNamespace(safe_load=json.loads),
+            "hermes_cli": package,
+            "hermes_cli.source_releases": types.SimpleNamespace(
+                resolve_source_target=lambda *args, **kwargs: types.SimpleNamespace(commit=self.candidate)),
+            "hermes_cli.update_channel": types.SimpleNamespace(
+                channel_record=lambda *args: {},
+                resolve_update_channel=lambda *args: "stable",
+                rides_default_channel=lambda *args: True),
+        }
+        for policy in ("discard", "DISCARD", "DisCard", "stash"):
+            with self.subTest(policy=policy):
+                config_path.write_text(json.dumps({"updates": {"non_interactive_local_changes": policy}}))
+                with mock_patch.dict(sys.modules, modules), mock_patch.object(sys, "path", sys.path.copy()):
+                    if policy.lower() == "discard":
+                        with self.assertRaisesRegex(ValueError, "discard"):
+                            preflight.resolve_plan(self.root, config_path)
+                    else:
+                        self.assertTrue(preflight.resolve_plan(self.root, config_path)["preserve_status_patch"])
+                self.assertEqual(self.git("rev-parse", "HEAD"), self.base)
+                self.assertTrue(preflight.checkout_patch(self.root))
 
     def test_refuses_changed_target_patch_shape_before_mutation(self):
         self.git("checkout", "main")

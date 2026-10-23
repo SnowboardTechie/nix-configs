@@ -155,8 +155,8 @@ def resolve_plan(root, config_path):
     if git(root, "cat-file", "-e", f"{commit}^{{commit}}", check=False).returncode:
         git(root, "fetch", "--quiet", "--no-tags", "origin", commit)
     updates = config.get("updates") or {}
-    return prepare_checkout(root, commit, channel,
-                            discard_changes=updates.get("non_interactive_local_changes") == "discard")
+    discard = str(updates.get("non_interactive_local_changes", "stash")).lower() == "discard"
+    return prepare_checkout(root, commit, channel, discard_changes=discard)
 
 
 def verify_checkout(root, plan):
