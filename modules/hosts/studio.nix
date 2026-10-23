@@ -93,6 +93,8 @@
       headlessInstances.traci = {
         user = "traci";
         homeDirectory = "/Users/traci";
+        # Bryan's agents repair this instance without a sudo password.
+        operator = "bryan";
         gateway.enable = true;
         autoUpdate = {
           enable = true;

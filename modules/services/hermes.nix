@@ -51,6 +51,17 @@
               description = "Restrict the user's home directory to mode 0700.";
             };
 
+            operator = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = ''
+                Admin user allowed to operate this instance without a password:
+                run any command as the instance user, plus restart this
+                instance's launchd daemons and read its root-owned updater logs.
+                Running as the instance user is full access to that account.
+              '';
+            };
+
             runtimePython = lib.mkOption {
               type = lib.types.nullOr lib.types.str;
               default = null;
@@ -858,6 +869,27 @@
               message = "services.hermes.headlessInstances.${name}.serve.tailscale requires a loopback serve host and services.tailscale";
             })
             cfg.headlessInstances;
+
+          security.sudo.extraConfig = lib.concatStrings (lib.mapAttrsToList
+            (name: instance:
+              let
+                commands = lib.optionals instance.gateway.enable [
+                  "/bin/launchctl kickstart -k system/ai.hermes.gateway-${name}"
+                ] ++ lib.optionals instance.serve.enable [
+                  "/bin/launchctl kickstart -k system/ai.hermes.serve-${name}"
+                ] ++ lib.optionals instance.autoUpdate.enable [
+                  "/bin/launchctl kickstart system/ai.hermes.update-${name}"
+                  "/bin/cat ${headlessUpdateLogDirectory}/${name}.log"
+                  "/bin/cat ${headlessUpdateLogDirectory}/${name}.error.log"
+                ];
+              in
+              lib.optionalString (instance.operator != null) ''
+                # Hermes headless instance ${name}: operated by ${instance.operator}
+                ${instance.operator} ALL=(${instance.user}) NOPASSWD: ALL
+                ${lib.optionalString (commands != [ ])
+                  "${instance.operator} ALL=(root) NOPASSWD: ${lib.concatStringsSep ", " commands}"}
+              '')
+            enabledHeadlessInstances);
 
           launchd.daemons = headlessServeDaemons
             // headlessGatewayDaemons
