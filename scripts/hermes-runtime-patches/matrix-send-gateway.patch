@@ -1,0 +1,501 @@
+diff --git a/gateway/matrix_send_forward.py b/gateway/matrix_send_forward.py
+new file mode 100644
+index 0000000000..8e8a29ae5a
+--- /dev/null
++++ b/gateway/matrix_send_forward.py
+@@ -0,0 +1,142 @@
++"""Hand ``hermes send`` Matrix messages to the running gateway's live adapter.
++
++A standalone process that connects its own Matrix adapter logs in as the gateway's device and opens the
++gateway's crypto store. The gateway keeps its Olm sessions in memory, so after the other process moves
++that state forward the gateway's next to-device message reuses a message key the recipients already
++used and its room key can never be decrypted. There must be one Matrix sender per device: while a
++gateway owns the home, the message goes to its live adapter over the gateway control socket, and when
++the gateway is there but cannot be reached the send fails instead of opening a second connection.
++With no gateway running, the caller keeps its ephemeral standalone connect.
++"""
++
++from __future__ import annotations
++
++import asyncio
++import concurrent.futures
++import json
++import os
++import time
++from pathlib import Path
++from typing import Any, Callable, Optional
++
++VERB = "matrix-send"
++# Pi Durable (and cron) give a send ~60 s; stay inside that so the caller hears our answer first.
++CLIENT_TIMEOUT = 50.0
++_SERVER_WAIT = 45.0
++_MAX_RESPONSE_BYTES = 512 * 1024
++
++
++class _Unreachable(Exception):
++    """No control-socket exchange could be started (no/stale/unsafe socket)."""
++
++
++class _NoAnswer(Exception):
++    """The request was sent but no complete answer came back in time."""
++
++
++def missing_owner_state(home: Path) -> str:
++    """``starting`` / ``absent`` / ``inaccessible`` for a home whose control socket did not connect."""
++    from hermes_cli.gateway_runtime_discovery import missing_owner_state as _state
++    return _state(home)
++
++
++def _refusal(why: str) -> dict:
++    return {"error": (
++        f"Matrix send refused: a Hermes gateway owns this home but {why}. Not opening a second Matrix "
++        "connection on the gateway's device: it would desynchronize the gateway's end-to-end encryption "
++        "state. Check `hermes gateway status`, then retry.")}
++
++
++def _exchange(home: Path, params: dict, timeout: float) -> dict:
++    """One ``matrix-send`` request over the authenticated control socket; returns the verb's result."""
++    from hermes_cli.gateway_runtime_discovery import DiscoveryError, connect_private
++    deadline = time.monotonic() + timeout
++    try:
++        client = connect_private(home, min(timeout, 2.0))
++    except (OSError, DiscoveryError) as exc:  # includes FileNotFoundError and connection refused
++        raise _Unreachable(str(exc) or type(exc).__name__) from exc
++    request = json.dumps({"protocol": 1, "verb": VERB, "id": 1, "params": params}).encode("utf-8") + b"\n"
++    chunks: list[bytes] = []
++    with client:
++        try:
++            client.settimeout(max(deadline - time.monotonic(), 0.01))
++            client.sendall(request)
++            while b"\n" not in b"".join(chunks[-2:]):
++                remaining = deadline - time.monotonic()
++                if remaining <= 0:
++                    raise _NoAnswer("timed out")
++                client.settimeout(remaining)
++                chunk = client.recv(65536)
++                if not chunk:
++                    break
++                chunks.append(chunk)
++                if sum(map(len, chunks)) > _MAX_RESPONSE_BYTES:
++                    break
++        except TimeoutError as exc:
++            raise _NoAnswer("timed out") from exc
++        except OSError as exc:
++            raise _NoAnswer(str(exc) or type(exc).__name__) from exc
++    try:
++        response = json.loads(b"".join(chunks).partition(b"\n")[0].decode("utf-8"))
++    except ValueError as exc:
++        raise _NoAnswer("sent an unreadable answer") from exc
++    if not isinstance(response, dict):
++        raise _NoAnswer("sent an unreadable answer")
++    if response.get("ok") is not True:
++        error = str(response.get("error") or "")
++        if "unknown verb" in error:
++            return _refusal("it predates the matrix-send control verb (restart the gateway to pick it up)")
++        return {"error": f"Matrix send failed in the gateway: {error or 'unknown error'}"}
++    result = response.get("result")
++    return result if isinstance(result, dict) else {"error": "Matrix send failed: gateway sent an invalid result"}
++
++
++def forward_matrix_send(home: Path, chat_id: str, message: str, media_files, thread_id: Optional[str],
++                        *, timeout: float = CLIENT_TIMEOUT) -> Optional[dict]:
++    """Deliver through the gateway serving ``home``. ``None`` means no gateway is running (the caller
++    stays standalone); otherwise the send result dict, which is an error dict when the gateway could
++    not be reached or did not answer."""
++    if os.name == "nt":  # the verb rides the POSIX control socket; the Windows pipe client is not wired
++        return None
++    params = {"chat_id": chat_id, "message": message, "thread_id": thread_id,
++              "media_files": [[str(path), bool(is_voice)] for path, is_voice in (media_files or [])]}
++    try:
++        return _exchange(home, params, timeout)
++    except _Unreachable as exc:
++        state = missing_owner_state(home)
++        if state == "absent":
++            return None
++        return _refusal(f"its control socket is not reachable ({exc}; owner {state})")
++    except _NoAnswer as exc:
++        return {"error": (f"Matrix send: the gateway did not answer ({exc}); the message may have been "
++                          "delivered. Not retrying through a second Matrix connection.")}
++
++
++def matrix_send_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callable[[dict, str], dict]:
++    """Private control verb ``matrix-send``: send through this gateway's live Matrix adapter, on the
++    gateway loop the adapter's queues belong to. Runs on the socket executor thread."""
++
++    def _handler(params: dict, peer_subject: str) -> dict:
++        chat_id, message, thread_id = params.get("chat_id"), params.get("message"), params.get("thread_id")
++        media = params.get("media_files", [])
++        if (not isinstance(chat_id, str) or not chat_id or not isinstance(message, str)
++                or not (thread_id is None or isinstance(thread_id, str)) or not isinstance(media, list)
++                or not all(isinstance(m, list) and len(m) == 2 and isinstance(m[0], str) for m in media)):
++            return {"error": "Matrix send: invalid parameters"}
++        from gateway.config import Platform
++        from tools.send_message_senders import _matrix_send_core, runner_adapter
++        _, adapter = runner_adapter(runner, Platform.MATRIX)
++        if adapter is None:
++            return {"error": "Matrix send: this gateway's Matrix adapter is not connected"}
++        future = asyncio.run_coroutine_threadsafe(
++            _matrix_send_core(adapter, chat_id, message, [(path, bool(voice)) for path, voice in media],
++                              {"thread_id": thread_id} if thread_id else None), loop)
++        try:
++            return future.result(timeout=_SERVER_WAIT)
++        except concurrent.futures.TimeoutError:
++            return {"error": "Matrix send: the gateway's Matrix adapter did not finish in time; "
++                             "the message may have been delivered"}
++        except Exception as exc:
++            return {"error": f"Matrix send failed: {exc}"}
++
++    return _handler
+diff --git a/gateway/run_bootstrap.py b/gateway/run_bootstrap.py
+index 0a682990e7..607cdcabb1 100644
+--- a/gateway/run_bootstrap.py
++++ b/gateway/run_bootstrap.py
+@@ -364,6 +364,10 @@ async def _start_gateway_start_control_socket(runner):
+                            # live adapters' handlers (#87770); tools/prompt still wait for the next session.
+                            "reload-plugins": reload_plugins_verb(runner, _main_loop)})
+         _control_server.ticket_store = runner.session_ticket_store
++        # `hermes send` to Matrix from another process rides this gateway's live adapter, never a second
++        # Matrix connection on this device's crypto store.
++        from gateway.matrix_send_forward import VERB as _MATRIX_SEND_VERB, matrix_send_verb
++        _control_server.private_handlers[_MATRIX_SEND_VERB] = matrix_send_verb(runner, _main_loop)
+         if not await _control_server.start():
+             _control_server = None
+         else:
+diff --git a/tests/gateway/test_matrix_send_forward.py b/tests/gateway/test_matrix_send_forward.py
+new file mode 100644
+index 0000000000..7538d8e658
+--- /dev/null
++++ b/tests/gateway/test_matrix_send_forward.py
+@@ -0,0 +1,291 @@
++"""``hermes send`` to Matrix is delivered by the running gateway's live adapter (never a second
++Matrix connection on the gateway's device and crypto store), and refuses when the gateway is up but
++unreachable. With no gateway running the ephemeral standalone connect is unchanged."""
++
++import asyncio
++import json
++import shutil
++import sys
++import tempfile
++import threading
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import AsyncMock, patch
++
++import pytest
++
++from gateway.config import Platform
++from gateway.control_socket import GatewayControlServer
++from gateway import matrix_send_forward as fwd
++from tools.send_message_senders import _send_matrix_via_adapter
++
++pytestmark = pytest.mark.platforms("posix")  # Unix-socket transport
++
++ROOM = "!room:example.com"
++THREAD = "$thread:example.com"
++
++
++class FakeAdapter:
++    def __init__(self, fail=None):
++        self.calls = []
++        self.fail = fail
++
++    async def send(self, chat_id, message, metadata=None):
++        self.calls.append(("send", chat_id, message, metadata))
++        if self.fail:
++            return SimpleNamespace(success=False, error=self.fail, message_id=None)
++        return SimpleNamespace(success=True, message_id="$sent:example.com")
++
++    async def send_image_file(self, chat_id, path, metadata=None):
++        self.calls.append(("send_image_file", chat_id, path, metadata))
++        return SimpleNamespace(success=True, message_id="$img:example.com")
++
++
++@pytest.fixture()
++def home(monkeypatch):
++    # Short path: the stale-socket test binds gateway.sock directly (sun_path limit).
++    d = Path(tempfile.mkdtemp(prefix="hs", dir="/tmp")) / ".hermes"  # no-tmp: ok — AF_UNIX path limit
++    d.mkdir(mode=0o700)
++    d.chmod(0o700)
++    monkeypatch.setenv("HERMES_HOME", str(d))
++    yield d
++    shutil.rmtree(d.parent, ignore_errors=True)
++
++
++class GatewayHarness:
++    """A real control server on a real "gateway" loop thread, with a fake runner holding ``adapter``."""
++
++    def __init__(self, home, adapter):
++        self.home, self.adapter = home, adapter
++        self.loop = asyncio.new_event_loop()
++        self.ready = threading.Event()
++        self.server = None
++        self.runner = SimpleNamespace(adapters={Platform.MATRIX: adapter} if adapter else {})
++
++    def __enter__(self):
++        def run():
++            asyncio.set_event_loop(self.loop)
++            server = GatewayControlServer(self.home)
++            server.private_handlers[fwd.VERB] = fwd.matrix_send_verb(self.runner, self.loop)
++            self.server = server
++            self.loop.run_until_complete(server.start())
++            self.ready.set()
++            self.loop.run_forever()
++            self.loop.run_until_complete(server.stop())
++
++        self.thread = threading.Thread(target=run, daemon=True)
++        self.thread.start()
++        assert self.ready.wait(5)
++        return self
++
++    def __exit__(self, *exc):
++        def _stop():
++            for task in asyncio.all_tasks(self.loop):
++                task.cancel()
++            self.loop.call_later(0.05, self.loop.stop)
++
++        self.loop.call_soon_threadsafe(_stop)
++        self.thread.join(5)
++        self.loop.close()
++
++
++def _live_runner_patch(runner):
++    return patch("gateway.run._gateway_runner_ref", return_value=runner)
++
++
++# --- the control verb, over the real socket --------------------------------------------------
++
++def test_forward_delivers_through_gateway_adapter(home):
++    adapter = FakeAdapter()
++    with GatewayHarness(home, adapter):
++        result = fwd.forward_matrix_send(home, ROOM, "hello", [], THREAD)
++    assert result == {"success": True, "platform": "matrix", "chat_id": ROOM, "message_id": "$sent:example.com"}
++    assert adapter.calls == [("send", ROOM, "hello", {"thread_id": THREAD})]
++
++
++def test_forward_media_arrives_as_path_voice_pairs(home, tmp_path):
++    img = tmp_path / "a.png"
++    img.write_bytes(b"x")
++    adapter = FakeAdapter()
++    with GatewayHarness(home, adapter):
++        result = fwd.forward_matrix_send(home, ROOM, "cap", [(str(img), False)], None)
++    assert result["success"] is True and result["message_id"] == "$img:example.com"
++    assert [c[0] for c in adapter.calls] == ["send", "send_image_file"]
++    assert adapter.calls[0][3] is None
++
++
++def test_forward_returns_adapter_failure_as_error_result(home):
++    with GatewayHarness(home, FakeAdapter(fail="M_FORBIDDEN")):
++        result = fwd.forward_matrix_send(home, ROOM, "hello", [], None)
++    assert result == {"error": "Matrix send failed: M_FORBIDDEN"}
++
++
++def test_forward_reports_gateway_without_matrix_adapter(home):
++    with GatewayHarness(home, None):
++        result = fwd.forward_matrix_send(home, ROOM, "hello", [], None)
++    assert "Matrix adapter" in result["error"] and "not connected" in result["error"]
++
++
++def test_forward_unconnected_gateway_never_reaches_adapter_for_bad_params(home):
++    adapter = FakeAdapter()
++    with GatewayHarness(home, adapter):
++        result = fwd._exchange(home, {"chat_id": 5, "message": "x"}, 5.0)
++    assert "invalid" in result["error"].lower()
++    assert adapter.calls == []
++
++
++# --- gateway state -----------------------------------------------------------------------------
++
++def test_no_gateway_means_standalone(home):
++    assert fwd.forward_matrix_send(home, ROOM, "hello", [], None) is None
++
++
++def test_stale_socket_with_no_owner_means_standalone(home):
++    import socket as _s
++    path = home / "gateway.sock"
++    s = _s.socket(_s.AF_UNIX)
++    s.bind(str(path))
++    s.close()  # a socket file nobody listens on: a crashed gateway's leftover
++    assert fwd.forward_matrix_send(home, ROOM, "hello", [], None) is None
++
++
++@pytest.mark.parametrize("state", ["starting", "inaccessible"])
++def test_running_gateway_that_does_not_answer_is_a_refusal(home, state):
++    with patch.object(fwd, "missing_owner_state", return_value=state):
++        result = fwd.forward_matrix_send(home, ROOM, "hello", [], None)
++    assert result is not None and "error" in result
++    assert "gateway" in result["error"] and "second Matrix connection" in result["error"]
++
++
++def test_gateway_timeout_says_it_may_have_been_delivered(home):
++    class Slow(FakeAdapter):
++        async def send(self, *a, **k):
++            await asyncio.sleep(2)
++            return await super().send(*a, **k)
++
++    with GatewayHarness(home, Slow()):
++        result = fwd.forward_matrix_send(home, ROOM, "hello", [], None, timeout=0.3)
++    assert "may have been delivered" in result["error"]
++
++
++# --- the sender: hand off, refuse, or (no gateway) stay standalone ------------------------------
++
++def _pconfig():
++    return SimpleNamespace(enabled=True, token="tok", extra={})
++
++
++def _no_own_connection():
++    """Any construction of a Matrix adapter in the sending process is a test failure."""
++    def boom(*_a, **_k):
++        raise AssertionError("opened its own Matrix connection")
++    return patch("plugins.platforms.matrix.adapter.MatrixAdapter.__init__", boom)
++
++
++def test_sender_hands_message_to_running_gateway(home):
++    adapter = FakeAdapter()
++    with GatewayHarness(home, adapter), _live_runner_patch(None), \
++            _no_own_connection():
++        result = asyncio.run(_send_matrix_via_adapter(_pconfig(), ROOM, "hi", thread_id=THREAD))
++    assert result["success"] is True and result["message_id"] == "$sent:example.com"
++    assert adapter.calls == [("send", ROOM, "hi", {"thread_id": THREAD})]
++
++
++def test_sender_refuses_when_gateway_up_but_unreachable(home):
++    with patch.object(fwd, "missing_owner_state", return_value="starting"), _live_runner_patch(None), \
++            _no_own_connection():
++        result = asyncio.run(_send_matrix_via_adapter(_pconfig(), ROOM, "hi"))
++    assert "error" in result and "second Matrix connection" in result["error"]
++
++
++def test_sender_inside_the_gateway_process_never_forwards_to_itself(home):
++    """Live-adapter lookup failure inside the gateway keeps today's behaviour (no self-forward)."""
++    runner = SimpleNamespace(adapters={}, _authorization_adapter=lambda *_a: None)
++    forward = AsyncMock()
++    connected = []
++
++    class Eph:
++        def __init__(self, _c):
++            pass
++
++        async def connect(self):
++            connected.append(1)
++            return True
++
++        async def send(self, chat_id, message, metadata=None):
++            return SimpleNamespace(success=True, message_id="$e")
++
++        async def disconnect(self):
++            pass
++
++    with _live_runner_patch(runner), patch.object(fwd, "forward_matrix_send", forward), \
++            patch.dict(sys.modules, {"plugins.platforms.matrix.adapter": SimpleNamespace(MatrixAdapter=Eph)}):
++        result = asyncio.run(_send_matrix_via_adapter(_pconfig(), ROOM, "hi"))
++    assert result["success"] is True and connected == [1]
++    forward.assert_not_called()
++
++
++def test_sender_without_gateway_still_uses_ephemeral_connect(home):
++    calls = []
++
++    class Eph:
++        def __init__(self, _c):
++            pass
++
++        async def connect(self):
++            calls.append("connect")
++            return True
++
++        async def send(self, chat_id, message, metadata=None):
++            calls.append(("send", metadata))
++            return SimpleNamespace(success=True, message_id="$e")
++
++        async def disconnect(self):
++            calls.append("disconnect")
++
++    with _live_runner_patch(None), \
++            patch.dict(sys.modules, {"plugins.platforms.matrix.adapter": SimpleNamespace(MatrixAdapter=Eph)}):
++        result = asyncio.run(_send_matrix_via_adapter(_pconfig(), ROOM, "hi", thread_id=THREAD))
++    assert result["success"] is True
++    assert calls == ["connect", ("send", {"thread_id": THREAD}), "disconnect"]
++
++
++# --- end to end: `hermes send --json` result and thread target shape ----------------------------
++
++def _matrix_config():
++    from gateway.config import GatewayConfig, PlatformConfig
++    return GatewayConfig(platforms={Platform.MATRIX: PlatformConfig(enabled=True, token="tok")})
++
++
++def _hermes_send_json(target, text):
++    from hermes_cli.send_cmd import cmd_send
++    import argparse
++    import io
++    ns = argparse.Namespace(to=target, message=None, file="-", subject=None, mentions=None,
++                            list_targets=False, quiet=False, json=True)
++    out, code = io.StringIO(), None
++    with patch("sys.stdin", io.StringIO(text)), patch("sys.stdout", out), \
++            patch("hermes_cli.send_cmd._load_hermes_env"), \
++            patch("gateway.config.load_gateway_config", return_value=_matrix_config()):
++        try:
++            cmd_send(ns)
++        except SystemExit as exc:
++            code = exc.code
++    return code, json.loads(out.getvalue())
++
++
++def test_hermes_send_json_result_and_thread_target_match_live_adapter_output(home):
++    adapter = FakeAdapter()
++    with GatewayHarness(home, adapter), _live_runner_patch(None), \
++            _no_own_connection():
++        code, payload = _hermes_send_json(f"matrix:{ROOM}:{THREAD}", "notice body\n")
++    assert code == 0
++    assert payload == {"success": True, "platform": "matrix", "chat_id": ROOM, "message_id": "$sent:example.com"}
++    assert adapter.calls == [("send", ROOM, "notice body\n", {"thread_id": THREAD})]
++
++
++def test_hermes_send_exits_1_with_json_error_when_gateway_unreachable(home):
++    with patch.object(fwd, "missing_owner_state", return_value="starting"), _live_runner_patch(None), \
++            _no_own_connection():
++        code, payload = _hermes_send_json(f"matrix:{ROOM}", "notice body\n")
++    assert code == 1
++    assert "second Matrix connection" in payload["error"]
+diff --git a/tools/send_message_senders.py b/tools/send_message_senders.py
+index e887fc492d..a92b2d3cf7 100644
+--- a/tools/send_message_senders.py
++++ b/tools/send_message_senders.py
+@@ -327,6 +327,12 @@ def _live_adapter(platform, *, lookup_failed_warning=None):
+         runner = None
+     if runner is None:
+         return None, None
++    return runner_adapter(runner, platform, lookup_failed_warning=lookup_failed_warning)
++
++
++def runner_adapter(runner, platform, *, lookup_failed_warning=None):
++    """``(runner, adapter)`` for a known gateway ``runner`` (the lookup half of ``_live_adapter``; the
++    control-socket send verb has the runner it was registered with and must not rely on the global)."""
+     try:
+         resolve = getattr(runner, "_authorization_adapter", None)
+         if not callable(resolve):  # bare runner stubs without the authz mixin
+@@ -421,12 +427,22 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None,
+     media_files = media_files or []
+     metadata = {"thread_id": thread_id} if thread_id else None
+     from gateway.config import Platform
+-    _, live_adapter = _live_adapter(Platform.MATRIX, lookup_failed_warning=(
++    runner, live_adapter = _live_adapter(Platform.MATRIX, lookup_failed_warning=(
+         "Matrix: live gateway adapter lookup failed; falling back to an "
+         "ephemeral connect (may re-init E2EE per send)"))
+     if live_adapter is not None:
+         # Owned by the gateway — must NOT be disconnected (return before the ephemeral ``finally``).
+         return await _matrix_send_core(live_adapter, chat_id, message, media_files, metadata)
++    if runner is None:
++        # Not inside the gateway process. A second Matrix client on the gateway's device and crypto store
++        # desynchronizes its in-memory Olm state, so a running gateway sends this; the ephemeral connect
++        # below is only for when none is running.
++        from gateway.matrix_send_forward import forward_matrix_send
++        from hermes_constants import get_hermes_home
++        forwarded = await asyncio.to_thread(
++            forward_matrix_send, get_hermes_home(), chat_id, message, media_files, thread_id)
++        if forwarded is not None:
++            return forwarded
+     try:
+         from plugins.platforms.matrix.adapter import MatrixAdapter
+     except ImportError:

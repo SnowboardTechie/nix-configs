@@ -1,0 +1,39 @@
+{
+  "purpose": "`hermes send` to Matrix, run outside the gateway while the gateway runs, is delivered by the gateway's live adapter over its control socket instead of an ephemeral Matrix connection that shares the gateway's device and crypto store (which leaves the gateway's in-memory Olm state stale and its next room key undecryptable). Refuses when the gateway owns the home but is unreachable; unchanged when no gateway runs. Forgejo bryan/durable-pi-workspace#170.",
+  "upstream": "https://github.com/NousResearch/hermes-agent",
+  "base_commit": "bf0203a794a07aac3ff764972ab9087baa4e4f4e",
+  "files": [
+    {
+      "path": "gateway/matrix_send_forward.py",
+      "new_file": true,
+      "base_blob": null,
+      "original_sha256": null,
+      "patched_sha256": "5d1e18012b88b078a92cd7eae0d73202486b5779081f33f47aa9c8fd2fe40d29"
+    },
+    {
+      "path": "gateway/run_bootstrap.py",
+      "new_file": false,
+      "base_blob": "0a682990e7ffb6f3ec6e49c5a1b8c43f5caf3797",
+      "original_sha256": "e2a822312dcb04176522d4419756c048d02d6e4df07c2ee74e157ece6bdffc3f",
+      "patched_sha256": "faf9395753a3a8fa3833cbe8782597cb432c2eb7481da94f746056b0dc5dda49"
+    },
+    {
+      "path": "tests/gateway/test_matrix_send_forward.py",
+      "new_file": true,
+      "base_blob": null,
+      "original_sha256": null,
+      "patched_sha256": "67395ccb1bfbc6c2e799afb18ca25ae1253cd45e2cefa23deb21dbef96c20eb1"
+    },
+    {
+      "path": "tools/send_message_senders.py",
+      "new_file": false,
+      "base_blob": "e887fc492d8583b02dbc8042e5500c0faf4ee450",
+      "original_sha256": "4702b6a5566699a0c145c46e1c26ce6ffff29b1dbd1ce697091311df5ae8beb3",
+      "patched_sha256": "95edc22129a6caa3aed0114c251c70d2b11e45433abccdf5b514561560f0ba2d"
+    }
+  ],
+  "patch": "matrix-send-gateway.patch",
+  "patch_sha256": "cd35783d075099b5bda8826474b496acc024fda5e5bab9fed36c4e4da28dca63",
+  "apply": "In the Hermes source root at base_commit (or a target where every files[].original_sha256 still matches and new files are absent): `git apply --check <patch>`, `git apply <patch>`, then require each files[].patched_sha256. Reverse with `git apply -R`. The gateway must be restarted to register the matrix-send verb; until then `hermes send --to matrix:...` refuses with a clear error.",
+  "regression": "tests/gateway/test_matrix_send_forward.py (included in the patch)"
+}
