@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Channel-aware admission for the Nix-owned Hermes update wrapper.
 
-Only the reviewed classic /status session-id correction may accompany an update.
-Hermes itself owns backup-independent update/stash/restart mechanics. This helper
-never checks out code, stashes changes, or changes the configured update channel.
+Only two reviewed local patches may accompany an update, each optional: the classic
+/status session-id correction and the #170 matrix-send-through-gateway patch, pinned
+to the exact reviewed patch file. Hermes itself owns backup-independent
+update/stash/restart mechanics. This helper never checks out code, stashes changes,
+or changes the configured update channel.
 """
 from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import os
 import re
@@ -19,16 +22,28 @@ from pathlib import Path
 
 STATUS_PATH = "hermes_cli/cli_session_mixin.py"
 SHA = re.compile(r"[0-9a-f]{40}")
+# bryan/durable-pi-workspace#170, reviewed as hermes-agent bf0203a794..2be71e5f54.
+MATRIX_PATCH = Path(__file__).resolve().parent / "hermes-runtime-patches/matrix-send-gateway.patch"
+MATRIX_PATCH_SHA256 = "3bbb0f167d581a6ef3e6c26244248b250885cb12e808d494ca8e9976efb1bd72"
+MATRIX_MODIFIED = ("gateway/run_bootstrap.py", "tools/send_message_senders.py")
+MATRIX_NEW = ("gateway/matrix_send_forward.py", "tests/gateway/test_matrix_send_forward.py")
+MATRIX_PATHS = MATRIX_MODIFIED + MATRIX_NEW
 
 
-def git(root, *args, check=True, input=None):
+def git(root, *args, check=True, input=None, env=None):
     result = subprocess.run(
         ["git", "-C", str(root), *args], input=input, capture_output=True,
-        timeout=180, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        timeout=180, env={**os.environ, "GIT_TERMINAL_PROMPT": "0", **(env or {})},
     )
     if check and result.returncode:
         raise ValueError(f"git {args[0]} failed: {result.stderr.decode(errors='replace').strip()}")
     return result
+
+
+def scratch_directory(root):
+    scratch = root.parent / "cache" / "scratch"
+    scratch.mkdir(parents=True, exist_ok=True)
+    return scratch
 
 
 def corrected_status_source(source):
@@ -73,59 +88,134 @@ def corrected_status_source(source):
     return b"".join(lines)
 
 
-def checkout_patch(root):
-    """Reject all drift except an unstaged, exact instance of the reviewed patch."""
+def load_matrix_patch(path=None):
+    data = Path(path or MATRIX_PATCH).read_bytes()
+    if hashlib.sha256(data).hexdigest() != MATRIX_PATCH_SHA256:
+        raise ValueError(f"{path or MATRIX_PATCH} is not the reviewed matrix-send patch")
+    return data
+
+
+def matrix_sources(root, commit):
+    """Map each patch path to its content in commit with the reviewed patch applied.
+
+    Returns (sources, absorbed): absorbed means commit already contains the change and
+    sources is commit's own content. None when the patch neither applies nor is contained.
+    """
+    patch = load_matrix_patch()
+    with tempfile.TemporaryDirectory(prefix="hermes-matrix-index-", dir=scratch_directory(root)) as directory:
+        env = {"GIT_INDEX_FILE": str(Path(directory) / "index")}
+        git(root, "read-tree", commit, env=env)
+        absorbed = False
+        if git(root, "apply", "--cached", "-", input=patch, env=env, check=False).returncode:
+            if git(root, "apply", "--cached", "--check", "-R", "-", input=patch, env=env,
+                   check=False).returncode:
+                return None, False
+            absorbed = True
+        sources = {path: git(root, "show", f":{path}", env=env).stdout for path in MATRIX_PATHS}
+    return sources, absorbed
+
+
+def regular_file(root, path, label):
+    target = root / path
+    if target.is_symlink() or not target.is_file():
+        raise ValueError(f"{label} target {path} is not a regular file")
+    return target
+
+
+def checkout_patches(root):
+    """Reject all drift except unstaged, exact instances of the reviewed patches.
+
+    Returns the set of present patches: "status" and/or "matrix".
+    """
     branch = git(root, "branch", "--show-current").stdout.decode().strip()
     if branch not in ("", "main"):
         raise ValueError(f"refusing unintended branch {branch!r}")
     if git(root, "diff", "--cached", "--quiet", check=False).returncode:
         raise ValueError("refusing staged changes")
-    if git(root, "ls-files", "--others", "--exclude-standard", "-z").stdout:
+    untracked = git(root, "ls-files", "--others", "--exclude-standard", "-z").stdout.split(b"\0")[:-1]
+    if not set(untracked) <= {path.encode() for path in MATRIX_NEW}:
         raise ValueError("refusing untracked files")
     changes = git(root, "diff", "--name-only", "-z", "HEAD").stdout.split(b"\0")[:-1]
-    if not changes:
-        return False
-    if changes != [STATUS_PATH.encode()]:
+    if not set(changes) <= {path.encode() for path in (STATUS_PATH, *MATRIX_MODIFIED)}:
         raise ValueError("refusing unrelated working-tree changes")
-    path = root / STATUS_PATH
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("status patch target is not a regular file")
-    original = git(root, "show", f"HEAD:{STATUS_PATH}").stdout
-    expected = corrected_status_source(original)
-    if expected == original or path.read_bytes() != expected:
-        raise ValueError("working-tree changes are not exactly the reviewed /status patch")
-    mode = git(root, "diff", "--summary").stdout
-    if mode:
+    if git(root, "diff", "--summary", "HEAD").stdout:
         raise ValueError("refusing file mode changes")
-    return True
+    present = set()
+    if STATUS_PATH.encode() in changes:
+        path = regular_file(root, STATUS_PATH, "status patch")
+        original = git(root, "show", f"HEAD:{STATUS_PATH}").stdout
+        expected = corrected_status_source(original)
+        if expected == original or path.read_bytes() != expected:
+            raise ValueError("working-tree changes are not exactly the reviewed /status patch")
+        present.add("status")
+    if untracked or set(changes) - {STATUS_PATH.encode()}:
+        sources, absorbed = matrix_sources(root, "HEAD")
+        if sources is None or absorbed:
+            raise ValueError("working-tree changes are not exactly the reviewed matrix-send patch")
+        for path in MATRIX_PATHS:
+            target = regular_file(root, path, "matrix-send patch")
+            if target.read_bytes() != sources[path]:
+                raise ValueError("working-tree changes are not exactly the reviewed matrix-send patch")
+            if path in MATRIX_NEW and target.stat().st_mode & 0o111:
+                raise ValueError(f"refusing file mode of untracked {path}")
+        present.add("matrix")
+    return present
 
 
 def prepare_checkout(root, target, channel, *, discard_changes=False):
     """Validate a resolved immutable target and predict Hermes's stash merge."""
     if not isinstance(target, str) or not SHA.fullmatch(target):
         raise ValueError("update channel did not resolve to a full commit")
-    preserve_patch = checkout_patch(root)
+    patches = checkout_patches(root)
     head = git(root, "rev-parse", "HEAD").stdout.decode().strip()
     if git(root, "merge-base", "--is-ancestor", head, "origin/main", check=False).returncode:
         raise ValueError("refusing local commits not contained in origin/main")
     if git(root, "merge-base", "--is-ancestor", head, target, check=False).returncode:
         raise ValueError("refusing an automatic downgrade or divergent update target")
-    if preserve_patch:
-        if head != target and discard_changes:
-            raise ValueError("updates.non_interactive_local_changes=discard would lose the required patch")
+    if patches and head != target and discard_changes:
+        raise ValueError("updates.non_interactive_local_changes=discard would lose the required patch")
+    # Hermes restores every local change from one stash: a conflict in either patch
+    # resets the tree and parks both, so each must merge cleanly before downtime.
+    if "status" in patches:
         original = git(root, "show", f"HEAD:{STATUS_PATH}").stdout
         candidate = git(root, "show", f"{target}:{STATUS_PATH}").stdout
         expected = corrected_status_source(candidate)
-        scratch = root.parent / "cache" / "scratch"
-        scratch.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="hermes-update-merge-", dir=scratch) as directory:
+        with tempfile.TemporaryDirectory(prefix="hermes-update-merge-", dir=scratch_directory(root)) as directory:
             paths = [Path(directory) / name for name in ("patched", "base", "candidate")]
             for path, data in zip(paths, ((root / STATUS_PATH).read_bytes(), original, candidate)):
                 path.write_bytes(data)
             result = git(root, "merge-file", "--stdout", *(str(path) for path in paths), check=False)
         if result.returncode or result.stdout != expected:
             raise ValueError("the required /status patch cannot be cleanly preserved on this target")
-    return {"head": head, "target": target, "channel": channel, "preserve_status_patch": preserve_patch}
+    if "matrix" in patches:
+        predict_matrix_restore(root, target)
+    return {"head": head, "target": target, "channel": channel,
+            "preserve_status_patch": "status" in patches,
+            "preserve_matrix_patch": "matrix" in patches}
+
+
+def predict_matrix_restore(root, target):
+    """Require Hermes's stash apply to leave exactly target + the reviewed patch."""
+    refusal = "the required matrix-send patch cannot be cleanly preserved on this target"
+    expected, absorbed = matrix_sources(root, target)
+    if expected is None:
+        raise ValueError(refusal)
+    for path in MATRIX_NEW:
+        # `stash apply` keeps a file the target already tracks; that is only right
+        # when the target's copy is the reviewed one.
+        tracked = not git(root, "cat-file", "-e", f"{target}:{path}", check=False).returncode
+        if tracked != absorbed:
+            raise ValueError(refusal)
+    for path in MATRIX_MODIFIED:
+        sides = ((root / path).read_bytes(), git(root, "show", f"HEAD:{path}").stdout,
+                 git(root, "show", f"{target}:{path}").stdout)
+        with tempfile.TemporaryDirectory(prefix="hermes-update-merge-", dir=scratch_directory(root)) as directory:
+            paths = [Path(directory) / name for name in ("patched", "base", "candidate")]
+            for scratch_path, data in zip(paths, sides):
+                scratch_path.write_bytes(data)
+            result = git(root, "merge-file", "--stdout", *(str(p) for p in paths), check=False)
+        if result.returncode or result.stdout != expected[path]:
+            raise ValueError(refusal)
 
 
 def resolve_plan(root, config_path):
@@ -163,33 +253,43 @@ def verify_checkout(root, plan):
     head = git(root, "rev-parse", "HEAD").stdout.decode().strip()
     if head != plan["target"]:
         raise ValueError(f"updated checkout is {head}, expected {plan['target']}; channel may have moved")
-    patched = checkout_patch(root)
-    if patched and not plan["preserve_status_patch"]:
+    patches = checkout_patches(root)
+    if "status" in patches and not plan["preserve_status_patch"]:
         raise ValueError("update introduced an unexpected status patch")
     if plan["preserve_status_patch"]:
         current = (root / STATUS_PATH).read_bytes()
         if corrected_status_source(current) != current:
             raise ValueError("update did not retain the required /status correction")
+    preserve_matrix = plan.get("preserve_matrix_patch", False)
+    if "matrix" in patches and not preserve_matrix:
+        raise ValueError("update introduced an unexpected matrix-send patch")
+    if preserve_matrix and "matrix" not in patches and not matrix_sources(root, "HEAD")[1]:
+        raise ValueError("update did not retain the required matrix-send patch")
     stamp = json.loads((root / "install-stamp.json").read_text(encoding="utf-8-sig"))
     if stamp.get("commit") != plan["target"]:
         raise ValueError("install stamp does not identify the expected updated commit")
 
 
 def main():
+    global MATRIX_PATCH
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("plan", "verify"))
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--plan-json")
+    parser.add_argument("--matrix-patch", type=Path, default=MATRIX_PATCH)
     args = parser.parse_args()
     root = args.root.resolve()
+    MATRIX_PATCH = args.matrix_patch
     try:
+        load_matrix_patch()
         if args.action == "plan":
             if args.config is None:
                 parser.error("plan requires --config")
             plan = resolve_plan(root, args.config)
             print(f"Hermes {plan['channel']}: {plan['head'][:12]} -> {plan['target'][:12]}; "
-                  f"preserve status patch: {plan['preserve_status_patch']}", file=sys.stderr)
+                  f"preserve status patch: {plan['preserve_status_patch']}; "
+                  f"preserve matrix-send patch: {plan['preserve_matrix_patch']}", file=sys.stderr)
             if plan["head"] != plan["target"]:
                 print(json.dumps(plan))
         else:

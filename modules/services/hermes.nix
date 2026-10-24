@@ -26,6 +26,8 @@
       runtimePython =
         if cfg.runtimePython != null then cfg.runtimePython else "${runtimeVenv}/bin/python";
       upstreamDesktop = inputs.hermes-agent.packages.${system}.desktop;
+      # Reviewed #170 runtime patch the updater may carry (exact bytes pinned by the preflight).
+      matrixSendPatch = ../../scripts/hermes-runtime-patches/matrix-send-gateway.patch;
       headlessInstanceModule =
         { name
         , config
@@ -381,11 +383,13 @@
 
           # The channel, not the current branch name, owns the update target.
           # The helper admits detached releases and only the reviewed /status
-          # patch, and predicts its stash merge before any service downtime.
+          # and #170 matrix-send patches, and predicts their stash merge before
+          # any service downtime.
           as_user ${lib.escapeShellArg updaterRuntimePython} -m hermes_cli.main update --check
           update_plan=$(as_user ${lib.escapeShellArg updaterRuntimePython} \
             ${../../scripts/hermes-update-preflight.py} plan \
             --root ${lib.escapeShellArg installDirectory} \
+            --matrix-patch ${matrixSendPatch} \
             --config "$HERMES_HOME/config.yaml")
           if [ -z "$update_plan" ]; then
             exit 0
@@ -430,7 +434,8 @@
           as_user ${lib.escapeShellArg updaterRuntimePython} -m hermes_cli.main update --yes --no-backup
           as_user ${lib.escapeShellArg updaterRuntimePython} \
             ${../../scripts/hermes-update-preflight.py} verify \
-            --root ${lib.escapeShellArg installDirectory} --plan-json "$update_plan"
+            --root ${lib.escapeShellArg installDirectory} --matrix-patch ${matrixSendPatch} \
+            --plan-json "$update_plan"
 
           ${lib.optionalString (supervisedServiceLabel != null) ''
             /bin/launchctl bootstrap system ${lib.escapeShellArg servicePlist}

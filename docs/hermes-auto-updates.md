@@ -14,18 +14,26 @@ wrapper deepens shallow installations before checking ancestry, rejects local
 commits and unintended branches, and leaves an already-current installation
 alone without a backup, restart, or lifecycle notification.
 
-The only permitted dirty-tree state is the reviewed, unstaged, one-line classic
-`/status` approval query correction from `session_key` to `session_id`. Its
-producer, `/yolo`, must still use `self.session_id`. No other file, staged work,
-untracked file, mode change, extra hunk, or unfamiliar query shape is admitted.
-This is the compatibility patch recorded in
-`dotfiles/hermes/runtime-patches/cli-status-session.*`.
+The only permitted dirty-tree states are two reviewed, unstaged patches, each
+optional:
 
-Before downtime, admission computes the actual three-way Git merge of that
-patch onto the selected target and requires exactly the intended corrected
+- the one-line classic `/status` approval query correction from `session_key`
+  to `session_id`. Its producer, `/yolo`, must still use `self.session_id`. It is
+  recorded in `dotfiles/hermes/runtime-patches/cli-status-session.*`.
+- the #170 matrix-send-through-gateway patch,
+  `scripts/hermes-runtime-patches/matrix-send-gateway.patch`, pinned by SHA-256.
+  Its two modified files and two new untracked files must equal HEAD plus that
+  patch exactly. How it is carried, first applied and retired is in
+  [`modules/services/AGENTS.md`](../modules/services/AGENTS.md#hermes-local-runtime-patches).
+
+No other file, staged work, untracked file, mode change, extra hunk, or
+unfamiliar query shape is admitted.
+
+Before downtime, admission computes the actual three-way Git merge of each
+present patch onto the selected target and requires exactly the intended corrected
 source. Unknown upstream refactors and conflicts refuse without touching the
 checkout. A configuration that discards local changes is also refused while
-this patch is needed. When upstream incorporates the identical correction,
+either patch is present. When upstream incorporates the identical correction,
 the normal stash merge absorbs it and the updated tree is clean automatically.
 
 ## Execution and verification
@@ -37,6 +45,7 @@ without the old patch-dropping `--keep-stash` flag, and verifies:
 - HEAD is the exact preflighted channel target, not the moving main branch;
 - no new or unrelated source changes were introduced;
 - a required status correction remains effective, either locally or upstream;
+- a planned matrix-send patch is still exactly applied, or the target contains it;
 - the install stamp identifies the selected commit;
 - the backend serves the stamped version and any configured gateway is running.
 

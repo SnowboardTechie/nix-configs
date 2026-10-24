@@ -1,14 +1,15 @@
 {
-  "purpose": "`hermes send` to Matrix, run outside the gateway while the gateway runs, is delivered by the gateway's live adapter over its control socket instead of an ephemeral Matrix connection that shares the gateway's device and crypto store (which leaves the gateway's in-memory Olm state stale and its next room key undecryptable). Refuses when the gateway owns the home but is unreachable; unchanged when no gateway runs. Forgejo bryan/durable-pi-workspace#170.",
+  "purpose": "`hermes send` to Matrix, run outside the gateway while a gateway owns the home, is delivered by that gateway's live adapter over its control socket instead of an ephemeral Matrix connection on the gateway's device and crypto store (which leaves the gateway's in-memory Olm state stale and its next room key undecryptable). Refuses when the owning gateway is unreachable; unchanged when no gateway runs or the gateway runs no Matrix for the home. Forgejo bryan/durable-pi-workspace#170.",
   "upstream": "https://github.com/NousResearch/hermes-agent",
   "base_commit": "bf0203a794a07aac3ff764972ab9087baa4e4f4e",
+  "reviewed_commit": "2be71e5f54a308cdaaaa8e0b6c1f9b39e0602ed3",
   "files": [
     {
       "path": "gateway/matrix_send_forward.py",
       "new_file": true,
       "base_blob": null,
       "original_sha256": null,
-      "patched_sha256": "5d1e18012b88b078a92cd7eae0d73202486b5779081f33f47aa9c8fd2fe40d29"
+      "patched_sha256": "bacf95c762b105925d57c241ffd7f1f8eebf038cfad01190bfaa624ef79cde36"
     },
     {
       "path": "gateway/run_bootstrap.py",
@@ -22,18 +23,18 @@
       "new_file": true,
       "base_blob": null,
       "original_sha256": null,
-      "patched_sha256": "67395ccb1bfbc6c2e799afb18ca25ae1253cd45e2cefa23deb21dbef96c20eb1"
+      "patched_sha256": "e811b3df32207765478e8fd285292ff1c2441757c66b50d1b61e66db3175361e"
     },
     {
       "path": "tools/send_message_senders.py",
       "new_file": false,
       "base_blob": "e887fc492d8583b02dbc8042e5500c0faf4ee450",
       "original_sha256": "4702b6a5566699a0c145c46e1c26ce6ffff29b1dbd1ce697091311df5ae8beb3",
-      "patched_sha256": "95edc22129a6caa3aed0114c251c70d2b11e45433abccdf5b514561560f0ba2d"
+      "patched_sha256": "17dd12a479709e4b695c37a2024fedf45d95314db7310070ecfc15adca6eca74"
     }
   ],
   "patch": "matrix-send-gateway.patch",
-  "patch_sha256": "cd35783d075099b5bda8826474b496acc024fda5e5bab9fed36c4e4da28dca63",
-  "apply": "In the Hermes source root at base_commit (or a target where every files[].original_sha256 still matches and new files are absent): `git apply --check <patch>`, `git apply <patch>`, then require each files[].patched_sha256. Reverse with `git apply -R`. The gateway must be restarted to register the matrix-send verb; until then `hermes send --to matrix:...` refuses with a clear error.",
+  "patch_sha256": "3bbb0f167d581a6ef3e6c26244248b250885cb12e808d494ca8e9976efb1bd72",
+  "apply": "In the Hermes source root at base_commit (detached or main, otherwise clean apart from the classic /status patch): `git apply --check <patch>`, `git apply <patch>`, then require each files[].patched_sha256, and restart the gateway at once so it registers the matrix-send verb (until then `hermes send --to matrix:...` refuses). Reverse with `git apply -R <patch>`. The updater admits the patch only as the exact content of this file applied to HEAD; see modules/services/AGENTS.md.",
   "regression": "tests/gateway/test_matrix_send_forward.py (included in the patch)"
 }

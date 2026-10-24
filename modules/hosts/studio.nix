@@ -73,7 +73,8 @@
       gateway.enable = true;
       autoUpdate = {
         # The guarded updater follows this install's channel and preserves only
-        # the reviewed classic /status patch; unrelated drift still refuses.
+        # the reviewed classic /status and #170 matrix-send patches; unrelated
+        # drift still refuses.
         enable = true;
         calendar = { Hour = 4; Minute = 0; };
         notifications = {

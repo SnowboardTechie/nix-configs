@@ -32,6 +32,30 @@ ORIGINAL = '''class CLI:
         session_key = self.session_id or "default"
         return session_key
 '''.encode()
+MATRIX_PATCH = REPO / "scripts/hermes-runtime-patches/matrix-send-gateway.patch"
+MATRIX_MANIFEST = REPO / "scripts/hermes-runtime-patches/matrix-send-gateway.json"
+
+
+def matrix_base_sources():
+    """Minimal pre-images the reviewed #170 patch applies to: each modified file's hunk
+    context, separated by filler that later releases can change without conflict."""
+    sources, path, hunk = {}, None, None
+    for line in MATRIX_PATCH.read_bytes().splitlines(keepends=True):
+        if line.startswith(b"diff --git "):
+            path = hunk = None
+        elif line.startswith(b"--- a/"):
+            path = line[6:].strip().decode()
+            sources[path] = [b"# head filler\n"]
+        elif path and line.startswith(b"@@"):
+            hunk = sources[path]
+            hunk.append(b"# filler\n")
+        elif hunk is not None and line[:1] in (b" ", b"-"):
+            hunk.append(line[1:])
+    return {path: b"".join(lines + [b"# tail filler\n"]) for path, lines in sources.items()}
+
+
+MATRIX_BASE = matrix_base_sources()
+MATRIX_NEW = ("gateway/matrix_send_forward.py", "tests/gateway/test_matrix_send_forward.py")
 
 
 @cache
@@ -66,6 +90,9 @@ class CheckoutTests(unittest.TestCase):
         (self.root / STATUS).parent.mkdir()
         (self.root / STATUS).write_bytes(ORIGINAL)
         (self.root / "other.txt").write_text("unchanged\n")
+        for path, source in MATRIX_BASE.items():
+            (self.root / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / path).write_bytes(source)
         self.base = self.commit("base")
         self.candidate = self.release(ORIGINAL.replace(b"old release", b"new release"))
         self.git("checkout", "--detach", self.base)
@@ -92,18 +119,40 @@ class CheckoutTests(unittest.TestCase):
         source = (self.root / STATUS).read_bytes()
         (self.root / STATUS).write_bytes(preflight.corrected_status_source(source))
 
+    def matrix_patch(self):
+        self.git("apply", str(MATRIX_PATCH))
+
+    def matrix_release(self, edit):
+        """Commit a release whose matrix-patch files are changed by edit(root)."""
+        self.git("checkout", "main")
+        edit(self.root)
+        self.candidate = self.commit("matrix release")
+        self.git("update-ref", "refs/remotes/origin/main", self.candidate)
+        self.git("checkout", "--detach", self.base)
+
     def plan(self, target=None, **kwargs):
         return preflight.prepare_checkout(self.root, target or self.candidate, "stable", **kwargs)
 
     def supported_git_update(self, plan):
         # The actual git operations Hermes's supported updater performs. No live
         # runtime, credential-bearing home, dependency sync, or service is used.
+        # Restore follows hermes_cli/update_cmd_stash.py: `stash apply`; an untracked
+        # file the target already holds is kept; any other failure resets the tree
+        # and parks the stash while the code update itself still succeeds.
         dirty = bool(self.git("status", "--porcelain"))
         if dirty:
             self.git("stash", "push", "--include-untracked")
         self.git("checkout", "--detach", plan["target"])
         if dirty:
-            self.git("stash", "pop")
+            restore = preflight.git(self.root, "stash", "apply", check=False)
+            errors = [line for line in restore.stderr.decode().splitlines()
+                      if line.strip() and not line.startswith(("warning:", "hint:"))]
+            if self.git("diff", "--name-only", "--diff-filter=U") or any(
+                    "already exists, no checkout" not in line
+                    and "could not restore untracked files" not in line for line in errors):
+                self.git("reset", "--hard")
+            else:
+                self.git("stash", "drop")
         self.stamp(plan["target"])
 
     def test_detached_stable_update_preserves_exact_patch(self):
@@ -112,14 +161,14 @@ class CheckoutTests(unittest.TestCase):
         self.assertTrue(plan["preserve_status_patch"])
         self.supported_git_update(plan)
         preflight.verify_checkout(self.root, plan)
-        self.assertTrue(preflight.checkout_patch(self.root))
+        self.assertEqual(preflight.checkout_patches(self.root), {"status"})
         self.assertEqual(self.git("branch", "--show-current"), "")
 
     def test_clean_detached_release_updates_without_introducing_patch(self):
         plan = self.plan()
         self.supported_git_update(plan)
         preflight.verify_checkout(self.root, plan)
-        self.assertFalse(preflight.checkout_patch(self.root))
+        self.assertEqual(preflight.checkout_patches(self.root), set())
 
     def test_main_channel_uses_its_resolved_commit(self):
         self.git("checkout", "-B", "main", self.base)
@@ -189,7 +238,7 @@ class CheckoutTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "discard"):
             self.plan(discard_changes=True)
         self.assertEqual(self.git("rev-parse", "HEAD"), self.base)
-        self.assertTrue(preflight.checkout_patch(self.root))
+        self.assertEqual(preflight.checkout_patches(self.root), {"status"})
 
     def test_resolver_refuses_case_insensitive_discard_policy(self):
         self.patch()
@@ -219,7 +268,7 @@ class CheckoutTests(unittest.TestCase):
                     else:
                         self.assertTrue(preflight.resolve_plan(self.root, config_path)["preserve_status_patch"])
                 self.assertEqual(self.git("rev-parse", "HEAD"), self.base)
-                self.assertTrue(preflight.checkout_patch(self.root))
+                self.assertEqual(preflight.checkout_patches(self.root), {"status"})
 
     def test_refuses_changed_target_patch_shape_before_mutation(self):
         self.git("checkout", "main")
@@ -250,6 +299,145 @@ class CheckoutTests(unittest.TestCase):
         self.stamp(self.base)
         with self.assertRaisesRegex(ValueError, "install stamp"):
             preflight.verify_checkout(self.root, plan)
+
+
+    # --- #170 matrix-send-through-gateway patch -------------------------------
+
+    def test_matrix_patch_alone_is_preserved(self):
+        self.matrix_patch()
+        plan = self.plan()
+        self.assertTrue(plan["preserve_matrix_patch"])
+        self.assertFalse(plan["preserve_status_patch"])
+        self.supported_git_update(plan)
+        preflight.verify_checkout(self.root, plan)
+        self.assertEqual(preflight.checkout_patches(self.root), {"matrix"})
+
+    def test_both_patches_are_preserved(self):
+        self.patch()
+        self.matrix_patch()
+        plan = self.plan()
+        self.assertTrue(plan["preserve_status_patch"])
+        self.assertTrue(plan["preserve_matrix_patch"])
+        self.supported_git_update(plan)
+        preflight.verify_checkout(self.root, plan)
+        self.assertEqual(preflight.checkout_patches(self.root), {"status", "matrix"})
+
+    def test_matrix_patch_survives_unrelated_upstream_edits_in_its_files(self):
+        def edit(root):
+            for path in MATRIX_BASE:
+                source = (root / path).read_bytes()
+                (root / path).write_bytes(source.replace(b"# tail filler", b"# upstream moved on"))
+        self.matrix_release(edit)
+        self.matrix_patch()
+        plan = self.plan()
+        self.supported_git_update(plan)
+        preflight.verify_checkout(self.root, plan)
+        self.assertIn(b"# upstream moved on", (self.root / "gateway/run_bootstrap.py").read_bytes())
+        self.assertEqual(preflight.checkout_patches(self.root), {"matrix"})
+
+    def test_refuses_matrix_patch_altered_by_one_byte(self):
+        for path in ("gateway/matrix_send_forward.py", "tools/send_message_senders.py"):
+            with self.subTest(path=path):
+                self.matrix_patch()
+                target = self.root / path
+                source = target.read_bytes()
+                target.write_bytes(source[:-2] + bytes([source[-2] ^ 1]) + source[-1:])
+                with self.assertRaisesRegex(ValueError, "matrix-send"):
+                    self.plan()
+                self.git("apply", "-R", "--exclude", path, str(MATRIX_PATCH))
+                if path in MATRIX_NEW:
+                    target.unlink()
+                else:
+                    self.git("restore", path)
+                self.assertEqual(self.git("status", "--porcelain"), "")
+
+    def test_refuses_partial_matrix_patch(self):
+        self.matrix_patch()
+        self.git("restore", "tools/send_message_senders.py")
+        with self.assertRaisesRegex(ValueError, "matrix-send"):
+            self.plan()
+
+    def test_refuses_executable_matrix_module(self):
+        self.matrix_patch()
+        (self.root / MATRIX_NEW[0]).chmod(0o755)
+        with self.assertRaisesRegex(ValueError, "mode"):
+            self.plan()
+
+    def test_refuses_extra_change_beside_matrix_patch(self):
+        self.matrix_patch()
+        (self.root / "other.txt").write_text("user work\n")
+        with self.assertRaisesRegex(ValueError, "unrelated"):
+            self.plan()
+        self.git("restore", "other.txt")
+        (self.root / "gateway/extra.py").write_text("user work\n")
+        with self.assertRaisesRegex(ValueError, "untracked"):
+            self.plan()
+
+    def test_refuses_target_where_matrix_patch_no_longer_applies(self):
+        def edit(root):
+            path = root / "gateway/run_bootstrap.py"
+            path.write_bytes(path.read_bytes().replace(b"ticket_store", b"tickets"))
+        self.matrix_release(edit)
+        self.patch()
+        self.matrix_patch()
+        with self.assertRaisesRegex(ValueError, "matrix-send patch cannot be cleanly preserved"):
+            self.plan()
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.base)
+        self.assertEqual(preflight.checkout_patches(self.root), {"status", "matrix"})
+
+    def test_refuses_target_that_adds_its_own_matrix_module(self):
+        def edit(root):
+            (root / MATRIX_NEW[0]).write_text("# upstream's own module\n")
+        self.matrix_release(edit)
+        self.matrix_patch()
+        with self.assertRaisesRegex(ValueError, "matrix-send patch cannot be cleanly preserved"):
+            self.plan()
+
+    def test_target_containing_matrix_change_absorbs_patch(self):
+        self.matrix_release(lambda root: preflight.git(root, "apply", str(MATRIX_PATCH)))
+        self.matrix_patch()
+        plan = self.plan()
+        self.assertTrue(plan["preserve_matrix_patch"])
+        self.supported_git_update(plan)
+        preflight.verify_checkout(self.root, plan)
+        self.assertEqual(self.git("status", "--porcelain"), "")
+
+    def test_refuses_matrix_patch_discard_policy(self):
+        self.matrix_patch()
+        with self.assertRaisesRegex(ValueError, "discard"):
+            self.plan(discard_changes=True)
+
+    def test_verification_rejects_lost_matrix_patch(self):
+        self.matrix_patch()
+        plan = self.plan()
+        self.git("apply", "-R", str(MATRIX_PATCH))
+        self.git("checkout", "--detach", self.candidate)
+        self.stamp(self.candidate)
+        with self.assertRaisesRegex(ValueError, "did not retain the required matrix-send patch"):
+            preflight.verify_checkout(self.root, plan)
+
+    def test_verification_rejects_unexpected_matrix_patch(self):
+        plan = self.plan()
+        self.supported_git_update(plan)
+        self.matrix_patch()
+        with self.assertRaisesRegex(ValueError, "unexpected matrix-send patch"):
+            preflight.verify_checkout(self.root, plan)
+
+
+class MatrixPatchPinTests(unittest.TestCase):
+    def test_committed_patch_is_the_pinned_review(self):
+        manifest = json.loads(MATRIX_MANIFEST.read_text())
+        self.assertEqual(manifest["patch_sha256"], preflight.MATRIX_PATCH_SHA256)
+        self.assertEqual(preflight.load_matrix_patch(MATRIX_PATCH), MATRIX_PATCH.read_bytes())
+        self.assertEqual(sorted(f["path"] for f in manifest["files"]),
+                         sorted((*preflight.MATRIX_MODIFIED, *preflight.MATRIX_NEW)))
+
+    def test_refuses_a_patch_file_that_is_not_the_review(self):
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory) / "matrix-send-gateway.patch"
+            copy.write_bytes(MATRIX_PATCH.read_bytes() + b"\n")
+            with self.assertRaisesRegex(ValueError, "reviewed"):
+                preflight.load_matrix_patch(copy)
 
 
 class NixUpdaterTests(unittest.TestCase):
@@ -297,6 +485,10 @@ class NixUpdaterTests(unittest.TestCase):
         script = generated_updater()
         self.assertIn("hermes-update-preflight.py", script)
         self.assertIn("--plan-json", script)
+        patches = re.findall(r"--matrix-patch (\S+)", script)
+        self.assertEqual(len(patches), 2, "plan and verify must both pin the reviewed patch")
+        for path in patches:
+            self.assertEqual(Path(path.strip("'")).read_bytes(), MATRIX_PATCH.read_bytes())
         self.assertNotIn("update --yes --no-backup --keep-stash", script)
         self.assertNotIn("HEAD...origin/main", script)
         self.assertLess(script.index("--plan-json"), script.index("Hermes backend healthy"))

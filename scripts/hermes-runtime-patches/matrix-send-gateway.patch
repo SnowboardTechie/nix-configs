@@ -1,9 +1,9 @@
 diff --git a/gateway/matrix_send_forward.py b/gateway/matrix_send_forward.py
 new file mode 100644
-index 0000000000..8e8a29ae5a
+index 0000000000000000000000000000000000000000..07075cc03787ebe0405e7df7df1e902d64087196
 --- /dev/null
 +++ b/gateway/matrix_send_forward.py
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,200 @@
 +"""Hand ``hermes send`` Matrix messages to the running gateway's live adapter.
 +
 +A standalone process that connects its own Matrix adapter logs in as the gateway's device and opens the
@@ -12,7 +12,12 @@ index 0000000000..8e8a29ae5a
 +used and its room key can never be decrypted. There must be one Matrix sender per device: while a
 +gateway owns the home, the message goes to its live adapter over the gateway control socket, and when
 +the gateway is there but cannot be reached the send fails instead of opening a second connection.
-+With no gateway running, the caller keeps its ephemeral standalone connect.
++With no gateway running, or one that runs no Matrix, the caller keeps its ephemeral standalone connect.
++
++The gateway serving a home is the one whose control socket answers for it: the home's own, else the
++default multiplexer's for a named profile it serves (as ``hermes_cli.gateway_runtime`` discovers it).
++The request names the home, and the gateway sends with that profile's own adapter or answers that it
++does not serve it; the home's ``gateway.lock`` then decides between standalone and a refusal.
 +"""
 +
 +from __future__ import annotations
@@ -20,16 +25,21 @@ index 0000000000..8e8a29ae5a
 +import asyncio
 +import concurrent.futures
 +import json
++import logging
 +import os
 +import time
 +from pathlib import Path
 +from typing import Any, Callable, Optional
++
++logger = logging.getLogger(__name__)
 +
 +VERB = "matrix-send"
 +# Pi Durable (and cron) give a send ~60 s; stay inside that so the caller hears our answer first.
 +CLIENT_TIMEOUT = 50.0
 +_SERVER_WAIT = 45.0
 +_MAX_RESPONSE_BYTES = 512 * 1024
++# The verb's answers that are not a send result: the caller looks further, or stays standalone.
++_UNSERVED, _NO_MATRIX = "unserved", "no_matrix"
 +
 +
 +class _Unreachable(Exception):
@@ -53,6 +63,12 @@ index 0000000000..8e8a29ae5a
 +        "state. Check `hermes gateway status`, then retry.")}
 +
 +
++def _request(params: dict) -> bytes:
++    # Unescaped UTF-8: a 15,000-character Matrix chunk of CJK or emoji, \u-escaped, overruns the cap.
++    return json.dumps({"protocol": 1, "verb": VERB, "id": 1, "params": params},
++                      ensure_ascii=False).encode("utf-8") + b"\n"
++
++
 +def _exchange(home: Path, params: dict, timeout: float) -> dict:
 +    """One ``matrix-send`` request over the authenticated control socket; returns the verb's result."""
 +    from hermes_cli.gateway_runtime_discovery import DiscoveryError, connect_private
@@ -61,7 +77,7 @@ index 0000000000..8e8a29ae5a
 +        client = connect_private(home, min(timeout, 2.0))
 +    except (OSError, DiscoveryError) as exc:  # includes FileNotFoundError and connection refused
 +        raise _Unreachable(str(exc) or type(exc).__name__) from exc
-+    request = json.dumps({"protocol": 1, "verb": VERB, "id": 1, "params": params}).encode("utf-8") + b"\n"
++    request = _request(params)
 +    chunks: list[bytes] = []
 +    with client:
 +        try:
@@ -99,41 +115,82 @@ index 0000000000..8e8a29ae5a
 +
 +def forward_matrix_send(home: Path, chat_id: str, message: str, media_files, thread_id: Optional[str],
 +                        *, timeout: float = CLIENT_TIMEOUT) -> Optional[dict]:
-+    """Deliver through the gateway serving ``home``. ``None`` means no gateway is running (the caller
-+    stays standalone); otherwise the send result dict, which is an error dict when the gateway could
-+    not be reached or did not answer."""
++    """Deliver through the gateway serving ``home``. ``None`` means no gateway sends Matrix for it (the
++    caller stays standalone); otherwise the send result dict, which is an error dict when the gateway
++    could not be reached or did not answer."""
 +    if os.name == "nt":  # the verb rides the POSIX control socket; the Windows pipe client is not wired
 +        return None
-+    params = {"chat_id": chat_id, "message": message, "thread_id": thread_id,
++    from gateway.control_socket import _MAX_REQUEST_BYTES
++    from hermes_cli.gateway_runtime import gateway_profile_home
++    from hermes_cli.gateway_runtime_multiplex import multiplexer_root_for
++    home = gateway_profile_home(home)
++    params = {"home": str(home), "chat_id": chat_id, "message": message, "thread_id": thread_id,
 +              "media_files": [[str(path), bool(is_voice)] for path, is_voice in (media_files or [])]}
-+    try:
-+        return _exchange(home, params, timeout)
-+    except _Unreachable as exc:
-+        state = missing_owner_state(home)
-+        if state == "absent":
++    if len(_request(params)) > _MAX_REQUEST_BYTES:
++        return {"error": (f"Matrix send: the message is too large to hand to the gateway (over "
++                          f"{_MAX_REQUEST_BYTES} bytes); nothing was sent.")}
++    unreachable = []
++    for control_home in (home, multiplexer_root_for(home)):
++        if control_home is None:
++            continue
++        try:
++            result = _exchange(control_home, params, timeout)
++        except _Unreachable as exc:
++            unreachable.append(str(exc))
++            continue
++        except _NoAnswer as exc:
++            return {"error": (f"Matrix send: the gateway did not answer ({exc}); the message may have been "
++                              "delivered. Not retrying through a second Matrix connection.")}
++        if result.get(_NO_MATRIX) is True:
 +            return None
-+        return _refusal(f"its control socket is not reachable ({exc}; owner {state})")
-+    except _NoAnswer as exc:
-+        return {"error": (f"Matrix send: the gateway did not answer ({exc}); the message may have been "
-+                          "delivered. Not retrying through a second Matrix connection.")}
++        if result.get(_UNSERVED) is not True:
++            return result
++    state = missing_owner_state(home)
++    if state == "absent":
++        return None
++    why = "; ".join(unreachable) or "its gateway does not serve this profile"
++    return _refusal(f"its control socket is not reachable ({why}; owner {state})")
++
++
++def _served_profile(runner: Any, home: str) -> Optional[str]:
++    """The profile name this gateway serves ``home`` as, else None."""
++    from gateway.run_runtime import reserved_profile_homes
++    wanted = Path(home).resolve()
++    return next((name for name, served in reserved_profile_homes(runner) if served == wanted), None)
++
++
++def _matrix_pending(runner: Any, profile: str) -> bool:
++    """This gateway runs (or is bringing back) Matrix for ``profile`` though no adapter is live now."""
++    from gateway.config import Platform
++    if profile != (getattr(runner, "_primary_profile_name", None) or "default"):
++        return True  # a served secondary's platform state is not tracked here: never stand alone beside it
++    platform = runner.config.platforms.get(Platform.MATRIX)
++    return bool(getattr(platform, "enabled", False)) or Platform.MATRIX in runner._failed_platforms
 +
 +
 +def matrix_send_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callable[[dict, str], dict]:
-+    """Private control verb ``matrix-send``: send through this gateway's live Matrix adapter, on the
-+    gateway loop the adapter's queues belong to. Runs on the socket executor thread."""
++    """Private control verb ``matrix-send``: send through this gateway's live Matrix adapter for the
++    profile the request's home is, on the gateway loop the adapter's queues belong to. Runs on the
++    socket executor thread."""
 +
 +    def _handler(params: dict, peer_subject: str) -> dict:
-+        chat_id, message, thread_id = params.get("chat_id"), params.get("message"), params.get("thread_id")
-+        media = params.get("media_files", [])
-+        if (not isinstance(chat_id, str) or not chat_id or not isinstance(message, str)
++        home, chat_id, message = params.get("home"), params.get("chat_id"), params.get("message")
++        thread_id, media = params.get("thread_id"), params.get("media_files", [])
++        if (not isinstance(home, str) or not home or not isinstance(chat_id, str) or not chat_id
++                or not isinstance(message, str)
 +                or not (thread_id is None or isinstance(thread_id, str)) or not isinstance(media, list)
 +                or not all(isinstance(m, list) and len(m) == 2 and isinstance(m[0], str) for m in media)):
 +            return {"error": "Matrix send: invalid parameters"}
++        profile = _served_profile(runner, home)
++        if profile is None:
++            return {_UNSERVED: True}
 +        from gateway.config import Platform
-+        from tools.send_message_senders import _matrix_send_core, runner_adapter
-+        _, adapter = runner_adapter(runner, Platform.MATRIX)
++        from tools.send_message_senders import _matrix_send_core
++        adapter = runner._authorization_adapter(Platform.MATRIX, profile)
 +        if adapter is None:
-+            return {"error": "Matrix send: this gateway's Matrix adapter is not connected"}
++            if not _matrix_pending(runner, profile):
++                return {_NO_MATRIX: True}
++            return {"error": "Matrix send: this gateway's Matrix adapter is not connected right now; retry shortly"}
 +        future = asyncio.run_coroutine_threadsafe(
 +            _matrix_send_core(adapter, chat_id, message, [(path, bool(voice)) for path, voice in media],
 +                              {"thread_id": thread_id} if thread_id else None), loop)
@@ -142,12 +199,13 @@ index 0000000000..8e8a29ae5a
 +        except concurrent.futures.TimeoutError:
 +            return {"error": "Matrix send: the gateway's Matrix adapter did not finish in time; "
 +                             "the message may have been delivered"}
-+        except Exception as exc:
++        except Exception as exc:  # the caller gets the failure as its send result; the traceback stays here
++            logger.warning("Matrix send for another process failed", exc_info=True)
 +            return {"error": f"Matrix send failed: {exc}"}
 +
 +    return _handler
 diff --git a/gateway/run_bootstrap.py b/gateway/run_bootstrap.py
-index 0a682990e7..607cdcabb1 100644
+index 0a682990e7ffb6f3ec6e49c5a1b8c43f5caf3797..607cdcabb1abebe2703f98ac9083be9ced82738b 100644
 --- a/gateway/run_bootstrap.py
 +++ b/gateway/run_bootstrap.py
 @@ -364,6 +364,10 @@ async def _start_gateway_start_control_socket(runner):
@@ -163,10 +221,10 @@ index 0a682990e7..607cdcabb1 100644
          else:
 diff --git a/tests/gateway/test_matrix_send_forward.py b/tests/gateway/test_matrix_send_forward.py
 new file mode 100644
-index 0000000000..7538d8e658
+index 0000000000000000000000000000000000000000..4ab56573e60be1ff83ce3ae7a066c564951f50cb
 --- /dev/null
 +++ b/tests/gateway/test_matrix_send_forward.py
-@@ -0,0 +1,291 @@
+@@ -0,0 +1,406 @@
 +"""``hermes send`` to Matrix is delivered by the running gateway's live adapter (never a second
 +Matrix connection on the gateway's device and crypto store), and refuses when the gateway is up but
 +unreachable. With no gateway running the ephemeral standalone connect is unchanged."""
@@ -183,6 +241,7 @@ index 0000000000..7538d8e658
 +
 +import pytest
 +
++from gateway.authz_mixin import GatewayAuthorizationMixin
 +from gateway.config import Platform
 +from gateway.control_socket import GatewayControlServer
 +from gateway import matrix_send_forward as fwd
@@ -221,15 +280,29 @@ index 0000000000..7538d8e658
 +    shutil.rmtree(d.parent, ignore_errors=True)
 +
 +
-+class GatewayHarness:
-+    """A real control server on a real "gateway" loop thread, with a fake runner holding ``adapter``."""
++class FakeRunner(GatewayAuthorizationMixin):
++    """The runner surface the verb reads: the real authorization adapter rule over fake adapter maps."""
 +
-+    def __init__(self, home, adapter):
-+        self.home, self.adapter = home, adapter
++    def __init__(self, adapter=None, *, matrix_configured=True, failed=(), served=(), profile_adapters=None):
++        self.adapters = {Platform.MATRIX: adapter} if adapter else {}
++        self._profile_adapters = profile_adapters or {}
++        self._failed_platforms = {p: {} for p in failed}
++        self._primary_profile_name = "default"
++        self.config = SimpleNamespace(
++            platforms={Platform.MATRIX: SimpleNamespace(enabled=True)} if matrix_configured else {},
++            multiplex_profiles=bool(served), _runtime_profile_homes=list(served))
++
++
++class GatewayHarness:
++    """A real control server on a real "gateway" loop thread, serving ``home`` for ``runner``
++    (a ``FakeRunner``, or a bare adapter wrapped in one)."""
++
++    def __init__(self, home, runner):
++        self.home = home
 +        self.loop = asyncio.new_event_loop()
 +        self.ready = threading.Event()
 +        self.server = None
-+        self.runner = SimpleNamespace(adapters={Platform.MATRIX: adapter} if adapter else {})
++        self.runner = runner if isinstance(runner, FakeRunner) else FakeRunner(runner)
 +
 +    def __enter__(self):
 +        def run():
@@ -289,18 +362,84 @@ index 0000000000..7538d8e658
 +    assert result == {"error": "Matrix send failed: M_FORBIDDEN"}
 +
 +
-+def test_forward_reports_gateway_without_matrix_adapter(home):
-+    with GatewayHarness(home, None):
-+        result = fwd.forward_matrix_send(home, ROOM, "hello", [], None)
-+    assert "Matrix adapter" in result["error"] and "not connected" in result["error"]
++def test_gateway_whose_matrix_is_reconnecting_is_a_refusal(home):
++    """Matrix configured in the gateway but not connected right now: its adapter comes back on its own,
++    so a second connection would race it. Refuse; never stand alone."""
++    for runner in (FakeRunner(None), FakeRunner(None, matrix_configured=False, failed=[Platform.MATRIX])):
++        with GatewayHarness(home, runner):
++            result = fwd.forward_matrix_send(home, ROOM, "hello", [], None)
++        assert result is not None and "not connected" in result["error"]
++
++
++def test_gateway_that_runs_no_matrix_means_standalone(home):
++    """A gateway without Matrix holds no Matrix encryption state: the send stays standalone, as with
++    no gateway at all."""
++    with GatewayHarness(home, FakeRunner(None, matrix_configured=False)):
++        assert fwd.forward_matrix_send(home, ROOM, "hello", [], None) is None
++
++
++def test_long_non_ascii_chunk_is_delivered_not_dropped(home):
++    """A Matrix chunk may be 15,000 characters; ASCII-escaped CJK would overrun the control socket's
++    request cap, which the gateway drops without an answer."""
++    adapter = FakeAdapter()
++    body = "界" * 15_000
++    with GatewayHarness(home, adapter):
++        result = fwd.forward_matrix_send(home, ROOM, body, [], None)
++    assert result["success"] is True
++    assert adapter.calls == [("send", ROOM, body, None)]
++
++
++def test_request_over_the_socket_cap_is_refused_before_sending(home):
++    adapter = FakeAdapter()
++    with GatewayHarness(home, adapter):
++        result = fwd.forward_matrix_send(home, ROOM, "x" * 70_000, [], None)
++    assert result is not None and "too large" in result["error"]
++    assert "may have been delivered" not in result["error"]
++    assert adapter.calls == []
 +
 +
 +def test_forward_unconnected_gateway_never_reaches_adapter_for_bad_params(home):
 +    adapter = FakeAdapter()
 +    with GatewayHarness(home, adapter):
-+        result = fwd._exchange(home, {"chat_id": 5, "message": "x"}, 5.0)
-+    assert "invalid" in result["error"].lower()
++        for params in ({"chat_id": 5, "message": "x", "home": str(home)}, {"chat_id": ROOM, "message": "x"}):
++            result = fwd._exchange(home, params, 5.0)
++            assert "invalid" in result["error"].lower()
 +    assert adapter.calls == []
++
++
++# --- profiles: the gateway that serves the sender's home, and only through that profile's adapter ---
++
++def _profile_home(root, name="coder"):
++    profile = root / "profiles" / name
++    profile.mkdir(parents=True, mode=0o700)
++    (root / "profiles").chmod(0o700)
++    profile.chmod(0o700)
++    return profile
++
++
++def test_profile_served_by_multiplexer_sends_through_its_own_adapter(home):
++    coder = _profile_home(home)
++    default_adapter, coder_adapter = FakeAdapter(), FakeAdapter()
++    runner = FakeRunner(default_adapter, served=[("coder", coder)],
++                        profile_adapters={"coder": {Platform.MATRIX: coder_adapter}})
++    with GatewayHarness(home, runner):
++        result = fwd.forward_matrix_send(coder, ROOM, "hello", [], THREAD)
++    assert result["success"] is True
++    assert coder_adapter.calls == [("send", ROOM, "hello", {"thread_id": THREAD})]
++    assert default_adapter.calls == []
++
++
++def test_profile_the_running_gateway_does_not_serve_is_decided_by_its_own_lock(home):
++    """The default gateway does not serve ``coder``: never send with the default bot. No owner of
++    coder's home → standalone; an owner that cannot be reached → refusal."""
++    coder = _profile_home(home)
++    default_adapter = FakeAdapter()
++    with GatewayHarness(home, default_adapter):
++        assert fwd.forward_matrix_send(coder, ROOM, "hello", [], None) is None
++        with patch.object(fwd, "missing_owner_state", return_value="starting"):
++            refused = fwd.forward_matrix_send(coder, ROOM, "hello", [], None)
++    assert "second Matrix connection" in refused["error"]
++    assert default_adapter.calls == []
 +
 +
 +# --- gateway state -----------------------------------------------------------------------------
@@ -327,12 +466,11 @@ index 0000000000..7538d8e658
 +
 +
 +def test_gateway_timeout_says_it_may_have_been_delivered(home):
-+    class Slow(FakeAdapter):
++    class Hung(FakeAdapter):
 +        async def send(self, *a, **k):
-+            await asyncio.sleep(2)
-+            return await super().send(*a, **k)
++            await asyncio.Event().wait()  # never answers; the harness cancels it at teardown
 +
-+    with GatewayHarness(home, Slow()):
++    with GatewayHarness(home, Hung()):
 +        result = fwd.forward_matrix_send(home, ROOM, "hello", [], None, timeout=0.3)
 +    assert "may have been delivered" in result["error"]
 +
@@ -458,24 +596,46 @@ index 0000000000..7538d8e658
 +        code, payload = _hermes_send_json(f"matrix:{ROOM}", "notice body\n")
 +    assert code == 1
 +    assert "second Matrix connection" in payload["error"]
++
++
++# --- the verb's boundary and an older gateway --------------------------------------------------
++
++def test_verb_refuses_a_peer_the_socket_did_not_authenticate(home):
++    """Same gate as the gateway's other private verbs: no verified same-user peer, no send."""
++    adapter = FakeAdapter()
++    server = GatewayControlServer(home)
++    server.private_handlers[fwd.VERB] = fwd.matrix_send_verb(FakeRunner(adapter), asyncio.new_event_loop())
++    raw = json.dumps({"protocol": 1, "verb": fwd.VERB, "id": 1,
++                      "params": {"home": str(home), "chat_id": ROOM, "message": "x"}}).encode()
++    response = json.loads(server.handle_request_line(raw, None))
++    assert response["ok"] is False and "authenticated" in response["error"]
++    assert adapter.calls == []
++
++
++def test_gateway_without_the_verb_is_a_refusal_to_restart_it(home):
++    class OldGateway(GatewayHarness):
++        def __enter__(self):
++            def run():
++                asyncio.set_event_loop(self.loop)
++                self.server = GatewayControlServer(self.home)
++                self.loop.run_until_complete(self.server.start())
++                self.ready.set()
++                self.loop.run_forever()
++                self.loop.run_until_complete(self.server.stop())
++
++            self.thread = threading.Thread(target=run, daemon=True)
++            self.thread.start()
++            assert self.ready.wait(5)
++            return self
++
++    with OldGateway(home, FakeAdapter()):
++        result = fwd.forward_matrix_send(home, ROOM, "hello", [], None)
++    assert "restart the gateway" in result["error"] and "second Matrix connection" in result["error"]
 diff --git a/tools/send_message_senders.py b/tools/send_message_senders.py
-index e887fc492d..a92b2d3cf7 100644
+index e887fc492d8583b02dbc8042e5500c0faf4ee450..c1d029014af21b9d513f61d39ef157a44747954c 100644
 --- a/tools/send_message_senders.py
 +++ b/tools/send_message_senders.py
-@@ -327,6 +327,12 @@ def _live_adapter(platform, *, lookup_failed_warning=None):
-         runner = None
-     if runner is None:
-         return None, None
-+    return runner_adapter(runner, platform, lookup_failed_warning=lookup_failed_warning)
-+
-+
-+def runner_adapter(runner, platform, *, lookup_failed_warning=None):
-+    """``(runner, adapter)`` for a known gateway ``runner`` (the lookup half of ``_live_adapter``; the
-+    control-socket send verb has the runner it was registered with and must not rely on the global)."""
-     try:
-         resolve = getattr(runner, "_authorization_adapter", None)
-         if not callable(resolve):  # bare runner stubs without the authz mixin
-@@ -421,12 +427,22 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None,
+@@ -421,12 +421,22 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None,
      media_files = media_files or []
      metadata = {"thread_id": thread_id} if thread_id else None
      from gateway.config import Platform
