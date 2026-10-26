@@ -140,8 +140,11 @@
           };
           allowedDomains = lib.mkOption {
             type = lib.types.listOf lib.types.str;
-            # The application contract's starting allowlist. Unverified until
-            # the live sandbox gate passes with it.
+            # The application contract's allowlist. The last three
+            # (durable-pi-workspace#174) are read-only GitHub content hosts:
+            # raw files, Actions logs behind `gh run view --log`, and release
+            # downloads. The live sandbox gate re-attests the list after any
+            # change.
             default = [
               "github.com"
               "api.github.com"
@@ -150,6 +153,9 @@
               "registry.npmjs.org"
               "pypi.org"
               "files.pythonhosted.org"
+              "raw.githubusercontent.com"
+              "results-receiver.actions.githubusercontent.com"
+              "release-assets.githubusercontent.com"
             ];
             description = "Exact lowercase hostnames the VM may reach through the proxy; every other destination is refused.";
           };
