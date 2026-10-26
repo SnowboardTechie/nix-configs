@@ -1,9 +1,9 @@
 diff --git a/gateway/matrix_send_forward.py b/gateway/matrix_send_forward.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..07075cc03787ebe0405e7df7df1e902d64087196
+index 0000000000000000000000000000000000000000..e695acdd3bbd17d04ca465ffefecdbb1323fe66c
 --- /dev/null
 +++ b/gateway/matrix_send_forward.py
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,322 @@
 +"""Hand ``hermes send`` Matrix messages to the running gateway's live adapter.
 +
 +A standalone process that connects its own Matrix adapter logs in as the gateway's device and opens the
@@ -18,6 +18,9 @@ index 0000000000000000000000000000000000000000..07075cc03787ebe0405e7df7df1e902d
 +default multiplexer's for a named profile it serves (as ``hermes_cli.gateway_runtime`` discovers it).
 +The request names the home, and the gateway sends with that profile's own adapter or answers that it
 +does not serve it; the home's ``gateway.lock`` then decides between standalone and a refusal.
++
++``matrix-react`` and ``matrix-redact`` (``hermes send --react`` / ``--redact``) ride the same socket but
++never stand alone: with no gateway sending Matrix for the home they fail, and their caller retries.
 +"""
 +
 +from __future__ import annotations
@@ -27,6 +30,7 @@ index 0000000000000000000000000000000000000000..07075cc03787ebe0405e7df7df1e902d
 +import json
 +import logging
 +import os
++import re
 +import time
 +from pathlib import Path
 +from typing import Any, Callable, Optional
@@ -34,12 +38,20 @@ index 0000000000000000000000000000000000000000..07075cc03787ebe0405e7df7df1e902d
 +logger = logging.getLogger(__name__)
 +
 +VERB = "matrix-send"
++REACT_VERB, REDACT_VERB = "matrix-react", "matrix-redact"
 +# Pi Durable (and cron) give a send ~60 s; stay inside that so the caller hears our answer first.
 +CLIENT_TIMEOUT = 50.0
 +_SERVER_WAIT = 45.0
 +_MAX_RESPONSE_BYTES = 512 * 1024
 +# The verb's answers that are not a send result: the caller looks further, or stays standalone.
 +_UNSERVED, _NO_MATRIX = "unserved", "no_matrix"
++# Matrix room and event IDs as Pi Durable's notifier writes them: the sigil, then printable ASCII with no
++# space, within the spec's 255 bytes. Anything else is refused before it reaches the gateway.
++ROOM_ID = re.compile(r"![!-~]{1,254}")
++EVENT_ID = re.compile(r"\$[!-~]{1,254}")
++# The review ratings: the only reactions these verbs put on a message.
++RATING_REACTIONS = frozenset(("\U0001f44d", "\u2796", "\U0001f44e"))
++_MAX_REASON_CHARS = 256
 +
 +
 +class _Unreachable(Exception):
@@ -56,28 +68,29 @@ index 0000000000000000000000000000000000000000..07075cc03787ebe0405e7df7df1e902d
 +    return _state(home)
 +
 +
-+def _refusal(why: str) -> dict:
++def _refusal(why: str, action: str = "send") -> dict:
 +    return {"error": (
-+        f"Matrix send refused: a Hermes gateway owns this home but {why}. Not opening a second Matrix "
++        f"Matrix {action} refused: a Hermes gateway owns this home but {why}. Not opening a second Matrix "
 +        "connection on the gateway's device: it would desynchronize the gateway's end-to-end encryption "
 +        "state. Check `hermes gateway status`, then retry.")}
 +
 +
-+def _request(params: dict) -> bytes:
++def _request(params: dict, verb: str = VERB) -> bytes:
 +    # Unescaped UTF-8: a 15,000-character Matrix chunk of CJK or emoji, \u-escaped, overruns the cap.
-+    return json.dumps({"protocol": 1, "verb": VERB, "id": 1, "params": params},
++    return json.dumps({"protocol": 1, "verb": verb, "id": 1, "params": params},
 +                      ensure_ascii=False).encode("utf-8") + b"\n"
 +
 +
-+def _exchange(home: Path, params: dict, timeout: float) -> dict:
-+    """One ``matrix-send`` request over the authenticated control socket; returns the verb's result."""
++def _exchange(home: Path, params: dict, timeout: float, verb: str = VERB) -> dict:
++    """One ``verb`` request over the authenticated control socket; returns the verb's result."""
 +    from hermes_cli.gateway_runtime_discovery import DiscoveryError, connect_private
 +    deadline = time.monotonic() + timeout
 +    try:
 +        client = connect_private(home, min(timeout, 2.0))
 +    except (OSError, DiscoveryError) as exc:  # includes FileNotFoundError and connection refused
 +        raise _Unreachable(str(exc) or type(exc).__name__) from exc
-+    request = _request(params)
++    request = _request(params, verb)
++    action = verb.removeprefix("matrix-")
 +    chunks: list[bytes] = []
 +    with client:
 +        try:
@@ -107,10 +120,10 @@ index 0000000000000000000000000000000000000000..07075cc03787ebe0405e7df7df1e902d
 +    if response.get("ok") is not True:
 +        error = str(response.get("error") or "")
 +        if "unknown verb" in error:
-+            return _refusal("it predates the matrix-send control verb (restart the gateway to pick it up)")
-+        return {"error": f"Matrix send failed in the gateway: {error or 'unknown error'}"}
++            return _refusal(f"it predates the {verb} control verb (restart the gateway to pick it up)", action)
++        return {"error": f"Matrix {action} failed in the gateway: {error or 'unknown error'}"}
 +    result = response.get("result")
-+    return result if isinstance(result, dict) else {"error": "Matrix send failed: gateway sent an invalid result"}
++    return result if isinstance(result, dict) else {"error": f"Matrix {action} failed: gateway sent an invalid result"}
 +
 +
 +def forward_matrix_send(home: Path, chat_id: str, message: str, media_files, thread_id: Optional[str],
@@ -150,6 +163,55 @@ index 0000000000000000000000000000000000000000..07075cc03787ebe0405e7df7df1e902d
 +        return None
 +    why = "; ".join(unreachable) or "its gateway does not serve this profile"
 +    return _refusal(f"its control socket is not reachable ({why}; owner {state})")
++
++
++def matrix_action_params(room_id: str, event_id: str, *, emoji: Optional[str] = None,
++                         reason: Optional[str] = None) -> tuple[str, dict]:
++    """The verb and params of a react (``emoji`` given) or redact; ``ValueError`` names an invalid value."""
++    if not isinstance(room_id, str) or not ROOM_ID.fullmatch(room_id):
++        raise ValueError("not a Matrix room ID")
++    if not isinstance(event_id, str) or not EVENT_ID.fullmatch(event_id):
++        raise ValueError("not a Matrix event ID")
++    if emoji is not None:
++        if emoji not in RATING_REACTIONS:
++            raise ValueError("the reaction must be one of " + " ".join(sorted(RATING_REACTIONS)))
++        return REACT_VERB, {"room_id": room_id, "event_id": event_id, "emoji": emoji}
++    if not isinstance(reason, (str, type(None))) or len(reason or "") > _MAX_REASON_CHARS:
++        raise ValueError(f"the redaction reason must be text of at most {_MAX_REASON_CHARS} characters")
++    return REDACT_VERB, {"room_id": room_id, "event_id": event_id, "reason": reason or ""}
++
++
++def forward_matrix_action(home: Path, verb: str, params: dict, *, timeout: float = CLIENT_TIMEOUT) -> dict:
++    """React or redact through the gateway serving ``home`` (params from ``matrix_action_params``). Always a
++    result dict: there is no standalone path, so no gateway sending Matrix for the home is an error."""
++    action = verb.removeprefix("matrix-")
++    if os.name == "nt":
++        return {"error": f"Matrix {action}: needs the gateway control socket, which this platform lacks"}
++    from hermes_cli.gateway_runtime import gateway_profile_home
++    from hermes_cli.gateway_runtime_multiplex import multiplexer_root_for
++    home = gateway_profile_home(home)
++    params = {"home": str(home), **params}
++    unreachable = []
++    for control_home in (home, multiplexer_root_for(home)):
++        if control_home is None:
++            continue
++        try:
++            result = _exchange(control_home, params, timeout, verb)
++        except _Unreachable as exc:
++            unreachable.append(str(exc))
++            continue
++        except _NoAnswer as exc:
++            return {"error": f"Matrix {action}: the gateway did not answer ({exc}); it may have been applied"}
++        if result.get(_NO_MATRIX) is True:
++            return {"error": f"Matrix {action}: the Hermes gateway serving this home runs no Matrix"}
++        if result.get(_UNSERVED) is not True:
++            return result
++    state = missing_owner_state(home)
++    if state == "absent":
++        return {"error": (f"Matrix {action}: no Hermes gateway is running for this home, and only the gateway "
++                          "sends reactions and redactions. Start it, then retry.")}
++    why = "; ".join(unreachable) or "its gateway does not serve this profile"
++    return _refusal(f"its control socket is not reachable ({why}; owner {state})", action)
 +
 +
 +def _served_profile(runner: Any, home: str) -> Optional[str]:
@@ -204,27 +266,157 @@ index 0000000000000000000000000000000000000000..07075cc03787ebe0405e7df7df1e902d
 +            return {"error": f"Matrix send failed: {exc}"}
 +
 +    return _handler
++
++
++def _matrix_action_verb(runner: Any, loop: asyncio.AbstractEventLoop, verb: str, run) -> Callable[[dict, str], dict]:
++    """A react/redact control verb: validate, find the served profile's live adapter, and await
++    ``run(adapter, params)`` on the gateway loop. Runs on the socket executor thread."""
++    action = verb.removeprefix("matrix-")
++
++    def _handler(params: dict, peer_subject: str) -> dict:
++        home = params.get("home")
++        try:
++            if not isinstance(home, str) or not home:
++                raise ValueError("no home")
++            _, checked = matrix_action_params(params.get("room_id"), params.get("event_id"),
++                                              emoji=(params.get("emoji") or "") if verb == REACT_VERB else None,
++                                              reason=params.get("reason"))
++        except ValueError as exc:
++            return {"error": f"Matrix {action}: invalid parameters ({exc})"}
++        profile = _served_profile(runner, home)
++        if profile is None:
++            return {_UNSERVED: True}
++        from gateway.config import Platform
++        adapter = runner._authorization_adapter(Platform.MATRIX, profile)
++        if adapter is None:
++            if not _matrix_pending(runner, profile):
++                return {_NO_MATRIX: True}
++            return {"error": f"Matrix {action}: this gateway's Matrix adapter is not connected right now; retry shortly"}
++        future = asyncio.run_coroutine_threadsafe(run(adapter, checked), loop)
++        try:
++            return future.result(timeout=_SERVER_WAIT)
++        except concurrent.futures.TimeoutError:
++            return {"error": f"Matrix {action}: the gateway's Matrix adapter did not finish in time; "
++                             "it may have been applied"}
++        except Exception as exc:  # the caller gets the failure as its result; the traceback stays here
++            logger.warning("Matrix %s for another process failed", action, exc_info=True)
++            return {"error": f"Matrix {action} failed: {exc}"}
++
++    return _handler
++
++
++async def _react(adapter: Any, params: dict) -> dict:
++    room_id, event_id, emoji = params["room_id"], params["event_id"], params["emoji"]
++    reaction_id = await adapter._send_reaction(room_id, event_id, emoji)
++    if not reaction_id:
++        return {"error": "Matrix react failed: the homeserver did not accept the reaction"}
++    return {"success": True, "platform": "matrix", "chat_id": room_id, "message_id": str(reaction_id),
++            "reacted_to": event_id, "emoji": emoji}
++
++
++async def _redact(adapter: Any, params: dict) -> dict:
++    room_id, event_id = params["room_id"], params["event_id"]
++    if not await adapter.redact_message(room_id, event_id, params["reason"]):
++        return {"error": "Matrix redact failed: the homeserver did not accept the redaction"}
++    return {"success": True, "platform": "matrix", "chat_id": room_id, "redacted": event_id}
++
++
++def matrix_verbs(runner: Any, loop: asyncio.AbstractEventLoop) -> dict[str, Callable[[dict, str], dict]]:
++    """The gateway's private Matrix control verbs: send, react and redact through its live adapters."""
++    return {VERB: matrix_send_verb(runner, loop),
++            REACT_VERB: _matrix_action_verb(runner, loop, REACT_VERB, _react),
++            REDACT_VERB: _matrix_action_verb(runner, loop, REDACT_VERB, _redact)}
 diff --git a/gateway/run_bootstrap.py b/gateway/run_bootstrap.py
-index 0a682990e7ffb6f3ec6e49c5a1b8c43f5caf3797..607cdcabb1abebe2703f98ac9083be9ced82738b 100644
+index 0a682990e7ffb6f3ec6e49c5a1b8c43f5caf3797..546c272d77c7ba6797db9a1fbb14e036776398fe 100644
 --- a/gateway/run_bootstrap.py
 +++ b/gateway/run_bootstrap.py
 @@ -364,6 +364,10 @@ async def _start_gateway_start_control_socket(runner):
                             # live adapters' handlers (#87770); tools/prompt still wait for the next session.
                             "reload-plugins": reload_plugins_verb(runner, _main_loop)})
          _control_server.ticket_store = runner.session_ticket_store
-+        # `hermes send` to Matrix from another process rides this gateway's live adapter, never a second
-+        # Matrix connection on this device's crypto store.
-+        from gateway.matrix_send_forward import VERB as _MATRIX_SEND_VERB, matrix_send_verb
-+        _control_server.private_handlers[_MATRIX_SEND_VERB] = matrix_send_verb(runner, _main_loop)
++        # `hermes send` to Matrix from another process (a message, a reaction, a redaction) rides this
++        # gateway's live adapter, never a second Matrix connection on this device's crypto store.
++        from gateway.matrix_send_forward import matrix_verbs
++        _control_server.private_handlers.update(matrix_verbs(runner, _main_loop))
          if not await _control_server.start():
              _control_server = None
          else:
+diff --git a/hermes_cli/send_cmd.py b/hermes_cli/send_cmd.py
+index 80739e78d6ad8d8764e358307168c41d41135b4d..2242a9b63f62e6422a4236ec15d17da0c39a7af4 100644
+--- a/hermes_cli/send_cmd.py
++++ b/hermes_cli/send_cmd.py
+@@ -191,6 +191,34 @@ def _load_hermes_env() -> None:
+             target[key] = str(val)
+ 
+ 
++def _matrix_action(args: argparse.Namespace) -> int:
++    """``--react EVENT_ID EMOJI`` / ``--redact EVENT_ID [REASON]`` in a ``matrix:<room>`` target. Only a
++    running gateway sends these (``gateway.matrix_send_forward``); the result is a send-shaped JSON dict."""
++    react, redact = getattr(args, "react", None), getattr(args, "redact", None)
++    flag = "--react" if react is not None else "--redact"
++    if react is not None and redact is not None:
++        _fail("hermes send: --react and --redact cannot be combined.", _USAGE_EXIT)
++    if getattr(args, "file", None) or getattr(args, "subject", None) or getattr(args, "mentions", None):
++        _fail(f"hermes send: {flag} takes no --file, --subject or --mention.", _USAGE_EXIT)
++    platform, _, room = (getattr(args, "to", None) or "").strip().partition(":")
++    room = room.strip()
++    if platform.strip().lower() != "matrix" or ":$" in room:
++        _fail(f"hermes send: {flag} needs --to matrix:<room ID>, with no thread.", _USAGE_EXIT)
++    from gateway.matrix_send_forward import forward_matrix_action, matrix_action_params
++    from hermes_constants import get_hermes_home
++    text = getattr(args, "message", None)
++    try:
++        if react is not None:
++            verb, params = matrix_action_params(room, react, emoji=text or "")
++        else:
++            verb, params = matrix_action_params(room, redact, reason=text)
++    except ValueError as exc:
++        _fail(f"hermes send: {flag}: {exc}.", _USAGE_EXIT)
++    result = forward_matrix_action(get_hermes_home(), verb, params)
++    return _emit_result(json.dumps(result), json_mode=getattr(args, "json", False),
++                        quiet=getattr(args, "quiet", False))
++
++
+ def cmd_send(args: argparse.Namespace) -> None:
+     """Entry point wired into the top-level argparse dispatcher."""
+     _load_hermes_env()  # the downstream gateway config loader reads credentials from os.environ
+@@ -198,6 +226,8 @@ def cmd_send(args: argparse.Namespace) -> None:
+         # `hermes send --list telegram` lands "telegram" in the `message` positional.
+         exit_code = _list_targets(getattr(args, "message", None), json_mode=getattr(args, "json", False))
+         sys.exit(exit_code)
++    if getattr(args, "react", None) is not None or getattr(args, "redact", None) is not None:
++        sys.exit(_matrix_action(args))
+     target = (getattr(args, "to", None) or "").strip()
+     if not target:
+         _fail(
+@@ -255,6 +285,12 @@ _SEND_ARGUMENTS = (
+     (("--mention",), dict(dest="mentions", action="append", default=None, metavar="PHONE_OR_JID", help=(
+         "WhatsApp only: add a native participant mention. Repeat for multiple recipients; "
+         "bare phone numbers are normalized to JIDs. Include each matching @<number> near the start of the message text."))),
++    (("--react",), dict(metavar="EVENT_ID", default=None, help=(
++        "Matrix only: react to EVENT_ID in the --to room with the positional reaction (one of 👍 ➖ 👎), "
++        "through the running gateway. The result's message_id is the reaction's own event ID."))),
++    (("--redact",), dict(metavar="EVENT_ID", default=None, help=(
++        "Matrix only: redact EVENT_ID (such as an earlier reaction) in the --to room through the running "
++        "gateway; the optional positional is the reason."))),
+     (("-l", "--list"), dict(dest="list_targets", action="store_true", default=False,
+                             help="List available targets. Optional positional filter: `hermes send --list telegram`.")),
+     (("-q", "--quiet"), dict(action="store_true", default=False, help="Suppress stdout on success (exit code only).")),
+@@ -285,6 +321,8 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
+             "  hermes send --to slack:#eng --subject \"[CI]\" --file build.log\n"
+             "  hermes send --to whatsapp:GROUP@g.us --mention 15551234567 \"@15551234567 hello\"\n"
+             "  hermes send --to telegram \"MEDIA:./chart.png\"   # send a media attachment\n"
++            "  hermes send --to 'matrix:!room:example.org' --react '$event' 👍 --json\n"
++            "  hermes send --to 'matrix:!room:example.org' --redact '$reaction' --json\n"
+             "  hermes send --list                  # all platforms\n"
+             "  hermes send --list telegram         # filter by platform\n"
+             "\n"
 diff --git a/tests/gateway/test_matrix_send_forward.py b/tests/gateway/test_matrix_send_forward.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..4ab56573e60be1ff83ce3ae7a066c564951f50cb
+index 0000000000000000000000000000000000000000..a298db5e550c16577e2b0ea8912c5110c6da69df
 --- /dev/null
 +++ b/tests/gateway/test_matrix_send_forward.py
-@@ -0,0 +1,406 @@
+@@ -0,0 +1,672 @@
 +"""``hermes send`` to Matrix is delivered by the running gateway's live adapter (never a second
 +Matrix connection on the gateway's device and crypto store), and refuses when the gateway is up but
 +unreachable. With no gateway running the ephemeral standalone connect is unchanged."""
@@ -631,6 +823,272 @@ index 0000000000000000000000000000000000000000..4ab56573e60be1ff83ce3ae7a066c564
 +    with OldGateway(home, FakeAdapter()):
 +        result = fwd.forward_matrix_send(home, ROOM, "hello", [], None)
 +    assert "restart the gateway" in result["error"] and "second Matrix connection" in result["error"]
++
++
++# --- matrix-react / matrix-redact: the gateway is the only sender, with no standalone path -------
++
++TARGET = "$notice:example.com"
++REACTION = "$reaction:example.com"
++THUMBS_UP, NEUTRAL, THUMBS_DOWN = "\U0001f44d", "➖", "\U0001f44e"
++
++
++class FakeMatrixActions(FakeAdapter):
++    def __init__(self, reaction_id=REACTION, redacted=True, hang=False):
++        super().__init__()
++        self.reaction_id, self.redacted, self.hang = reaction_id, redacted, hang
++
++    async def _send_reaction(self, room_id, event_id, emoji):
++        self.calls.append(("react", room_id, event_id, emoji))
++        if self.hang:
++            await asyncio.Event().wait()  # never answers; the harness cancels it at teardown
++        return self.reaction_id
++
++    async def redact_message(self, room_id, event_id, reason=""):
++        self.calls.append(("redact", room_id, event_id, reason))
++        if self.hang:
++            await asyncio.Event().wait()
++        return self.redacted
++
++
++class ActionHarness(GatewayHarness):
++    """The gateway with every Matrix verb registered, as ``run_bootstrap`` registers them."""
++
++    def __enter__(self):
++        super().__enter__()
++        self.server.private_handlers.update(fwd.matrix_verbs(self.runner, self.loop))
++        return self
++
++
++def _react(home, emoji=THUMBS_UP, **kwargs):
++    return fwd.forward_matrix_action(home, *fwd.matrix_action_params(ROOM, TARGET, emoji=emoji), **kwargs)
++
++
++def _redact(home, **kwargs):
++    return fwd.forward_matrix_action(home, *fwd.matrix_action_params(ROOM, REACTION, reason="rating changed"),
++                                     **kwargs)
++
++
++ACTIONS = pytest.mark.parametrize("act", [_react, _redact], ids=["react", "redact"])
++
++
++def test_registered_verbs_are_send_react_and_redact():
++    assert set(fwd.matrix_verbs(FakeRunner(None), asyncio.new_event_loop())) == {
++        "matrix-send", "matrix-react", "matrix-redact"}
++
++
++@pytest.mark.parametrize("emoji", [THUMBS_UP, NEUTRAL, THUMBS_DOWN])
++def test_react_answers_with_the_reactions_own_event_id(home, emoji):
++    adapter = FakeMatrixActions()
++    with ActionHarness(home, adapter):
++        result = _react(home, emoji)
++    assert result == {"success": True, "platform": "matrix", "chat_id": ROOM, "message_id": REACTION,
++                      "reacted_to": TARGET, "emoji": emoji}
++    assert adapter.calls == [("react", ROOM, TARGET, emoji)]
++
++
++def test_redact_redacts_through_the_gateway_adapter(home):
++    adapter = FakeMatrixActions()
++    with ActionHarness(home, adapter):
++        result = _redact(home)
++    assert result == {"success": True, "platform": "matrix", "chat_id": ROOM, "redacted": REACTION}
++    assert adapter.calls == [("redact", ROOM, REACTION, "rating changed")]
++
++
++@pytest.mark.parametrize("act,adapter,error", [
++    (_react, FakeMatrixActions(reaction_id=None), "Matrix react failed: the homeserver did not accept the reaction"),
++    (_redact, FakeMatrixActions(redacted=False), "Matrix redact failed: the homeserver did not accept the redaction"),
++], ids=["react", "redact"])
++def test_adapter_failure_is_an_error_result(home, act, adapter, error):
++    with ActionHarness(home, adapter):
++        assert act(home) == {"error": error}
++
++
++@ACTIONS
++def test_no_gateway_is_an_error_never_standalone(home, act):
++    with _no_own_connection():
++        result = act(home)
++    assert "no Hermes gateway is running for this home" in result["error"]
++
++
++@ACTIONS
++@pytest.mark.parametrize("state", ["starting", "inaccessible"])
++def test_unreachable_gateway_is_a_refusal(home, act, state):
++    with patch.object(fwd, "missing_owner_state", return_value=state), _no_own_connection():
++        result = act(home)
++    assert "refused" in result["error"] and "control socket is not reachable" in result["error"]
++
++
++@ACTIONS
++def test_gateway_that_runs_no_matrix_is_an_error_not_standalone(home, act):
++    with ActionHarness(home, FakeRunner(None, matrix_configured=False)), _no_own_connection():
++        result = act(home)
++    assert "runs no Matrix" in result["error"]
++
++
++@ACTIONS
++def test_gateway_whose_matrix_is_reconnecting_is_an_error(home, act):
++    with ActionHarness(home, FakeRunner(None)):
++        result = act(home)
++    assert "not connected right now" in result["error"]
++
++
++@ACTIONS
++def test_profile_served_by_multiplexer_acts_through_its_own_adapter(home, act):
++    coder = _profile_home(home)
++    default_adapter, coder_adapter = FakeMatrixActions(), FakeMatrixActions()
++    runner = FakeRunner(default_adapter, served=[("coder", coder)],
++                        profile_adapters={"coder": {Platform.MATRIX: coder_adapter}})
++    with ActionHarness(home, runner):
++        result = act(coder)
++    assert result["success"] is True
++    assert len(coder_adapter.calls) == 1 and default_adapter.calls == []
++
++
++@ACTIONS
++def test_profile_the_running_gateway_does_not_serve_is_never_acted_on(home, act):
++    """The default gateway does not serve ``coder``: never react with the default bot, and with no
++    gateway of coder's own there is no one to send it."""
++    coder = _profile_home(home)
++    default_adapter = FakeMatrixActions()
++    with ActionHarness(home, default_adapter), _no_own_connection():
++        absent = act(coder)
++        with patch.object(fwd, "missing_owner_state", return_value="starting"):
++            refused = act(coder)
++    assert "no Hermes gateway is running for this home" in absent["error"]
++    assert "refused" in refused["error"] and "not reachable" in refused["error"]
++    assert default_adapter.calls == []
++
++
++@ACTIONS
++def test_gateway_timeout_says_it_may_have_been_applied(home, act):
++    with ActionHarness(home, FakeMatrixActions(hang=True)):
++        result = act(home, timeout=0.3)
++    assert "did not answer" in result["error"] and "may have been applied" in result["error"]
++
++
++@ACTIONS
++def test_gateway_without_the_action_verbs_is_a_refusal_to_restart_it(home, act):
++    with GatewayHarness(home, FakeMatrixActions()):  # registers matrix-send only, as #170's gateway did
++        result = act(home)
++    assert "restart the gateway" in result["error"]
++
++
++@pytest.mark.parametrize("room,event_id,kwargs", [
++    (ROOM, "notice:example.com", {"emoji": THUMBS_UP}),          # no sigil
++    (ROOM, "$not an id", {"emoji": THUMBS_UP}),                  # space
++    (ROOM, "$x\n", {"reason": None}),                            # control character
++    (ROOM, "$" + "a" * 255, {"reason": None}),                   # over 255 bytes
++    (ROOM, "$é:example.com", {"emoji": THUMBS_UP}),              # non-ASCII
++    ("room:example.com", TARGET, {"emoji": THUMBS_UP}),          # not a room ID
++    (ROOM, TARGET, {"emoji": "❤️"}),                   # not a rating
++    (ROOM, TARGET, {"emoji": THUMBS_UP + "️"}),             # a rating plus a selector
++    (ROOM, TARGET, {"emoji": ""}),
++    (ROOM, REACTION, {"reason": "x" * 257}),
++])
++def test_invalid_ids_emoji_and_reason_are_refused(room, event_id, kwargs):
++    with pytest.raises(ValueError):
++        fwd.matrix_action_params(room, event_id, **kwargs)
++
++
++@pytest.mark.parametrize("verb,params", [
++    ("matrix-react", {"room_id": ROOM, "event_id": TARGET, "emoji": "❤"}),
++    ("matrix-react", {"room_id": ROOM, "event_id": TARGET}),
++    ("matrix-react", {"room_id": ROOM, "event_id": "$a b", "emoji": THUMBS_UP}),
++    ("matrix-redact", {"room_id": ROOM, "event_id": "x"}),
++    ("matrix-redact", {"room_id": 5, "event_id": REACTION}),
++])
++def test_gateway_refuses_invalid_params_before_its_adapter(home, verb, params):
++    """The gateway checks too: a peer that skips the client's checks reaches no adapter."""
++    adapter = FakeMatrixActions()
++    with ActionHarness(home, adapter):
++        result = fwd._exchange(home, {"home": str(home), **params}, 5.0, verb)
++    assert "invalid parameters" in result["error"]
++    assert adapter.calls == []
++
++
++@pytest.mark.parametrize("verb", ["matrix-react", "matrix-redact"])
++def test_action_verbs_refuse_a_peer_the_socket_did_not_authenticate(home, verb):
++    adapter = FakeMatrixActions()
++    server = GatewayControlServer(home)
++    server.private_handlers.update(fwd.matrix_verbs(FakeRunner(adapter), asyncio.new_event_loop()))
++    raw = json.dumps({"protocol": 1, "verb": verb, "id": 1, "params": {
++        "home": str(home), "room_id": ROOM, "event_id": TARGET, "emoji": THUMBS_UP}}).encode()
++    response = json.loads(server.handle_request_line(raw, None))
++    assert response["ok"] is False and "authenticated" in response["error"]
++    assert adapter.calls == []
++
++
++# --- `hermes send --react` / `--redact`: argv as the Pi Durable mirror passes it, JSON on stdout ---
++
++def _hermes_send_argv(*argv):
++    import argparse
++    import io
++    from hermes_cli.send_cmd import register_send_subparser
++    parser = argparse.ArgumentParser(prog="hermes")
++    register_send_subparser(parser.add_subparsers())
++    args = parser.parse_args(["send", *argv])
++    out, err, code = io.StringIO(), io.StringIO(), None
++    with patch("sys.stdout", out), patch("sys.stderr", err), patch("hermes_cli.send_cmd._load_hermes_env"):
++        try:
++            args.func(args)
++        except SystemExit as exc:
++            code = exc.code
++    return code, out.getvalue(), err.getvalue()
++
++
++def test_hermes_send_react_prints_the_reaction_event_id(home):
++    adapter = FakeMatrixActions()
++    with ActionHarness(home, adapter), _no_own_connection():
++        code, out, _ = _hermes_send_argv("--to", f"matrix:{ROOM}", "--react", TARGET, THUMBS_DOWN, "--json")
++    assert code == 0
++    assert json.loads(out) == {"success": True, "platform": "matrix", "chat_id": ROOM, "message_id": REACTION,
++                               "reacted_to": TARGET, "emoji": THUMBS_DOWN}
++    assert adapter.calls == [("react", ROOM, TARGET, THUMBS_DOWN)]
++
++
++def test_hermes_send_redact_with_and_without_a_reason(home):
++    adapter = FakeMatrixActions()
++    with ActionHarness(home, adapter):
++        plain = _hermes_send_argv("--to", f"matrix:{ROOM}", "--redact", REACTION, "--json")
++        reasoned = _hermes_send_argv("--to", f"matrix:{ROOM}", "--redact", REACTION, "rating cleared", "--json")
++    for code, out, _ in (plain, reasoned):
++        assert code == 0
++        assert json.loads(out) == {"success": True, "platform": "matrix", "chat_id": ROOM, "redacted": REACTION}
++    assert adapter.calls == [("redact", ROOM, REACTION, ""), ("redact", ROOM, REACTION, "rating cleared")]
++
++
++@pytest.mark.parametrize("flag,value", [("--react", TARGET), ("--redact", REACTION)])
++def test_hermes_send_action_without_a_gateway_exits_1_with_json_error(home, flag, value):
++    extra = [THUMBS_UP] if flag == "--react" else []
++    with _no_own_connection():
++        code, out, _ = _hermes_send_argv("--to", f"matrix:{ROOM}", flag, value, *extra, "--json")
++    assert code == 1
++    assert "no Hermes gateway is running" in json.loads(out)["error"]
++
++
++def test_hermes_send_action_timeout_exits_1(home):
++    # The CLI passes no timeout of its own: shorten the forwarder's default (CLIENT_TIMEOUT) it uses.
++    with ActionHarness(home, FakeMatrixActions(hang=True)), \
++            patch.object(fwd.forward_matrix_action, "__kwdefaults__", {"timeout": 0.3}):
++        code, out, _ = _hermes_send_argv("--to", f"matrix:{ROOM}", "--react", TARGET, THUMBS_UP, "--json")
++    assert code == 1 and "may have been applied" in json.loads(out)["error"]
++
++
++@pytest.mark.parametrize("argv,why", [
++    (["--to", f"matrix:{ROOM}", "--react", "notice", THUMBS_UP], "not a Matrix event ID"),
++    (["--to", f"matrix:{ROOM}", "--react", TARGET, "❤"], "the reaction must be one of"),
++    (["--to", f"matrix:{ROOM}", "--react", TARGET], "the reaction must be one of"),
++    (["--to", f"matrix:{ROOM}", "--redact", "$a;rm -rf ~"], "not a Matrix event ID"),
++    (["--to", f"matrix:{ROOM}:{THREAD}", "--react", TARGET, THUMBS_UP], "with no thread"),
++    (["--to", "telegram:123", "--react", TARGET, THUMBS_UP], "needs --to matrix:"),
++    (["--to", f"matrix:{ROOM}", "--react", TARGET, THUMBS_UP, "--file", "-"], "takes no --file"),
++    (["--to", f"matrix:{ROOM}", "--react", TARGET, THUMBS_UP, "--redact", REACTION], "cannot be combined"),
++])
++def test_hermes_send_action_usage_errors_exit_2_before_any_gateway(home, argv, why):
++    with patch.object(fwd, "forward_matrix_action") as forward:
++        code, out, err = _hermes_send_argv(*argv, "--json")
++    assert code == 2 and why in err and out == ""
++    forward.assert_not_called()
 diff --git a/tools/send_message_senders.py b/tools/send_message_senders.py
 index e887fc492d8583b02dbc8042e5500c0faf4ee450..c1d029014af21b9d513f61d39ef157a44747954c 100644
 --- a/tools/send_message_senders.py

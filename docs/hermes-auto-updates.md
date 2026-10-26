@@ -20,10 +20,15 @@ optional:
 - the one-line classic `/status` approval query correction from `session_key`
   to `session_id`. Its producer, `/yolo`, must still use `self.session_id`. It is
   recorded in `dotfiles/hermes/runtime-patches/cli-status-session.*`.
-- the #170 matrix-send-through-gateway patch,
-  `scripts/hermes-runtime-patches/matrix-send-gateway.patch`, pinned by SHA-256.
-  Its two modified files and two new untracked files must equal HEAD plus that
-  patch exactly. How it is carried, first applied and retired is in
+- the Matrix-through-gateway patch,
+  `scripts/hermes-runtime-patches/matrix-send-gateway.patch` (#170's
+  `matrix-send` plus #191's `matrix-react` and `matrix-redact`), pinned by
+  SHA-256. Its three modified files and two new untracked files must equal HEAD
+  plus that patch exactly. Until the live checkout moves to it, the superseded
+  #170 patch alone (`matrix-send-gateway-170.patch`, also pinned) is admitted
+  the same way, so a nightly update between deploying this updater and the move
+  carries the old patch instead of refusing. The checkout must be exactly one
+  of the two. How the patch is carried, moved, first applied and retired is in
   [`modules/services/AGENTS.md`](../modules/services/AGENTS.md#hermes-local-runtime-patches).
 
 No other file, staged work, untracked file, mode change, extra hunk, or
@@ -45,7 +50,7 @@ without the old patch-dropping `--keep-stash` flag, and verifies:
 - HEAD is the exact preflighted channel target, not the moving main branch;
 - no new or unrelated source changes were introduced;
 - a required status correction remains effective, either locally or upstream;
-- a planned matrix-send patch is still exactly applied, or the target contains it;
+- a planned matrix-send patch, the same one of the two, is still exactly applied, or the target contains it;
 - the install stamp identifies the selected commit;
 - the backend serves the stamped version and any configured gateway is running.
 
