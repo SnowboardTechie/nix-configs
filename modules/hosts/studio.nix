@@ -21,7 +21,6 @@
       cli-tools
       activation
       personal-desktop
-      cinny
       # Service modules
       ollama
       open-webui

@@ -14,7 +14,6 @@
       git
       cli-tools
       activation
-      cinny
       # Service modules
       syncthing
     ];

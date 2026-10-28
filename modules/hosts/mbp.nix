@@ -16,7 +16,6 @@
       rust
       activation
       personal-desktop
-      cinny
       # Desktop features
       gaming
       # Service modules

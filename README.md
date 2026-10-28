@@ -57,14 +57,13 @@ Gnarbox is a GNOME gaming desktop with Tailscale, a Hermes Desktop/CLI client of
 
 ### Shared Configuration
 
-Managed hosts share common packages through feature modules on both Darwin and NixOS. All three Macs also include the Cinny Matrix desktop client, available in `/Applications/Nix Apps` after rebuilding.
+Managed hosts share common packages through feature modules on both Darwin and NixOS. The Macs no longer install a Matrix desktop client: Bryan uses the self-hosted Cinny web app at `https://cinny.snowboardtechie.com`, added to the Dock from Safari, because the packaged Cinny Desktop was slow to reconnect after sleep.
 
 Feature modules define both Darwin and NixOS aspects. Gnarbox is the published NixOS system output; other Linux machines use only the development flakes and manage their operating systems separately.
 
 - **CLI tools (both platforms):** [`modules/dev/cli-tools.nix`](modules/dev/cli-tools.nix)
 - **Git tools (both platforms):** [`modules/dev/git.nix`](modules/dev/git.nix)
 - **Editor tools (both platforms):** [`modules/dev/editors.nix`](modules/dev/editors.nix)
-- **Matrix desktop client:** [`modules/desktop/cinny.nix`](modules/desktop/cinny.nix)
 - **Personal desktop apps (MBP and Studio):** [`modules/desktop/personal-desktop.nix`](modules/desktop/personal-desktop.nix)
 - **Homebrew infrastructure:** [`modules/base/homebrew.nix`](modules/base/homebrew.nix) (onActivation settings, taps, darwin-only items)
 - **Font:** MesloLGS Nerd Font (see [`modules/base/fonts.nix`](modules/base/fonts.nix))
