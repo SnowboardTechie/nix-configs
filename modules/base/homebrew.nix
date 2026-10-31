@@ -17,6 +17,7 @@
 
       # Common Homebrew taps
       taps = [
+        "anomalyco/tap"
       ];
 
       # Darwin-only packages (no NixOS equivalent)
@@ -26,6 +27,7 @@
 
       # Common Homebrew casks (GUI applications)
       casks = [
+        "anomalyco/tap/hex" # Local voice dictation — anoma.ly/hex
         "font-meslo-lg-nerd-font"
         "obsidian"
         "yaak"
