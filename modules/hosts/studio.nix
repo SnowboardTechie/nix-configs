@@ -161,6 +161,18 @@
       page.tailscaleHttpsPort = 8790;
     };
 
+    # Shared Claude usage sampler (#236; the application's
+    # workspaces/sampler/OPERATIONS.md). Runs from the same deployment
+    # checkout and refuses to start until the coordinator has written
+    # ~/.config/pi-durable/sampler.json, whose page.port must be 8791.
+    services.pi-durable.sampler = {
+      enable = true;
+      port = 8791;
+      # Free tailnet HTTPS port (2026-11-01 Serve held 443, 8790, 9090, 9120,
+      # 10443, 11434, 12345 and 33000; nothing listened on 8791).
+      tailscaleHttpsPort = 8791;
+    };
+
     # oMLX trial server (docs/omlx-glm53-trial.md): an on-demand, loopback-only
     # second inference runtime for GLM-5.3-Flash with SSD expert offload.
     # Disabled until the reviewed runtime and checkpoint are approved,

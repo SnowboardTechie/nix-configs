@@ -79,7 +79,7 @@ PF_RULES = f'(builtins.head (builtins.filter (lib.hasSuffix "-pi-durable-sgg.pf"
 # Studio sets the commissioning inputs, so a scenario forces the ones it is about.
 ENABLED = (
     "{ enable = lib.mkForce true; proxy = { listenAddress = lib.mkForce null; allowedClients = lib.mkForce [ ]; }; "
-    "page.tailscaleHttpsPort = lib.mkForce null; }"
+    "page.tailscaleHttpsPort = lib.mkForce null; sampler.enable = lib.mkForce false; }"
 )
 PROXY = (
     '{ enable = lib.mkForce true; proxy = { listenAddress = lib.mkForce "192.168.128.1"; '
@@ -104,6 +104,8 @@ class StudioAsCommissioned(unittest.TestCase):
             self.assertNotIn("tinyproxy", item)
             self.assertNotIn("container", item)
         self.assertIn("8790 http://127.0.0.1:8790", s["activation"])
+        self.assertIn("pi-durable-sampler", s["agents"])
+        self.assertIn("8791 http://127.0.0.1:8791", s["activation"])
         proxy_config = studio("{ }", "builtins.readFile (builtins.elemAt config.launchd.user.agents.pi-durable-proxy.serviceConfig.ProgramArguments 3)")
         self.assertIn("Listen 192.168.128.1\n", proxy_config)
         self.assertIn("Allow 192.168.128.0/24\n", proxy_config)
@@ -258,6 +260,82 @@ class CommissionedWiring(unittest.TestCase):
         )
         self.assertIn("pi-durable-page-route.sh", activation)
         self.assertIn("8443 http://127.0.0.1:8790", activation)
+
+
+SAMPLER_ONLY = (
+    "{ enable = lib.mkForce false; sampler = { enable = lib.mkForce true; tailscaleHttpsPort = lib.mkForce null; }; }"
+)
+
+
+class Sampler(unittest.TestCase):
+    """The shared usage sampler: its own agent and route, independent of the SGG agent."""
+
+    def test_agent_runs_the_contract_command_without_secrets(self):
+        agent = studio(SAMPLER_ONLY, "config.launchd.user.agents.pi-durable-sampler.serviceConfig")
+        self.assertEqual(
+            [
+                "/opt/homebrew/bin/node",
+                f"{HOME}/.local/share/pi-durable/sgg-deployment/dist/workspaces/sampler/src/main.js",
+                "run",
+                "--config",
+                f"{HOME}/.config/pi-durable/sampler.json",
+            ],
+            agent["ProgramArguments"],
+        )
+        self.assertEqual({"HOME", "PATH"}, set(agent["EnvironmentVariables"]))
+        sgg = studio(ENABLED, "config.launchd.user.agents.pi-durable-sgg.serviceConfig.EnvironmentVariables")
+        self.assertEqual(sgg, agent["EnvironmentVariables"])
+        self.assertTrue(agent["RunAtLoad"])
+        self.assertTrue(agent["KeepAlive"])
+        self.assertEqual("/tmp/pi-durable-sampler.log", agent["StandardOutPath"])
+        self.assertEqual("/tmp/pi-durable-sampler.error.log", agent["StandardErrorPath"])
+
+    def test_runs_without_the_sgg_agent_and_routes_nothing_until_a_port_is_set(self):
+        s = studio(SAMPLER_ONLY, SUMMARY)
+        self.assertFalse(s["enable"])
+        self.assertEqual([], s["failed"])
+        self.assertEqual(["pi-durable-sampler"], [name for name in s["agents"] if "pi-durable" in name])
+        self.assertEqual([], [name for name in s["system"] if "pi-durable" in name])
+        self.assertNotIn("pi-durable-page-route", s["activation"])
+
+    def test_disabled_declares_nothing(self):
+        s = studio("{ sampler.enable = lib.mkForce false; }", SUMMARY)
+        self.assertEqual([], s["failed"])
+        self.assertNotIn("pi-durable-sampler", s["agents"])
+        self.assertNotIn("http://127.0.0.1:8791", s["activation"])
+        self.assertIn("8790 http://127.0.0.1:8790", s["activation"])
+
+    def test_route_goes_through_the_guard_on_its_own_port(self):
+        activation = studio(
+            "{ sampler = { enable = lib.mkForce true; port = lib.mkForce 8792; tailscaleHttpsPort = lib.mkForce 8444; }; }",
+            "config.system.activationScripts.extraActivation.text",
+        )
+        self.assertEqual(2, activation.count("pi-durable-page-route.sh"))
+        self.assertIn("8444 http://127.0.0.1:8792", activation)
+        self.assertIn("8790 http://127.0.0.1:8790", activation)
+
+    def test_refuses_the_sgg_page_ports_and_a_route_without_tailscale(self):
+        accepted, same_port, same_route = failures(
+            "{ }",
+            "{ sampler.port = lib.mkForce 8790; }",
+            "{ sampler.tailscaleHttpsPort = lib.mkForce 8790; }",
+        )
+        self.assertEqual([], accepted)
+        self.assertTrue(any("sampler.port" in m for m in same_port), same_port)
+        self.assertTrue(any("sampler.tailscaleHttpsPort" in m for m in same_route), same_route)
+        # Without the SGG agent, its ports are not the sampler's concern.
+        self.assertEqual([], failures("{ enable = lib.mkForce false; sampler.port = lib.mkForce 8790; }")[0])
+        failed = json.loads(nix("eval", "--json", "--impure", "--expr", f"""
+          let
+            studio = (builtins.getFlake "path:{REPO}").darwinConfigurations.studio;
+            inherit (studio.pkgs) lib;
+            config = (studio.extendModules {{ modules = [ {{
+              services.pi-durable = {{ enable = lib.mkForce false; sampler.tailscaleHttpsPort = lib.mkForce 8791; }};
+              services.tailscale.enable = lib.mkForce false;
+            }} ]; }}).config;
+          in {FAILED}
+        """))
+        self.assertTrue(any("sampler.tailscaleHttpsPort requires services.tailscale" in m for m in failed), failed)
 
 
 class PageRouteGuard(unittest.TestCase):

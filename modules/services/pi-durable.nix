@@ -1,5 +1,6 @@
 # Pi Durable SGG PR pre-review: the workspace's launchd agent, its egress
-# proxy and the standing page's Tailscale route.
+# proxy and the standing page's Tailscale route. Also the shared Claude usage
+# sampler (workspaces/sampler/OPERATIONS.md): its agent and its page's route.
 #
 # Application and runbook: ~/code/durable-pi-workspace
 # (workspaces/sgg/OPERATIONS.md). The service starts paused and holds every
@@ -82,6 +83,35 @@
         block return in quick on { ${lib.concatMapStringsSep " " (n: "bridge${toString n}") (lib.range 100 115)} } inet6 proto { tcp udp } from fe80::/10 to any
       '';
       pfLoader = [ "${pkgs.bash}/bin/bash" "${./pi-durable-pf.sh}" "/sbin/pfctl" pfAnchor "${pfRules}" "/var/run/pi-durable-pf.token" ];
+
+      # No secret: only what finds node, git, claude, hermes and container
+      # (Apple's installer puts it in /usr/local/bin).
+      agentEnvironment = {
+        HOME = home;
+        PATH = lib.concatStringsSep ":" [
+          "${home}/.local/bin"
+          "/run/current-system/sw/bin"
+          "${config.homebrew.prefix}/bin"
+          "/usr/local/bin"
+          "/usr/bin"
+          "/bin"
+          "/usr/sbin"
+          "/sbin"
+        ];
+      };
+
+      # Tailscale Serve route through the guard, which refuses a port that
+      # already serves anything else.
+      pageRoute = what: httpsPort: port: ''
+        # === pi-durable ${what} via Tailscale Serve ===
+        if ! ${pkgs.coreutils}/bin/timeout --foreground 30s \
+          /bin/bash ${./pi-durable-page-route.sh} \
+            ${config.services.tailscale.package}/bin/tailscale ${pkgs.jq}/bin/jq \
+            ${toString httpsPort} http://127.0.0.1:${toString port}; then
+          echo "Failed to route the Pi Durable ${what} through Tailscale Serve on port ${toString httpsPort}" >&2
+          exit 1
+        fi
+      '';
     in
     {
       options.services.pi-durable = {
@@ -160,124 +190,170 @@
             description = "Exact lowercase hostnames the VM may reach through the proxy; every other destination is refused.";
           };
         };
+
+        sampler = {
+          enable = lib.mkEnableOption ''
+            the shared Claude usage sampler: it reads each subscription's usage
+            on a schedule, serves the shared usage page and sends the weekly
+            message. It refuses to start without
+            ~/.config/pi-durable/sampler.json; see the application's
+            workspaces/sampler/OPERATIONS.md before enabling'';
+          port = lib.mkOption {
+            type = lib.types.port;
+            default = 8791;
+            description = "Loopback port of the sampler's page. Must equal `page.port` in sampler.json.";
+          };
+          tailscaleHttpsPort = lib.mkOption {
+            type = lib.types.nullOr lib.types.port;
+            default = null;
+            description = ''
+              Tailnet-only HTTPS port that Tailscale Serve forwards to the
+              sampler's page. Null: no route. Activation refuses a port that
+              already serves another route.
+            '';
+          };
+        };
       };
 
-      config = lib.mkIf cfg.enable (lib.mkMerge [
-        {
-          assertions = [
-            {
-              assertion = cfg.page.tailscaleHttpsPort == null || config.services.tailscale.enable;
-              message = "services.pi-durable.page.tailscaleHttpsPort requires services.tailscale";
-            }
-            {
-              assertion = lib.all (domain: builtins.match "[a-z0-9.-]+" domain != null) cfg.proxy.allowedDomains;
-              message = "services.pi-durable.proxy.allowedDomains takes exact lowercase hostnames, no wildcards";
-            }
-          ];
-
-          launchd.user.agents.pi-durable-sgg.serviceConfig = {
-            ProgramArguments = [
-              "${config.homebrew.prefix}/bin/node"
-              "${checkout}/dist/workspaces/sgg/src/main.js"
-              "run"
-              "--config"
-              "${home}/.config/pi-durable/sgg.json"
+      config = lib.mkMerge [
+        (lib.mkIf cfg.enable (lib.mkMerge [
+          {
+            assertions = [
+              {
+                assertion = cfg.page.tailscaleHttpsPort == null || config.services.tailscale.enable;
+                message = "services.pi-durable.page.tailscaleHttpsPort requires services.tailscale";
+              }
+              {
+                assertion = lib.all (domain: builtins.match "[a-z0-9.-]+" domain != null) cfg.proxy.allowedDomains;
+                message = "services.pi-durable.proxy.allowedDomains takes exact lowercase hostnames, no wildcards";
+              }
             ];
-            # No secret: only what finds node, git, claude, hermes and container
-            # (Apple's installer puts it in /usr/local/bin).
-            EnvironmentVariables = {
-              HOME = home;
-              PATH = lib.concatStringsSep ":" [
-                "${home}/.local/bin"
-                "/run/current-system/sw/bin"
-                "${config.homebrew.prefix}/bin"
-                "/usr/local/bin"
-                "/usr/bin"
-                "/bin"
-                "/usr/sbin"
-                "/sbin"
+
+            launchd.user.agents.pi-durable-sgg.serviceConfig = {
+              ProgramArguments = [
+                "${config.homebrew.prefix}/bin/node"
+                "${checkout}/dist/workspaces/sgg/src/main.js"
+                "run"
+                "--config"
+                "${home}/.config/pi-durable/sgg.json"
               ];
+              EnvironmentVariables = agentEnvironment;
+              RunAtLoad = true;
+              KeepAlive = true;
+              # SIGTERM stops reviews, the store and the page in order.
+              ExitTimeOut = 60;
+              StandardOutPath = "/tmp/pi-durable-sgg.log";
+              StandardErrorPath = "/tmp/pi-durable-sgg.error.log";
             };
-            RunAtLoad = true;
-            KeepAlive = true;
-            # SIGTERM stops reviews, the store and the page in order.
-            ExitTimeOut = 60;
-            StandardOutPath = "/tmp/pi-durable-sgg.log";
-            StandardErrorPath = "/tmp/pi-durable-sgg.error.log";
-          };
-        }
+          }
 
-        (lib.mkIf (cfg.proxy.listenAddress != null) {
-          assertions = [
-            {
-              assertion = isAddress cfg.proxy.listenAddress;
-              message = "services.pi-durable.proxy.listenAddress must be the internal network's gateway as one canonical IPv4 address, not a wildcard, name or anything else";
-            }
-            {
-              assertion = cfg.proxy.allowedClients != [ ] && lib.all isClient cfg.proxy.allowedClients;
-              message = "services.pi-durable.proxy.allowedClients must name the internal network's subnet as canonical IPv4 addresses or CIDR ranges with a /1 to /32 prefix";
-            }
-            {
-              assertion = cfg.proxy.ipv6Subnet != null && isIpv6Subnet cfg.proxy.ipv6Subnet;
-              message = "services.pi-durable.proxy.ipv6Subnet must name the internal network's IPv6 prefix (`container network inspect`: ipv6Subnet) in lowercase hex with a /1 to /128 prefix, so pf can confine the network";
-            }
-          ];
+          (lib.mkIf (cfg.proxy.listenAddress != null) {
+            assertions = [
+              {
+                assertion = isAddress cfg.proxy.listenAddress;
+                message = "services.pi-durable.proxy.listenAddress must be the internal network's gateway as one canonical IPv4 address, not a wildcard, name or anything else";
+              }
+              {
+                assertion = cfg.proxy.allowedClients != [ ] && lib.all isClient cfg.proxy.allowedClients;
+                message = "services.pi-durable.proxy.allowedClients must name the internal network's subnet as canonical IPv4 addresses or CIDR ranges with a /1 to /32 prefix";
+              }
+              {
+                assertion = cfg.proxy.ipv6Subnet != null && isIpv6Subnet cfg.proxy.ipv6Subnet;
+                message = "services.pi-durable.proxy.ipv6Subnet must name the internal network's IPv6 prefix (`container network inspect`: ipv6Subnet) in lowercase hex with a /1 to /128 prefix, so pf can confine the network";
+              }
+            ];
 
-          launchd.user.agents.pi-durable-proxy.serviceConfig = {
-            ProgramArguments = [ tinyproxy "-d" "-c" "${proxyConfig}" ];
-            RunAtLoad = true;
-            # Until the internal network exists, its gateway cannot be bound:
-            # tinyproxy exits and launchd retries.
-            KeepAlive = true;
-            StandardOutPath = "/tmp/pi-durable-proxy.log";
-            StandardErrorPath = "/tmp/pi-durable-proxy.error.log";
-          };
+            launchd.user.agents.pi-durable-proxy.serviceConfig = {
+              ProgramArguments = [ tinyproxy "-d" "-c" "${proxyConfig}" ];
+              RunAtLoad = true;
+              # Until the internal network exists, its gateway cannot be bound:
+              # tinyproxy exits and launchd retries.
+              KeepAlive = true;
+              StandardOutPath = "/tmp/pi-durable-proxy.log";
+              StandardErrorPath = "/tmp/pi-durable-proxy.error.log";
+            };
 
-          system.activationScripts.extraActivation.text = lib.mkAfter ''
-            # === pi-durable proxy firewall ===
-            /usr/libexec/ApplicationFirewall/socketfilterfw --add ${tinyproxy} >/dev/null 2>&1 || true
-            /usr/libexec/ApplicationFirewall/socketfilterfw --unblock ${tinyproxy} >/dev/null 2>&1 || true
-            # === pi-durable sandbox isolation (pf) ===
-            if ! ${lib.escapeShellArgs pfLoader}; then
-              echo "Failed to load the Pi Durable sandbox's pf anchor ${pfAnchor}" >&2
-              exit 1
-            fi
-          '';
+            system.activationScripts.extraActivation.text = lib.mkAfter ''
+              # === pi-durable proxy firewall ===
+              /usr/libexec/ApplicationFirewall/socketfilterfw --add ${tinyproxy} >/dev/null 2>&1 || true
+              /usr/libexec/ApplicationFirewall/socketfilterfw --unblock ${tinyproxy} >/dev/null 2>&1 || true
+              # === pi-durable sandbox isolation (pf) ===
+              if ! ${lib.escapeShellArgs pfLoader}; then
+                echo "Failed to load the Pi Durable sandbox's pf anchor ${pfAnchor}" >&2
+                exit 1
+              fi
+            '';
 
-          # pf rules do not survive a restart, and nix-darwin does not re-run
-          # activation at boot. Retried until the anchor is loaded and checked.
-          launchd.daemons.pi-durable-pf.serviceConfig = {
-            ProgramArguments = [
-              "/bin/sh"
-              "-c"
-              ''
-                while [ ! -x "$1" ]; do
-                  /bin/sleep 1
-                done
-                exec "$@"
-              ''
-              "wait-for-nix-store"
-            ] ++ pfLoader;
-            RunAtLoad = true;
-            KeepAlive.SuccessfulExit = false;
-            StandardOutPath = "/var/log/pi-durable-pf.log";
-            StandardErrorPath = "/var/log/pi-durable-pf.log";
-          };
-        })
+            # pf rules do not survive a restart, and nix-darwin does not re-run
+            # activation at boot. Retried until the anchor is loaded and checked.
+            launchd.daemons.pi-durable-pf.serviceConfig = {
+              ProgramArguments = [
+                "/bin/sh"
+                "-c"
+                ''
+                  while [ ! -x "$1" ]; do
+                    /bin/sleep 1
+                  done
+                  exec "$@"
+                ''
+                "wait-for-nix-store"
+              ] ++ pfLoader;
+              RunAtLoad = true;
+              KeepAlive.SuccessfulExit = false;
+              StandardOutPath = "/var/log/pi-durable-pf.log";
+              StandardErrorPath = "/var/log/pi-durable-pf.log";
+            };
+          })
 
-        (lib.mkIf (cfg.page.tailscaleHttpsPort != null) {
-          system.activationScripts.extraActivation.text = lib.mkAfter ''
-            # === pi-durable standing page via Tailscale Serve ===
-            if ! ${pkgs.coreutils}/bin/timeout --foreground 30s \
-              /bin/bash ${./pi-durable-page-route.sh} \
-                ${config.services.tailscale.package}/bin/tailscale ${pkgs.jq}/bin/jq \
-                ${toString cfg.page.tailscaleHttpsPort} http://127.0.0.1:${toString cfg.page.port}; then
-              echo "Failed to route the Pi Durable standing page through Tailscale Serve on port ${toString cfg.page.tailscaleHttpsPort}" >&2
-              exit 1
-            fi
-          '';
-        })
-      ]);
+          (lib.mkIf (cfg.page.tailscaleHttpsPort != null) {
+            system.activationScripts.extraActivation.text =
+              lib.mkAfter (pageRoute "standing page" cfg.page.tailscaleHttpsPort cfg.page.port);
+          })
+        ]))
+
+        # The sampler runs on its own: it reads the workspaces' state
+        # directories and its own config, and needs nothing above enabled.
+        (lib.mkIf cfg.sampler.enable (lib.mkMerge [
+          {
+            assertions = [
+              {
+                assertion = cfg.sampler.tailscaleHttpsPort == null || config.services.tailscale.enable;
+                message = "services.pi-durable.sampler.tailscaleHttpsPort requires services.tailscale";
+              }
+              {
+                assertion = !cfg.enable || cfg.sampler.port != cfg.page.port;
+                message = "services.pi-durable.sampler.port must differ from services.pi-durable.page.port";
+              }
+              {
+                assertion = !cfg.enable || cfg.sampler.tailscaleHttpsPort == null || cfg.sampler.tailscaleHttpsPort != cfg.page.tailscaleHttpsPort;
+                message = "services.pi-durable.sampler.tailscaleHttpsPort must differ from services.pi-durable.page.tailscaleHttpsPort";
+              }
+            ];
+
+            # Without sampler.json, `run` prints "<file>: does not exist" and
+            # exits 1; KeepAlive then retries it at launchd's throttle.
+            launchd.user.agents.pi-durable-sampler.serviceConfig = {
+              ProgramArguments = [
+                "${config.homebrew.prefix}/bin/node"
+                "${checkout}/dist/workspaces/sampler/src/main.js"
+                "run"
+                "--config"
+                "${home}/.config/pi-durable/sampler.json"
+              ];
+              EnvironmentVariables = agentEnvironment;
+              RunAtLoad = true;
+              KeepAlive = true;
+              StandardOutPath = "/tmp/pi-durable-sampler.log";
+              StandardErrorPath = "/tmp/pi-durable-sampler.error.log";
+            };
+          }
+
+          (lib.mkIf (cfg.sampler.tailscaleHttpsPort != null) {
+            system.activationScripts.extraActivation.text =
+              lib.mkAfter (pageRoute "usage sampler's page" cfg.sampler.tailscaleHttpsPort cfg.sampler.port);
+          })
+        ]))
+      ];
     };
 
   # NixOS stub per repository convention: the pilot runs on Studio only.
