@@ -25,7 +25,6 @@
         "rectangle-pro"
         "slack"
         "superwhisper"
-        "textream" # Meeting teleprompter under the camera — github.com/f/textream
         "vivaldi"
         "yubico-authenticator"
         "zoom"
