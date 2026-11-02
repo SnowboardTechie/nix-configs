@@ -123,6 +123,7 @@ re-pin). Fixed in `824b9ad`.
 | ollama | 11434 | `/opt/homebrew/bin/ollama` | Always-on | Flash attention, q8_0 KV cache. Re-pinned after brew upgrades by the shared `postActivation` block in `base/homebrew.nix`, not by a module-local restart. Studio forwards the loopback listener tailnet-only through Tailscale Serve. `OLLAMA_ORIGINS` stays at Ollama's localhost-only default: its clients call the API server-side, and `*` let any web page drive the unauthenticated API. |
 | open-webui | 8080 | uv tool venv `~/.local/bin/open-webui` | Always-on + daily updater | Installed via `uv tool install`. Updater has an import probe — refuses to kickstart a broken install. Binds `host` (default 127.0.0.1, passed as `serve --host` because `serve` ignores `HOST`); the Cloudflare Tunnel connector on the same host is its only client, so a loopback bind gets no firewall rule. |
 | monitoring | 9090, 9093, 9100, 33000 (Studio Grafana; module default 3000), 3100, 9095, 12345, 9115, UDP 1514 | prometheus, alertmanager, node_exporter, grafana, loki, alloy, blackbox_exporter | Always-on | Every listener binds 127.0.0.1 except Alloy's Unraid syslog receiver (UDP 0.0.0.0:1514, the only firewall rule). Loki and Alertmanager are unauthenticated and blackbox's `/probe` fetches any URL, so they are never published. With `tailscaleServe` (Studio), Grafana, Prometheus and the Alloy UI are published tailnet-only over HTTPS on their own port numbers; `tailscaleServe.hostName` sets Grafana's root URL, Prometheus's external URL and (in `hosts/studio.nix`) the Dashy links. 7 agents; SMTP via smtp2go; alertmanager + blackbox_exporter via nixpkgs derivations; alloy replaced promtail (EOL March 2026). Grafana's reusable default is 3000, but `hosts/studio.nix` overrides `services.monitoring.grafana.port = 33000` to keep port 3000 free for development servers; the launchd `GF_SERVER_HTTP_PORT`, the Prometheus scrape target, and `services.dashy.grafanaBaseUrl` all derive from that one option. Alerts: Prometheus → Alertmanager → email, plus a token-authenticated webhook when `alertWebhook` is set (Studio: Hermes → encrypted Matrix room). Listener exposure (with Open WebUI and Ollama) is tested by `python3 scripts/test_studio_listener_exposure.py`. |
+| fseventsd-watchdog | — | `scripts/fseventsd-watchdog.sh` (`/bin/sh`, `ps`, `pgrep`, `kill`) from a root LaunchDaemon (`org.nixos.fseventsd-watchdog`) | `StartInterval` (60 s) | **Studio, from 2026-11-02**, after fseventsd grew to 12 GB and a full core over 32 days of uptime and froze Claude Code (every new file watch waited on it). Each check writes fseventsd's memory and CPU to `/var/db/fseventsd-watchdog/metrics/fseventsd.prom` for node_exporter's textfile collector, and restarts fseventsd (SIGTERM, SIGKILL after 10 s; launchd relaunches it) once it stays over 2 GiB or 90% of a core for 15 checks in a row, at most once an hour (`cooldownSeconds`). Root because only root can signal fseventsd. State in `/var/db/fseventsd-watchdog/state` (0600); log `/var/log/fseventsd-watchdog.log`, one line per event. With the monitoring module it adds, through `extraAlertRules`, `extraDashboards` and `nodeExporter.textfileDirectories`: `FseventsdHighMemory` (> 1 GiB for 10m), `FseventsdHighCpu` (> 80% for 10m), `FseventsdRestartedByWatchdog` (every restart, with its reason), `FseventsdDown` (critical) and `FseventsdWatchdogSilent`, all delivered by email and to the Studio Alerts Matrix room, plus the "fseventsd" Grafana dashboard (uid `fseventsd`; its threshold lines follow the options). It cannot tell which app floods fseventsd; that needs root `fs_usage`. Rollback: `enable = false` and `update-system`; `/var/db/fseventsd-watchdog` stays. Tests: `python3 scripts/test_fseventsd_watchdog.py` (the script against stand-in `pgrep`/`ps`/`kill` and a fake clock, never the real fseventsd; Studio's daemon, node_exporter and Grafana wiring; `promtool` checks of the metrics and `promtool test rules` for each alert). |
 | syncthing | 8384, 22000 | `/opt/homebrew/bin/syncthing` | Always-on | NixOS uses native module directly |
 | smb-mount | — | mount_smbfs | Event-driven (WatchPaths) | Soft mount, no polling |
 | icloud-backup | — | /usr/bin/rsync | Calendar (2:00 AM) | Excludes .stversions/.syncthing* |
@@ -145,6 +146,7 @@ services.syncthing.enable = true;
 
 Only **studio** enables the full stack (ollama, open-webui, monitoring, smb-mount, icloud-backup).
 Only **studio** enables **summit-point-gallery** (loopback-only concept preview behind the existing Cloudflare Tunnel).
+Only **studio** enables **fseventsd-watchdog** (2026-11-02). It works without the monitoring module too (metrics and restarts, no alerts or dashboard), so another Mac can enable it alone.
 **studio** enables **pi-durable** for commissioning (2026-10-16): proxy on the `pi-durable-sgg` internal network (`192.168.128.1`, `192.168.128.0/24`, `fd85:1c07:74fb:2dc7::/64`), pf confining that network to the proxy, page on tailnet HTTPS 8790. The service starts paused; its own gates decide what runs. It also enables the **pi-durable sampler** (#236): loopback page 8791, routed on tailnet HTTPS 8791.
 **studio** imports **omlx** with explicit trial settings and leaves it disabled until the reviewed runtime and checkpoint are approved, installed and verified. No other host imports it.
 Hindsight is retired: no service module or host enables it. Preserve its inactive data and encrypted backups; do not recreate third-party memory integrations. Agents use harness-native memory/history and established vaults.
@@ -271,6 +273,17 @@ Alertmanager retry.
 Alert rules live in Prometheus (`monitoring.nix`) as declarative PromQL under
 version control. Alertmanager handles delivery via a simple declarative
 receiver config.
+
+**Feature modules extend monitoring** without editing `monitoring.nix`:
+`services.monitoring.extraAlertRules` (appended to the service-health group and
+delivered like every other rule), `services.monitoring.extraDashboards`
+(`name.json` → file, provisioned beside the built-in dashboards; built-in names
+are refused) and `services.monitoring.nodeExporter.textfileDirectories` (each
+becomes a `--collector.textfile.directory`). A module that may land on a host
+without monitoring sets them under `lib.optionalAttrs (options.services ?
+monitoring)`, as `fseventsd-watchdog.nix` does. Note that `HighCpuUsage`
+averages all cores, so one process pinning a single core (about 4% of Studio)
+never trips it; a per-process signal needs its own exporter and rule.
 
 Grafana is kept as pure visualization — it gets Alertmanager added as a
 datasource so you can view alert state in its UI, but notifications go

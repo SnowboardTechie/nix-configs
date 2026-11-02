@@ -1,8 +1,8 @@
 # Host configuration: studio (Home Server and Personal Desktop Mac)
 #
 # Features: fonts, nix-settings, zsh, homebrew, editors, git, cli-tools, personal desktop
-# Services: Hermes (with a nightly NAS backup), ollama, open-webui, monitoring, smb-mount,
-# syncthing, iCloud backup
+# Services: Hermes (with a nightly NAS backup), ollama, open-webui, monitoring, fseventsd
+# watchdog, smb-mount, syncthing, iCloud backup
 # (Pi Durable SGG pre-review enabled for commissioning 2026-10-16; now commissioned.)
 # (oMLX imported for an isolated GLM-5.3-Flash trial; disabled until commissioning.)
 # (Obsidian Headless Sync and the vault Git backup were retired 2026-09-16. Since 2026-10-31
@@ -27,6 +27,7 @@
       ollama
       open-webui
       monitoring
+      fseventsd-watchdog
       smb-mount
       syncthing
       icloud-backup
@@ -261,6 +262,14 @@
         }];
       }
     ];
+
+    # fseventsd grew to 12 GB and a full core over 32 days of uptime
+    # (2026-11-02), freezing Claude Code and other file watchers. The watchdog
+    # exports its memory and CPU, alerts through the pipeline above (email and
+    # the Studio Alerts Matrix room), adds an "fseventsd" Grafana dashboard and
+    # restarts it after 15 minutes over a limit, at most hourly. Defaults: restart
+    # above 2 GiB or 90% of a core, warn above 1 GiB or 80%.
+    services.fseventsd-watchdog.enable = true;
 
     # === Host-specific Homebrew Configuration ===
 

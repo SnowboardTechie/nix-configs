@@ -150,7 +150,7 @@
             summary = "Alert notifications via {{ $labels.integration }} are failing";
             description = "Alertmanager gave up on at least one {{ $labels.integration }} notification in the last 15 minutes; see /tmp/alertmanager.log.";
           };
-        };
+        } ++ cfg.extraAlertRules;
       }];
     });
 
@@ -223,13 +223,17 @@
     }));
 
     # Grafana dashboard JSON directory (separate to avoid circular ref)
-    dashboardJsonDir = pkgs.runCommand "grafana-dashboards" {} ''
+    # Feature modules add theirs through extraDashboards.
+    dashboardJsonDir = pkgs.runCommand "grafana-dashboards" {} (''
       mkdir -p $out
       cp ${./grafana/dashboards/node-exporter-macos.json} $out/node-exporter-macos.json
       cp ${./grafana/dashboards/service-health.json} $out/service-health.json
       cp ${./grafana/dashboards/unraid.json} $out/unraid.json
       cp ${./grafana/dashboards/studio-logs.json} $out/studio-logs.json
-    '';
+    '' + lib.concatStrings (lib.mapAttrsToList (name: path: ''
+      cp ${path} $out/${name}
+    '') cfg.extraDashboards));
+    builtinDashboards = [ "node-exporter-macos.json" "service-health.json" "unraid.json" "studio-logs.json" ];
 
     # Grafana datasource config (Prometheus + Loki + Alertmanager when alerting is on)
     datasourceConfig = pkgs.writeText "datasources.yml" (builtins.toJSON {
@@ -554,6 +558,38 @@
           default = 9100;
           description = "Port for node_exporter metrics endpoint";
         };
+
+        textfileDirectories = lib.mkOption {
+          type = lib.types.listOf (lib.types.strMatching "/[^[:space:]]+");
+          default = [ ];
+          example = [ "/var/db/fseventsd-watchdog/metrics" ];
+          description = ''
+            Directories node_exporter's textfile collector reads `*.prom` files
+            from. Feature modules that export their own metrics add theirs
+            (fseventsd-watchdog does).
+          '';
+        };
+      };
+
+      extraAlertRules = lib.mkOption {
+        type = lib.types.listOf lib.types.attrs;
+        default = [ ];
+        description = ''
+          Additional Prometheus alerting rules, appended to the service-health
+          group. They are delivered like every other rule (email, plus the
+          webhook when alertWebhook is set). Feature modules add their own
+          (fseventsd-watchdog does).
+        '';
+      };
+
+      extraDashboards = lib.mkOption {
+        type = lib.types.attrsOf lib.types.path;
+        default = { };
+        example = lib.literalExpression ''{ "fseventsd.json" = ./fseventsd.json; }'';
+        description = ''
+          Additional Grafana dashboards by file name, provisioned beside the
+          built-in ones. Feature modules add their own (fseventsd-watchdog does).
+        '';
       };
 
       loki = {
@@ -642,6 +678,12 @@
           assertion = !tailscaleServeEnabled
             || (config.services.tailscale.enable && cfg.tailscaleServe.hostName != null);
           message = "services.monitoring.tailscaleServe requires services.tailscale and services.monitoring.tailscaleServe.hostName";
+        }
+        {
+          assertion = lib.all
+            (name: builtins.match "[a-z0-9-]+\\.json" name != null && !(lib.elem name builtinDashboards))
+            (lib.attrNames cfg.extraDashboards);
+          message = "services.monitoring.extraDashboards names must look like `name.json` (lowercase letters, digits, dashes) and must not replace a built-in dashboard.";
         }
       ];
 
@@ -760,7 +802,7 @@
             "/opt/homebrew/opt/node_exporter/bin/node_exporter"
             "--web.listen-address=127.0.0.1:${toString cfg.nodeExporter.port}"
             "--no-collector.thermal"
-          ];
+          ] ++ map (dir: "--collector.textfile.directory=${dir}") cfg.nodeExporter.textfileDirectories;
           RunAtLoad = true;
           KeepAlive = true;
           StandardOutPath = "/tmp/node_exporter.log";
