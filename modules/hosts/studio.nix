@@ -1,7 +1,8 @@
 # Host configuration: studio (Home Server and Personal Desktop Mac)
 #
 # Features: fonts, nix-settings, zsh, homebrew, editors, git, cli-tools, personal desktop
-# Services: Hermes, ollama, open-webui, monitoring, smb-mount, syncthing, iCloud backup
+# Services: Hermes (with a nightly NAS backup), ollama, open-webui, monitoring, smb-mount,
+# syncthing, iCloud backup
 # (Pi Durable SGG pre-review enabled for commissioning 2026-10-16; now commissioned.)
 # (oMLX imported for an isolated GLM-5.3-Flash trial; disabled until commissioning.)
 # (Obsidian Headless Sync and the vault Git backup were retired 2026-09-16. Since 2026-10-31
@@ -30,6 +31,7 @@
       syncthing
       icloud-backup
       hermes
+      hermes-nas-backup
       dashy
       summit-point-gallery
       pi-durable
@@ -118,6 +120,24 @@
             proxyPort = 9121;
           };
         };
+      };
+    };
+
+    # Nightly copy of Bryan's Hermes state (state.db, memories, cron jobs, skills,
+    # redacted config) to his NAS share, an hour before the 04:00 Hermes update.
+    # Nix doesn't mount this share (smb-mount handles only the media share); an
+    # unmounted share fails the run with a Matrix alert instead of writing to
+    # the local disk.
+    services.hermes-nas-backup = {
+      enable = true;
+      mountPoint = "/Volumes/Bryan";
+      destDir = "/Volumes/Bryan/Backups/hermes";
+      keep = 7;
+      hour = 3;
+      notifications = {
+        enable = true;
+        target = "matrix";
+        mention = "@bryan:snowboardtechie.com";
       };
     };
 
