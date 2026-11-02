@@ -26,11 +26,11 @@
       runtimePython =
         if cfg.runtimePython != null then cfg.runtimePython else "${runtimeVenv}/bin/python";
       upstreamDesktop = inputs.hermes-agent.packages.${system}.desktop;
-      # Reviewed Matrix-through-gateway runtime patches the updater may carry (exact bytes pinned by
-      # the preflight): #191's, and #170's until the live checkout moves to #191's.
-      matrixPatchArgs = lib.concatMapStringsSep " " (patch: "--matrix-patch ${patch}") [
-        ../../scripts/hermes-runtime-patches/matrix-send-gateway.patch
-        ../../scripts/hermes-runtime-patches/matrix-send-gateway-170.patch
+      # Reviewed runtime patches the updater may carry (exact bytes pinned by the preflight):
+      # Matrix-through-gateway (#191) and the Rex program-status report.
+      runtimePatchArgs = lib.concatStringsSep " " [
+        "--matrix-patch ${../../scripts/hermes-runtime-patches/matrix-send-gateway.patch}"
+        "--rex-patch ${../../scripts/hermes-runtime-patches/rex-program-status.patch}"
       ];
       headlessInstanceModule =
         { name
@@ -386,14 +386,14 @@
           fi
 
           # The channel, not the current branch name, owns the update target.
-          # The helper admits detached releases and only the reviewed /status
-          # and Matrix-through-gateway patches, and predicts their stash merge before
-          # any service downtime.
+          # The helper admits detached releases and only the reviewed /status,
+          # Matrix-through-gateway and Rex program-status patches, and predicts
+          # their stash merge before any service downtime.
           as_user ${lib.escapeShellArg updaterRuntimePython} -m hermes_cli.main update --check
           update_plan=$(as_user ${lib.escapeShellArg updaterRuntimePython} \
             ${../../scripts/hermes-update-preflight.py} plan \
             --root ${lib.escapeShellArg installDirectory} \
-            ${matrixPatchArgs} \
+            ${runtimePatchArgs} \
             --config "$HERMES_HOME/config.yaml")
           if [ -z "$update_plan" ]; then
             exit 0
@@ -438,7 +438,7 @@
           as_user ${lib.escapeShellArg updaterRuntimePython} -m hermes_cli.main update --yes --no-backup
           as_user ${lib.escapeShellArg updaterRuntimePython} \
             ${../../scripts/hermes-update-preflight.py} verify \
-            --root ${lib.escapeShellArg installDirectory} ${matrixPatchArgs} \
+            --root ${lib.escapeShellArg installDirectory} ${runtimePatchArgs} \
             --plan-json "$update_plan"
 
           ${lib.optionalString (supervisedServiceLabel != null) ''

@@ -735,10 +735,12 @@
         fi
       '');
 
-      # Prometheus must run in launchd's system domain to retain LAN access on
-      # modern macOS. Bare binaries in per-user LaunchAgents are subject to
-      # Local Network Privacy and silently fail with EHOSTUNREACH after their
-      # Nix store identity changes. UserName preserves ownership of the TSDB.
+      # Prometheus runs in launchd's system domain; UserName preserves ownership
+      # of the TSDB. The system domain does not exempt it from Local Network
+      # Privacy: macOS records one grant per Nix store path, so a new
+      # prometheus build fails LAN scrapes with an instant EHOSTUNREACH until
+      # it is allowed under Privacy & Security > Local Network (seen
+      # 2026-11-02, 3.15.0 -> 3.15.1).
       launchd.daemons.prometheus = {
         serviceConfig = {
           UserName = config.system.primaryUser;
@@ -841,8 +843,8 @@
         };
       };
 
-      # Like Prometheus, blackbox_exporter needs the system launchd domain for
-      # stable Local Network Privacy treatment across Nix store path changes.
+      # Like Prometheus, blackbox_exporter runs in the system launchd domain and
+      # still needs a Local Network grant for each new Nix store path.
       launchd.daemons.blackbox-exporter = {
         serviceConfig = {
           UserName = config.system.primaryUser;

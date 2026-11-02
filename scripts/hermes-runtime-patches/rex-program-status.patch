@@ -1,0 +1,121 @@
+diff --git a/hermes_cli/cli_chat_turn_mixin.py b/hermes_cli/cli_chat_turn_mixin.py
+index 94d49d3553..11f7abe046 100644
+--- a/hermes_cli/cli_chat_turn_mixin.py
++++ b/hermes_cli/cli_chat_turn_mixin.py
+@@ -21,6 +21,7 @@ from typing import Optional
+ from agent.i18n import t
+ 
+ from hermes_cli.cli_agent_setup_mixin import _retire_agent
++from hermes_cli.terminal_notify import rex_report, rex_sync, rex_turn_end
+ 
+ 
+ class CLIChatTurnMixin:
+@@ -122,6 +123,7 @@ class CLIChatTurnMixin:
+                 self._prompt_duration = 0.0
+                 # Daemon: closing the terminal tab (SIGHUP) must not be kept alive by it.
+                 agent_thread = threading.Thread(target=self._chat_run_agent, args=(turn, message), daemon=True)
++                rex_report(self, "working")
+                 agent_thread.start()
+                 interrupt_msg = self._chat_monitor_agent_thread(turn, agent_thread)
+                 self._chat_settle_turn(turn)
+@@ -131,6 +133,7 @@ class CLIChatTurnMixin:
+                 return None
+             finally:
+                 self._chat_release_turn_audio(turn)
++                rex_turn_end(self)
+ 
+     def _chat_release_turn_audio(self, turn):
+         """Every exit path: stop the thinking sound, send the TTS sentinel, cut TTS only if abnormal."""
+@@ -405,6 +408,7 @@ class CLIChatTurnMixin:
+             try:
+                 interrupt_msg = self._interrupt_queue.get(timeout=0.1)
+             except queue.Empty:
++                rex_sync(self)
+                 # Flush the StdoutProxy buffer: it otherwise only flushes on input-triggered
+                 # renderer passes, so on macOS the CLI looks frozen until the user types.
+                 # Force prompt_toolkit to flush any pending stdout output from the agent thread. (#1624)
+diff --git a/hermes_cli/terminal_notify.py b/hermes_cli/terminal_notify.py
+index db57eae7c8..d42ec9f3f5 100644
+--- a/hermes_cli/terminal_notify.py
++++ b/hermes_cli/terminal_notify.py
+@@ -2,7 +2,9 @@
+ 
+ OSC 9 (``ESC ] 9 ; <body> BEL``): Ghostty, iTerm2, Kitty and WezTerm raise an OS notification;
+ others drop it. OSC 777 (``ESC ] 777 ; notify ; warp://cli-agent ; <json> BEL``): Warp's
+-structured CLI-agent protocol (tab status + notification mailbox).
++structured CLI-agent protocol (tab status + notification mailbox). OSC 7501
++(``ESC ] 7501 ; state=<state>:app=hermes[:kind=<kind>] ESC \\``): Rex's Program Status Protocol, the
++working / blocked / done / error state Rex shows as tab activity and alerts.
+ 
+ Inside the running CLI, ``HermesCLI._ring_bell`` sends ``notification_sequence()`` through the
+ prompt_toolkit output on the app loop (a second writer on the tty would splice into an in-flight kitty
+@@ -67,6 +69,69 @@ def warp_osc777(event: str, detail: str, session_id: str = "") -> str:
+     return f"\x1b]777;notify;warp://cli-agent;{json.dumps(payload, separators=(',', ':'))}\x07"
+ 
+ 
++_REX_STATES = frozenset({"idle", "working", "done", "blocked", "error"})
++_REX_KINDS = frozenset({"permission", "question", "auth"})
++
++
++def rex_supported(env=None) -> bool:
++    """True inside a Rex terminal, which reads the OSC 7501 Program Status Protocol."""
++    env = os.environ if env is None else env
++    return env.get("TERM_PROGRAM") == "rex"
++
++
++def rex_status(state: str, kind: str = "") -> str:
++    """OSC 7501 report ``state=<state>:app=hermes[:kind=<kind>]``; "" for an unknown state."""
++    if state not in _REX_STATES:
++        return ""
++    fields = [f"state={state}", "app=hermes"]
++    if kind in _REX_KINDS:
++        fields.append(f"kind={kind}")
++    return f"\x1b]7501;{':'.join(fields)}\x1b\\"
++
++
++def rex_report(cli, state: str, kind: str = "") -> None:
++    """Report the CLI session's state to a Rex terminal, once per change; a no-op elsewhere. Written
++    like ``HermesCLI._ring_bell``: behind the renderer when the app runs, else straight to the tty."""
++    if getattr(cli, "_terminal_io_broken", False) or not rex_supported():
++        return
++    seq = rex_status(state, kind)
++    if not seq or getattr(cli, "_rex_status_sent", None) == (state, kind):
++        return
++    cli._rex_status_sent = (state, kind)
++    app = getattr(cli, "_app", None)
++    if app is None or not getattr(app, "_is_running", False):
++        write_tty(seq)
++        return
++    from hermes_cli.cli_terminal_mixin import _run_on_app_loop, _write_terminal_sequence
++
++    def _emit() -> None:
++        try:
++            _write_terminal_sequence(app, seq)
++        except (OSError, ValueError):
++            pass
++
++    _run_on_app_loop(app, _emit)
++
++
++def rex_sync(cli) -> None:
++    """While a turn runs: ``blocked`` with the open prompt's kind, else ``working``."""
++    if getattr(cli, "_approval_state", None):
++        rex_report(cli, "blocked", "permission")
++    elif getattr(cli, "_clarify_state", None):
++        rex_report(cli, "blocked", "question")
++    elif getattr(cli, "_sudo_state", None) or getattr(cli, "_connection_state", None):
++        rex_report(cli, "blocked", "auth")
++    else:
++        rex_report(cli, "working")
++
++
++def rex_turn_end(cli) -> None:
++    """A turn that reported ``working``/``blocked`` ends as ``done``, or ``error`` when it failed."""
++    sent = getattr(cli, "_rex_status_sent", None)
++    if sent and sent[0] in ("working", "blocked"):
++        rex_report(cli, "error" if getattr(cli, "_last_turn_failed", False) else "done")
++
++
+ def notification_sequence(context: str, *, prompt: bool, session_id: str = "", detail: str = "") -> str:
+     """OSC 9 (plus Warp OSC 777 when supported) for a blocking prompt or turn end."""
+     seq = osc9(f"Hermes: {context}")

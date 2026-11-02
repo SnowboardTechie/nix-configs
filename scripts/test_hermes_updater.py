@@ -33,16 +33,16 @@ ORIGINAL = '''class CLI:
         return session_key
 '''.encode()
 MATRIX_PATCH = REPO / "scripts/hermes-runtime-patches/matrix-send-gateway.patch"
-MATRIX_PREVIOUS = REPO / "scripts/hermes-runtime-patches/matrix-send-gateway-170.patch"
 MATRIX_MANIFEST = REPO / "scripts/hermes-runtime-patches/matrix-send-gateway.json"
+REX_PATCH = REPO / "scripts/hermes-runtime-patches/rex-program-status.patch"
+REX_MANIFEST = REPO / "scripts/hermes-runtime-patches/rex-program-status.json"
 
 
-def matrix_base_sources():
-    """Minimal pre-images the reviewed #191 patch (and #170's, whose hunks it contains)
-    applies to: each modified file's hunk context, separated by filler that later
-    releases can change without conflict."""
+def base_sources(patch):
+    """Minimal pre-images a reviewed patch applies to: each modified file's hunk
+    context, separated by filler that later releases can change without conflict."""
     sources, path, hunk = {}, None, None
-    for line in MATRIX_PATCH.read_bytes().splitlines(keepends=True):
+    for line in patch.read_bytes().splitlines(keepends=True):
         if line.startswith(b"diff --git "):
             path = hunk = None
         elif line.startswith(b"--- a/"):
@@ -56,7 +56,8 @@ def matrix_base_sources():
     return {path: b"".join(lines + [b"# tail filler\n"]) for path, lines in sources.items()}
 
 
-MATRIX_BASE = matrix_base_sources()
+MATRIX_BASE = base_sources(MATRIX_PATCH)
+REX_BASE = base_sources(REX_PATCH)
 MATRIX_NEW = ("gateway/matrix_send_forward.py", "tests/gateway/test_matrix_send_forward.py")
 
 
@@ -92,7 +93,7 @@ class CheckoutTests(unittest.TestCase):
         (self.root / STATUS).parent.mkdir()
         (self.root / STATUS).write_bytes(ORIGINAL)
         (self.root / "other.txt").write_text("unchanged\n")
-        for path, source in MATRIX_BASE.items():
+        for path, source in {**MATRIX_BASE, **REX_BASE}.items():
             (self.root / path).parent.mkdir(parents=True, exist_ok=True)
             (self.root / path).write_bytes(source)
         self.base = self.commit("base")
@@ -123,6 +124,9 @@ class CheckoutTests(unittest.TestCase):
 
     def matrix_patch(self, patch=MATRIX_PATCH):
         self.git("apply", str(patch))
+
+    def rex_patch(self):
+        self.git("apply", str(REX_PATCH))
 
     def matrix_release(self, edit):
         """Commit a release whose matrix-patch files are changed by edit(root)."""
@@ -303,7 +307,7 @@ class CheckoutTests(unittest.TestCase):
             preflight.verify_checkout(self.root, plan)
 
 
-    # --- #170 matrix-send-through-gateway patch -------------------------------
+    # --- matrix-send-through-gateway patch (#170, #191) --------------------------
 
     def test_matrix_patch_alone_is_preserved(self):
         self.matrix_patch()
@@ -378,7 +382,7 @@ class CheckoutTests(unittest.TestCase):
     def test_refuses_target_where_matrix_patch_no_longer_applies(self):
         def edit(root):
             path = root / "gateway/run_bootstrap.py"
-            path.write_bytes(path.read_bytes().replace(b"ticket_store", b"tickets"))
+            path.write_bytes(path.read_bytes().replace(b"get_hermes_home()", b"hermes_home()"))
         self.matrix_release(edit)
         self.patch()
         self.matrix_patch()
@@ -426,19 +430,6 @@ class CheckoutTests(unittest.TestCase):
             preflight.verify_checkout(self.root, plan)
 
 
-    # --- #191: the superseded #170 patch, and the move from it ------------------
-
-    def test_previous_matrix_patch_alone_is_preserved(self):
-        self.matrix_patch(MATRIX_PREVIOUS)
-        plan = self.plan()
-        self.assertTrue(plan["preserve_matrix_patch"])
-        self.assertEqual(plan["matrix_patch_sha256"], preflight.MATRIX_PREVIOUS_PATCH_SHA256)
-        self.supported_git_update(plan)
-        preflight.verify_checkout(self.root, plan)
-        self.assertEqual(preflight.checkout_state(self.root),
-                         ({"matrix"}, preflight.MATRIX_PREVIOUS_PATCH_SHA256))
-        self.assertEqual(self.git("diff", "--name-only", "--", "hermes_cli/send_cmd.py"), "")
-
     def test_current_matrix_patch_is_recorded_by_its_hash(self):
         self.patch()
         self.matrix_patch()
@@ -448,61 +439,108 @@ class CheckoutTests(unittest.TestCase):
         preflight.verify_checkout(self.root, plan)
         self.assertEqual(preflight.checkout_state(self.root), ({"status", "matrix"}, preflight.MATRIX_PATCH_SHA256))
 
-    def test_move_from_previous_to_current_patch_is_admitted_at_every_resting_state(self):
-        self.patch()
-        self.matrix_patch(MATRIX_PREVIOUS)
-        self.assertEqual(self.plan()["matrix_patch_sha256"], preflight.MATRIX_PREVIOUS_PATCH_SHA256)
-        self.git("apply", "-R", str(MATRIX_PREVIOUS))
-        self.assertEqual(preflight.checkout_state(self.root), ({"status"}, None))
-        self.matrix_patch()
+
+    # --- Rex program-status patch ----------------------------------------------
+
+    def test_rex_patch_alone_is_preserved(self):
+        self.rex_patch()
         plan = self.plan()
-        self.assertEqual(plan["matrix_patch_sha256"], preflight.MATRIX_PATCH_SHA256)
+        self.assertTrue(plan["preserve_rex_patch"])
+        self.assertFalse(plan["preserve_matrix_patch"])
         self.supported_git_update(plan)
         preflight.verify_checkout(self.root, plan)
+        self.assertEqual(preflight.checkout_patches(self.root), {"rex"})
 
-    def test_refuses_previous_module_beside_the_rest_of_the_current_patch(self):
+    def test_all_three_patches_are_preserved(self):
+        self.patch()
         self.matrix_patch()
-        module = "gateway/matrix_send_forward.py"
-        self.git("apply", "-R", "--include", module, str(MATRIX_PATCH))
-        self.git("apply", "--include", module, str(MATRIX_PREVIOUS))
-        with self.assertRaisesRegex(ValueError, "matrix-send"):
-            self.plan()
+        self.rex_patch()
+        plan = self.plan()
+        self.assertTrue(plan["preserve_status_patch"] and plan["preserve_matrix_patch"]
+                        and plan["preserve_rex_patch"])
+        self.supported_git_update(plan)
+        preflight.verify_checkout(self.root, plan)
+        self.assertEqual(preflight.checkout_patches(self.root), {"status", "matrix", "rex"})
 
-    def test_refuses_current_patch_without_its_send_cmd_change(self):
-        self.matrix_patch()
-        self.git("restore", "hermes_cli/send_cmd.py")
-        with self.assertRaisesRegex(ValueError, "matrix-send"):
-            self.plan()
-
-    def test_refuses_previous_patch_plus_send_cmd_change(self):
-        self.matrix_patch(MATRIX_PREVIOUS)
-        self.git("apply", "--include", "hermes_cli/send_cmd.py", str(MATRIX_PATCH))
-        with self.assertRaisesRegex(ValueError, "matrix-send"):
-            self.plan()
-
-    def test_verification_rejects_a_switched_matrix_patch(self):
-        self.matrix_patch(MATRIX_PREVIOUS)
+    def test_rex_patch_survives_unrelated_upstream_edits_in_its_files(self):
+        def edit(root):
+            for path in REX_BASE:
+                source = (root / path).read_bytes()
+                (root / path).write_bytes(source.replace(b"# tail filler", b"# upstream moved on"))
+        self.matrix_release(edit)
+        self.rex_patch()
         plan = self.plan()
         self.supported_git_update(plan)
-        self.git("apply", "-R", str(MATRIX_PREVIOUS))
-        self.matrix_patch()
-        with self.assertRaisesRegex(ValueError, "changed which matrix-send patch"):
-            preflight.verify_checkout(self.root, plan)
+        preflight.verify_checkout(self.root, plan)
+        self.assertIn(b"# upstream moved on", (self.root / preflight.REX_PATHS[1]).read_bytes())
+        self.assertEqual(preflight.checkout_patches(self.root), {"rex"})
 
-    def test_refuses_target_where_previous_patch_no_longer_applies(self):
-        def edit(root):
-            path = root / "gateway/run_bootstrap.py"
-            path.write_bytes(path.read_bytes().replace(b"ticket_store", b"tickets"))
-        self.matrix_release(edit)
-        self.matrix_patch(MATRIX_PREVIOUS)
-        with self.assertRaisesRegex(ValueError, "matrix-send patch cannot be cleanly preserved"):
+    def test_refuses_rex_patch_altered_by_one_byte(self):
+        self.rex_patch()
+        target = self.root / preflight.REX_PATHS[1]
+        target.write_bytes(target.read_bytes() + b"# user work\n")
+        with self.assertRaisesRegex(ValueError, "Rex program-status"):
             self.plan()
 
-    def test_previous_patch_is_refused_once_its_pin_is_withdrawn(self):
-        self.matrix_patch(MATRIX_PREVIOUS)
-        with mock_patch.object(preflight, "MATRIX_PATCH_FILES", (MATRIX_PATCH,)):
-            with self.assertRaisesRegex(ValueError, "matrix-send"):
-                self.plan()
+    def test_refuses_partial_rex_patch(self):
+        self.rex_patch()
+        self.git("restore", preflight.REX_PATHS[0])
+        with self.assertRaisesRegex(ValueError, "Rex program-status"):
+            self.plan()
+
+    def test_refuses_extra_change_beside_rex_patch(self):
+        self.rex_patch()
+        (self.root / "other.txt").write_text("user work\n")
+        with self.assertRaisesRegex(ValueError, "unrelated"):
+            self.plan()
+
+    def test_refuses_target_where_rex_patch_no_longer_applies(self):
+        def edit(root):
+            path = root / "hermes_cli/cli_chat_turn_mixin.py"
+            path.write_bytes(path.read_bytes().replace(b"agent_thread.start()", b"agent_thread.run()"))
+        self.matrix_release(edit)
+        self.patch()
+        self.rex_patch()
+        with self.assertRaisesRegex(ValueError, "Rex program-status patch cannot be cleanly preserved"):
+            self.plan()
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.base)
+        self.assertEqual(preflight.checkout_patches(self.root), {"status", "rex"})
+
+    def test_target_containing_rex_change_absorbs_patch(self):
+        self.matrix_release(lambda root: preflight.git(root, "apply", str(REX_PATCH)))
+        self.rex_patch()
+        plan = self.plan()
+        self.assertTrue(plan["preserve_rex_patch"])
+        self.supported_git_update(plan)
+        preflight.verify_checkout(self.root, plan)
+        self.assertEqual(self.git("status", "--porcelain"), "")
+
+    def test_refuses_rex_patch_discard_policy(self):
+        self.rex_patch()
+        with self.assertRaisesRegex(ValueError, "discard"):
+            self.plan(discard_changes=True)
+
+    def test_verification_rejects_lost_rex_patch(self):
+        self.rex_patch()
+        plan = self.plan()
+        self.git("apply", "-R", str(REX_PATCH))
+        self.git("checkout", "--detach", self.candidate)
+        self.stamp(self.candidate)
+        with self.assertRaisesRegex(ValueError, "did not retain the required Rex program-status patch"):
+            preflight.verify_checkout(self.root, plan)
+
+    def test_verification_rejects_unexpected_rex_patch(self):
+        plan = self.plan()
+        self.supported_git_update(plan)
+        self.rex_patch()
+        with self.assertRaisesRegex(ValueError, "unexpected Rex program-status patch"):
+            preflight.verify_checkout(self.root, plan)
+
+    def test_verification_accepts_a_plan_from_before_the_rex_patch(self):
+        plan = self.plan()
+        plan.pop("preserve_rex_patch")
+        self.supported_git_update(plan)
+        preflight.verify_checkout(self.root, plan)
 
 
 class MatrixPatchPinTests(unittest.TestCase):
@@ -512,16 +550,30 @@ class MatrixPatchPinTests(unittest.TestCase):
         self.assertEqual(preflight.load_matrix_patch(MATRIX_PATCH), MATRIX_PATCH.read_bytes())
         self.assertEqual(sorted(f["path"] for f in manifest["files"]),
                          sorted((*preflight.MATRIX_MODIFIED, *preflight.MATRIX_NEW)))
-        previous = manifest["supersedes"]
-        self.assertEqual(previous["patch_sha256"], preflight.MATRIX_PREVIOUS_PATCH_SHA256)
-        self.assertEqual(preflight.load_matrix_patch(MATRIX_PREVIOUS), MATRIX_PREVIOUS.read_bytes())
-        self.assertEqual(set(preflight.load_matrix_patches()),
-                         {preflight.MATRIX_PATCH_SHA256, preflight.MATRIX_PREVIOUS_PATCH_SHA256})
+        self.assertEqual(set(preflight.load_matrix_patches()), {preflight.MATRIX_PATCH_SHA256})
 
     def test_current_patch_is_required(self):
-        with mock_patch.object(preflight, "MATRIX_PATCH_FILES", (MATRIX_PREVIOUS,)):
+        with mock_patch.object(preflight, "MATRIX_PATCH_FILES", ()):
             with self.assertRaisesRegex(ValueError, "current reviewed"):
                 preflight.load_matrix_patches()
+
+    def test_committed_rex_patch_is_the_pinned_review(self):
+        manifest = json.loads(REX_MANIFEST.read_text())
+        self.assertEqual(manifest["patch_sha256"], preflight.REX_PATCH_SHA256)
+        self.assertEqual(preflight.load_rex_patch(REX_PATCH), REX_PATCH.read_bytes())
+        self.assertEqual(sorted(f["path"] for f in manifest["files"]), sorted(preflight.REX_PATHS))
+        self.assertEqual(sorted(REX_BASE), sorted(preflight.REX_PATHS))
+        dotfiles = Path.home() / "code/dotfiles/hermes/runtime-patches/rex-program-status.patch"
+        if dotfiles.is_file():
+            self.assertEqual(dotfiles.read_bytes(), REX_PATCH.read_bytes(),
+                             "the dotfiles copy and this pin must change together")
+
+    def test_refuses_a_rex_patch_file_that_is_not_the_review(self):
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory) / "rex-program-status.patch"
+            copy.write_bytes(REX_PATCH.read_bytes() + b"\n")
+            with self.assertRaisesRegex(ValueError, "reviewed Rex"):
+                preflight.load_rex_patch(copy)
 
     def test_refuses_a_patch_file_that_is_not_the_review(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -577,8 +629,11 @@ class NixUpdaterTests(unittest.TestCase):
         self.assertIn("hermes-update-preflight.py", script)
         self.assertIn("--plan-json", script)
         patches = [Path(path.strip("'")).read_bytes() for path in re.findall(r"--matrix-patch (\S+)", script)]
-        self.assertEqual(patches, [MATRIX_PATCH.read_bytes(), MATRIX_PREVIOUS.read_bytes()] * 2,
-                         "plan and verify must both pin both reviewed patches")
+        self.assertEqual(patches, [MATRIX_PATCH.read_bytes()] * 2,
+                         "plan and verify must both pin the reviewed matrix-send patch")
+        rex = [Path(path.strip("'")).read_bytes() for path in re.findall(r"--rex-patch (\S+)", script)]
+        self.assertEqual(rex, [REX_PATCH.read_bytes()] * 2,
+                         "plan and verify must both pin the reviewed Rex patch")
         self.assertNotIn("update --yes --no-backup --keep-stash", script)
         self.assertNotIn("HEAD...origin/main", script)
         self.assertLess(script.index("--plan-json"), script.index("Hermes backend healthy"))

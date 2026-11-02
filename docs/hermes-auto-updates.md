@@ -14,7 +14,7 @@ wrapper deepens shallow installations before checking ancestry, rejects local
 commits and unintended branches, and leaves an already-current installation
 alone without a backup, restart, or lifecycle notification.
 
-The only permitted dirty-tree states are two reviewed, unstaged patches, each
+The only permitted dirty-tree states are three reviewed, unstaged patches, each
 optional:
 
 - the one-line classic `/status` approval query correction from `session_key`
@@ -24,12 +24,17 @@ optional:
   `scripts/hermes-runtime-patches/matrix-send-gateway.patch` (#170's
   `matrix-send` plus #191's `matrix-react` and `matrix-redact`), pinned by
   SHA-256. Its three modified files and two new untracked files must equal HEAD
-  plus that patch exactly. Until the live checkout moves to it, the superseded
-  #170 patch alone (`matrix-send-gateway-170.patch`, also pinned) is admitted
-  the same way, so a nightly update between deploying this updater and the move
-  carries the old patch instead of refusing. The checkout must be exactly one
-  of the two. How the patch is carried, moved, first applied and retired is in
-  [`modules/services/AGENTS.md`](../modules/services/AGENTS.md#hermes-local-runtime-patches).
+  plus that patch exactly.
+- the Rex program-status patch,
+  `scripts/hermes-runtime-patches/rex-program-status.patch` (the classic CLI
+  reports working, blocked, done or error to Rex), pinned by SHA-256. Its two
+  modified files must equal HEAD plus that patch exactly.
+
+How the patches are carried, first applied, recovered after a manual update
+and retired is in
+[`modules/services/AGENTS.md`](../modules/services/AGENTS.md#hermes-local-runtime-patches).
+Any other local edit to the live checkout makes every nightly update refuse
+until it is registered there.
 
 No other file, staged work, untracked file, mode change, extra hunk, or
 unfamiliar query shape is admitted.
@@ -38,7 +43,7 @@ Before downtime, admission computes the actual three-way Git merge of each
 present patch onto the selected target and requires exactly the intended corrected
 source. Unknown upstream refactors and conflicts refuse without touching the
 checkout. A configuration that discards local changes is also refused while
-either patch is present. When upstream incorporates the identical correction,
+any patch is present. When upstream incorporates the identical correction,
 the normal stash merge absorbs it and the updated tree is clean automatically.
 
 ## Execution and verification
@@ -50,7 +55,7 @@ without the old patch-dropping `--keep-stash` flag, and verifies:
 - HEAD is the exact preflighted channel target, not the moving main branch;
 - no new or unrelated source changes were introduced;
 - a required status correction remains effective, either locally or upstream;
-- a planned matrix-send patch, the same one of the two, is still exactly applied, or the target contains it;
+- each planned matrix-send or Rex patch is still exactly applied, or the target contains it;
 - the install stamp identifies the selected commit;
 - the backend serves the stamped version and any configured gateway is running.
 

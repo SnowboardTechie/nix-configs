@@ -1,0 +1,23 @@
+{
+  "purpose": "The classic Hermes CLI reports its turn state to Rex with OSC 7501 (Rex's Program Status Protocol): working while a turn runs, blocked with kind permission/question/auth while a prompt waits, then done or error. Rex shows this as tab activity and alerts, as it does for Claude Code. Emitted only when TERM_PROGRAM=rex.",
+  "upstream": "https://github.com/NousResearch/hermes-agent",
+  "base_commit": "f0d94882e89ab8d4098b5bb2f166adfb9ee0a0ab",
+  "source": "The same bytes as dotfiles hermes/runtime-patches/rex-program-status.patch (its behaviour tests: dotfiles hermes/test_hermes_rex_program_status.py). Nix needs its own copy to pin it in the store; change both together.",
+  "files": [
+    {
+      "path": "hermes_cli/terminal_notify.py",
+      "base_blob": "db57eae7c8ad847616e814f0470cde984d09914a",
+      "original_sha256": "2b2ef7cdbc5b45ae78c3d3502f340ef9926b40ebdfffde4ac0890d9ee50caebc",
+      "patched_sha256": "a735f59f88784d95e933a841085b77bd04779cae50616a58e18ca9e73f9710ce"
+    },
+    {
+      "path": "hermes_cli/cli_chat_turn_mixin.py",
+      "base_blob": "fadca305c3b98fbf3bb7ce3639fc8e59fcf74e85",
+      "original_sha256": "aad4a245b8187ec2da7e0d5bb9a33bc9d68fb2e3a873015c3c1fa02118fdbab8",
+      "patched_sha256": "eb07625263623fdb8737b6402fdf6db9e1066dac551a69c210f948a650ffeec9"
+    }
+  ],
+  "patch": "rex-program-status.patch",
+  "patch_sha256": "ecb2707ee28f4a5bd61e511dc7dcd04b762f76c85b845ddd5d3d48eb74868feb",
+  "apply": "In the Hermes source root: `git apply --check <patch>`, `git apply <patch>`, then require each files[].patched_sha256 (at base_commit). Reverse with `git apply -R <patch>`. Restart Hermes CLI sessions to load it; the gateway does not use it. The updater admits the patch only as the exact content of its file applied to HEAD."
+}

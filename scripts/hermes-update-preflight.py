@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Channel-aware admission for the Nix-owned Hermes update wrapper.
 
-Only two reviewed local patches may accompany an update, each optional: the classic
-/status session-id correction and the Matrix-through-gateway patch, pinned to the exact
-reviewed patch file (#191's, or #170's until the live checkout moves to it). Hermes itself owns backup-independent
-update/stash/restart mechanics. This helper never checks out code, stashes changes,
-or changes the configured update channel.
+Only three reviewed local patches may accompany an update, each optional: the classic
+/status session-id correction, the Matrix-through-gateway patch and the Rex program-status
+patch, the last two pinned to their exact reviewed patch files. Hermes itself owns
+backup-independent update/stash/restart mechanics. This helper never checks out code,
+stashes changes, or changes the configured update channel.
 """
 from __future__ import annotations
 
@@ -24,19 +24,21 @@ STATUS_PATH = "hermes_cli/cli_session_mixin.py"
 SHA = re.compile(r"[0-9a-f]{40}")
 PATCHES = Path(__file__).resolve().parent / "hermes-runtime-patches"
 # bryan/durable-pi-workspace#191 (#170's matrix-send plus matrix-react and matrix-redact),
-# reviewed as hermes-agent bf0203a794..9bdfc74c29.
+# reviewed as hermes-agent bf0203a794..9bdfc74c29 and recut onto v0.22.6 (f0d94882e8).
 MATRIX_PATCH = PATCHES / "matrix-send-gateway.patch"
-MATRIX_PATCH_SHA256 = "1fbae121ea73a36a026f3b26d36f63bf618ee9ac15fea92caabbcff9ad67315a"
-# #170's patch alone (bf0203a794..2be71e5f54), still admitted so that a checkout not yet
-# moved to #191's keeps updating. Remove it, its file and its tests once the live checkout
-# carries #191's patch.
-MATRIX_PREVIOUS_PATCH = PATCHES / "matrix-send-gateway-170.patch"
-MATRIX_PREVIOUS_PATCH_SHA256 = "3bbb0f167d581a6ef3e6c26244248b250885cb12e808d494ca8e9976efb1bd72"
-MATRIX_PATCH_FILES = (MATRIX_PATCH, MATRIX_PREVIOUS_PATCH)
-# Every path either patch touches; a path a patch leaves alone must equal HEAD's.
+MATRIX_PATCH_SHA256 = "0997b829d116fd92819f56c5716a7cac23b9ef70663c7410a3fb5115b4cbe08a"
+# The matrix-send patch files the preflight loads (--matrix-patch overrides); each must be
+# the reviewed one.
+MATRIX_PATCH_FILES = (MATRIX_PATCH,)
+# Every path the patch touches; a path a patch leaves alone must equal HEAD's.
 MATRIX_MODIFIED = ("gateway/run_bootstrap.py", "hermes_cli/send_cmd.py", "tools/send_message_senders.py")
 MATRIX_NEW = ("gateway/matrix_send_forward.py", "tests/gateway/test_matrix_send_forward.py")
 MATRIX_PATHS = MATRIX_MODIFIED + MATRIX_NEW
+# The classic CLI reports its turn state to Rex (OSC 7501), from dotfiles
+# hermes/runtime-patches/rex-program-status.*. Modifies two files and adds none.
+REX_PATCH = PATCHES / "rex-program-status.patch"
+REX_PATCH_SHA256 = "ecb2707ee28f4a5bd61e511dc7dcd04b762f76c85b845ddd5d3d48eb74868feb"
+REX_PATHS = ("hermes_cli/cli_chat_turn_mixin.py", "hermes_cli/terminal_notify.py")
 
 
 def git(root, *args, check=True, input=None, env=None):
@@ -99,8 +101,15 @@ def corrected_status_source(source):
 
 def load_matrix_patch(path=None):
     data = Path(path or MATRIX_PATCH).read_bytes()
-    if hashlib.sha256(data).hexdigest() not in (MATRIX_PATCH_SHA256, MATRIX_PREVIOUS_PATCH_SHA256):
+    if hashlib.sha256(data).hexdigest() != MATRIX_PATCH_SHA256:
         raise ValueError(f"{path or MATRIX_PATCH} is not the reviewed matrix-send patch")
+    return data
+
+
+def load_rex_patch(path=None):
+    data = Path(path or REX_PATCH).read_bytes()
+    if hashlib.sha256(data).hexdigest() != REX_PATCH_SHA256:
+        raise ValueError(f"{path or REX_PATCH} is not the reviewed Rex program-status patch")
     return data
 
 
@@ -115,13 +124,13 @@ def load_matrix_patches():
     return patches
 
 
-def matrix_sources(root, commit, patch):
-    """Map each patch path to its content in commit with the reviewed patch applied.
+def patch_sources(root, commit, patch, paths):
+    """Map each of paths to its content in commit with the reviewed patch applied.
 
     Returns (sources, absorbed): absorbed means commit already contains the change and
     sources is commit's own content. None when the patch neither applies nor is contained.
     """
-    with tempfile.TemporaryDirectory(prefix="hermes-matrix-index-", dir=scratch_directory(root)) as directory:
+    with tempfile.TemporaryDirectory(prefix="hermes-patch-index-", dir=scratch_directory(root)) as directory:
         env = {"GIT_INDEX_FILE": str(Path(directory) / "index")}
         git(root, "read-tree", commit, env=env)
         absorbed = False
@@ -130,8 +139,16 @@ def matrix_sources(root, commit, patch):
                    check=False).returncode:
                 return None, False
             absorbed = True
-        sources = {path: git(root, "show", f":{path}", env=env).stdout for path in MATRIX_PATHS}
+        sources = {path: git(root, "show", f":{path}", env=env).stdout for path in paths}
     return sources, absorbed
+
+
+def matrix_sources(root, commit, patch):
+    return patch_sources(root, commit, patch, MATRIX_PATHS)
+
+
+def rex_sources(root, commit):
+    return patch_sources(root, commit, load_rex_patch(), REX_PATHS)
 
 
 def regular_file(root, path, label):
@@ -152,6 +169,26 @@ def matrix_patch_in(root):
     return None
 
 
+def rex_patch_in(root):
+    """True when the Rex files are exactly HEAD plus the reviewed Rex program-status patch."""
+    sources, absorbed = rex_sources(root, "HEAD")
+    return sources is not None and not absorbed and all(
+        regular_file(root, path, "Rex program-status patch").read_bytes() == sources[path]
+        for path in REX_PATHS)
+
+
+def predict_merge(root, target, path, expected):
+    """Whether Hermes's stash restore of path onto target yields exactly expected."""
+    sides = ((root / path).read_bytes(), git(root, "show", f"HEAD:{path}").stdout,
+             git(root, "show", f"{target}:{path}").stdout)
+    with tempfile.TemporaryDirectory(prefix="hermes-update-merge-", dir=scratch_directory(root)) as directory:
+        paths = [Path(directory) / name for name in ("patched", "base", "candidate")]
+        for scratch_path, data in zip(paths, sides):
+            scratch_path.write_bytes(data)
+        result = git(root, "merge-file", "--stdout", *(str(p) for p in paths), check=False)
+    return not result.returncode and result.stdout == expected
+
+
 def checkout_patches(root):
     """The set of present patches: "status" and/or "matrix" (see checkout_state)."""
     return checkout_state(root)[0]
@@ -160,8 +197,8 @@ def checkout_patches(root):
 def checkout_state(root):
     """Reject all drift except unstaged, exact instances of the reviewed patches.
 
-    Returns (present, matrix): the set of present patches, "status" and/or "matrix", and
-    the SHA-256 of the matrix-send patch present, or None.
+    Returns (present, matrix): the set of present patches, any of "status", "matrix" and
+    "rex", and the SHA-256 of the matrix-send patch present, or None.
     """
     branch = git(root, "branch", "--show-current").stdout.decode().strip()
     if branch not in ("", "main"):
@@ -172,7 +209,7 @@ def checkout_state(root):
     if not set(untracked) <= {path.encode() for path in MATRIX_NEW}:
         raise ValueError("refusing untracked files")
     changes = git(root, "diff", "--name-only", "-z", "HEAD").stdout.split(b"\0")[:-1]
-    if not set(changes) <= {path.encode() for path in (STATUS_PATH, *MATRIX_MODIFIED)}:
+    if not set(changes) <= {path.encode() for path in (STATUS_PATH, *MATRIX_MODIFIED, *REX_PATHS)}:
         raise ValueError("refusing unrelated working-tree changes")
     if git(root, "diff", "--summary", "HEAD").stdout:
         raise ValueError("refusing file mode changes")
@@ -184,7 +221,7 @@ def checkout_state(root):
         if expected == original or path.read_bytes() != expected:
             raise ValueError("working-tree changes are not exactly the reviewed /status patch")
         present.add("status")
-    if untracked or set(changes) - {STATUS_PATH.encode()}:
+    if untracked or set(changes) & {path.encode() for path in MATRIX_MODIFIED}:
         matrix = matrix_patch_in(root)
         if matrix is None:
             raise ValueError("working-tree changes are not exactly the reviewed matrix-send patch")
@@ -192,6 +229,10 @@ def checkout_state(root):
             if (root / path).stat().st_mode & 0o111:
                 raise ValueError(f"refusing file mode of untracked {path}")
         present.add("matrix")
+    if set(changes) & {path.encode() for path in REX_PATHS}:
+        if not rex_patch_in(root):
+            raise ValueError("working-tree changes are not exactly the reviewed Rex program-status patch")
+        present.add("rex")
     return present, matrix
 
 
@@ -207,8 +248,8 @@ def prepare_checkout(root, target, channel, *, discard_changes=False):
         raise ValueError("refusing an automatic downgrade or divergent update target")
     if patches and head != target and discard_changes:
         raise ValueError("updates.non_interactive_local_changes=discard would lose the required patch")
-    # Hermes restores every local change from one stash: a conflict in either patch
-    # resets the tree and parks both, so each must merge cleanly before downtime.
+    # Hermes restores every local change from one stash: a conflict in any patch
+    # resets the tree and parks them all, so each must merge cleanly before downtime.
     if "status" in patches:
         original = git(root, "show", f"HEAD:{STATUS_PATH}").stdout
         candidate = git(root, "show", f"{target}:{STATUS_PATH}").stdout
@@ -222,10 +263,13 @@ def prepare_checkout(root, target, channel, *, discard_changes=False):
             raise ValueError("the required /status patch cannot be cleanly preserved on this target")
     if "matrix" in patches:
         predict_matrix_restore(root, target, load_matrix_patches()[matrix])
+    if "rex" in patches:
+        predict_rex_restore(root, target)
     return {"head": head, "target": target, "channel": channel,
             "preserve_status_patch": "status" in patches,
             "preserve_matrix_patch": "matrix" in patches,
-            "matrix_patch_sha256": matrix}
+            "matrix_patch_sha256": matrix,
+            "preserve_rex_patch": "rex" in patches}
 
 
 def predict_matrix_restore(root, target, patch):
@@ -241,15 +285,17 @@ def predict_matrix_restore(root, target, patch):
         if tracked != absorbed:
             raise ValueError(refusal)
     for path in MATRIX_MODIFIED:
-        sides = ((root / path).read_bytes(), git(root, "show", f"HEAD:{path}").stdout,
-                 git(root, "show", f"{target}:{path}").stdout)
-        with tempfile.TemporaryDirectory(prefix="hermes-update-merge-", dir=scratch_directory(root)) as directory:
-            paths = [Path(directory) / name for name in ("patched", "base", "candidate")]
-            for scratch_path, data in zip(paths, sides):
-                scratch_path.write_bytes(data)
-            result = git(root, "merge-file", "--stdout", *(str(p) for p in paths), check=False)
-        if result.returncode or result.stdout != expected[path]:
+        if not predict_merge(root, target, path, expected[path]):
             raise ValueError(refusal)
+
+
+def predict_rex_restore(root, target):
+    """Require Hermes's stash apply to leave exactly target + the reviewed Rex patch."""
+    refusal = "the required Rex program-status patch cannot be cleanly preserved on this target"
+    expected, _ = rex_sources(root, target)
+    if expected is None or not all(predict_merge(root, target, path, expected[path])
+                                   for path in REX_PATHS):
+        raise ValueError(refusal)
 
 
 def resolve_plan(root, config_path):
@@ -306,25 +352,34 @@ def verify_checkout(root, plan):
             raise ValueError("update changed which matrix-send patch is applied")
         if "matrix" not in patches and not matrix_sources(root, "HEAD", patch)[1]:
             raise ValueError("update did not retain the required matrix-send patch")
+    preserve_rex = plan.get("preserve_rex_patch", False)
+    if "rex" in patches and not preserve_rex:
+        raise ValueError("update introduced an unexpected Rex program-status patch")
+    if preserve_rex and "rex" not in patches and not rex_sources(root, "HEAD")[1]:
+        raise ValueError("update did not retain the required Rex program-status patch")
     stamp = json.loads((root / "install-stamp.json").read_text(encoding="utf-8-sig"))
     if stamp.get("commit") != plan["target"]:
         raise ValueError("install stamp does not identify the expected updated commit")
 
 
 def main():
-    global MATRIX_PATCH_FILES
+    global MATRIX_PATCH_FILES, REX_PATCH
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("plan", "verify"))
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--plan-json")
     parser.add_argument("--matrix-patch", type=Path, action="append",
-                        help="a reviewed matrix-send patch (repeat for each); default: both pinned files")
+                        help="a reviewed matrix-send patch (repeat for each); default: the pinned file")
+    parser.add_argument("--rex-patch", type=Path,
+                        help="the reviewed Rex program-status patch; default: the pinned file")
     args = parser.parse_args()
     root = args.root.resolve()
     MATRIX_PATCH_FILES = tuple(args.matrix_patch or MATRIX_PATCH_FILES)
+    REX_PATCH = args.rex_patch or REX_PATCH
     try:
         load_matrix_patches()
+        load_rex_patch()
         if args.action == "plan":
             if args.config is None:
                 parser.error("plan requires --config")
@@ -332,7 +387,8 @@ def main():
             print(f"Hermes {plan['channel']}: {plan['head'][:12]} -> {plan['target'][:12]}; "
                   f"preserve status patch: {plan['preserve_status_patch']}; "
                   f"preserve matrix-send patch: {plan['preserve_matrix_patch']}"
-                  + (f" ({plan['matrix_patch_sha256'][:8]})" if plan["matrix_patch_sha256"] else ""),
+                  + (f" ({plan['matrix_patch_sha256'][:8]})" if plan["matrix_patch_sha256"] else "")
+                  + f"; preserve Rex patch: {plan['preserve_rex_patch']}",
                   file=sys.stderr)
             if plan["head"] != plan["target"]:
                 print(json.dumps(plan))

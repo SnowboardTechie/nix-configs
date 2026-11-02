@@ -327,13 +327,13 @@ index 0000000000000000000000000000000000000000..e695acdd3bbd17d04ca465ffefecdbb1
 +            REACT_VERB: _matrix_action_verb(runner, loop, REACT_VERB, _react),
 +            REDACT_VERB: _matrix_action_verb(runner, loop, REDACT_VERB, _redact)}
 diff --git a/gateway/run_bootstrap.py b/gateway/run_bootstrap.py
-index 0a682990e7ffb6f3ec6e49c5a1b8c43f5caf3797..546c272d77c7ba6797db9a1fbb14e036776398fe 100644
+index 3c33404a17ede977d064bf306ae1e45e28a5cb01..5de8ccb4ec21cde325538e55f29a887c314c4496 100644
 --- a/gateway/run_bootstrap.py
 +++ b/gateway/run_bootstrap.py
-@@ -364,6 +364,10 @@ async def _start_gateway_start_control_socket(runner):
-                            # live adapters' handlers (#87770); tools/prompt still wait for the next session.
-                            "reload-plugins": reload_plugins_verb(runner, _main_loop)})
-         _control_server.ticket_store = runner.session_ticket_store
+@@ -369,6 +369,10 @@ async def _start_gateway_start_control_socket(runner):
+         from gateway.webapp_listener import register_control_verbs
+         from hermes_constants import get_hermes_home
+         register_control_verbs(runner, get_hermes_home(), server=_control_server)
 +        # `hermes send` to Matrix from another process (a message, a reaction, a redaction) rides this
 +        # gateway's live adapter, never a second Matrix connection on this device's crypto store.
 +        from gateway.matrix_send_forward import matrix_verbs
@@ -342,10 +342,10 @@ index 0a682990e7ffb6f3ec6e49c5a1b8c43f5caf3797..546c272d77c7ba6797db9a1fbb14e036
              _control_server = None
          else:
 diff --git a/hermes_cli/send_cmd.py b/hermes_cli/send_cmd.py
-index 80739e78d6ad8d8764e358307168c41d41135b4d..2242a9b63f62e6422a4236ec15d17da0c39a7af4 100644
+index 8af4e3790396b1e853206ec27344798002e92d8d..6ea15e7c6819ba6b8a025a74e2ab7f1343be6c98 100644
 --- a/hermes_cli/send_cmd.py
 +++ b/hermes_cli/send_cmd.py
-@@ -191,6 +191,34 @@ def _load_hermes_env() -> None:
+@@ -192,6 +192,34 @@ def _load_hermes_env() -> None:
              target[key] = str(val)
  
  
@@ -380,7 +380,7 @@ index 80739e78d6ad8d8764e358307168c41d41135b4d..2242a9b63f62e6422a4236ec15d17da0
  def cmd_send(args: argparse.Namespace) -> None:
      """Entry point wired into the top-level argparse dispatcher."""
      _load_hermes_env()  # the downstream gateway config loader reads credentials from os.environ
-@@ -198,6 +226,8 @@ def cmd_send(args: argparse.Namespace) -> None:
+@@ -199,6 +227,8 @@ def cmd_send(args: argparse.Namespace) -> None:
          # `hermes send --list telegram` lands "telegram" in the `message` positional.
          exit_code = _list_targets(getattr(args, "message", None), json_mode=getattr(args, "json", False))
          sys.exit(exit_code)
@@ -389,7 +389,7 @@ index 80739e78d6ad8d8764e358307168c41d41135b4d..2242a9b63f62e6422a4236ec15d17da0
      target = (getattr(args, "to", None) or "").strip()
      if not target:
          _fail(
-@@ -255,6 +285,12 @@ _SEND_ARGUMENTS = (
+@@ -256,6 +286,12 @@ _SEND_ARGUMENTS = (
      (("--mention",), dict(dest="mentions", action="append", default=None, metavar="PHONE_OR_JID", help=(
          "WhatsApp only: add a native participant mention. Repeat for multiple recipients; "
          "bare phone numbers are normalized to JIDs. Include each matching @<number> near the start of the message text."))),
@@ -402,7 +402,7 @@ index 80739e78d6ad8d8764e358307168c41d41135b4d..2242a9b63f62e6422a4236ec15d17da0
      (("-l", "--list"), dict(dest="list_targets", action="store_true", default=False,
                              help="List available targets. Optional positional filter: `hermes send --list telegram`.")),
      (("-q", "--quiet"), dict(action="store_true", default=False, help="Suppress stdout on success (exit code only).")),
-@@ -285,6 +321,8 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
+@@ -286,6 +322,8 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
              "  hermes send --to slack:#eng --subject \"[CI]\" --file build.log\n"
              "  hermes send --to whatsapp:GROUP@g.us --mention 15551234567 \"@15551234567 hello\"\n"
              "  hermes send --to telegram \"MEDIA:./chart.png\"   # send a media attachment\n"
