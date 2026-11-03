@@ -57,7 +57,7 @@ Gnarbox is a GNOME gaming desktop with Tailscale, a Hermes Desktop/CLI client of
 
 ### Shared Configuration
 
-Managed hosts share common packages through feature modules on both Darwin and NixOS. The Macs no longer install a Matrix desktop client: Bryan uses the self-hosted Cinny web app at `https://cinny.snowboardtechie.com`, added to the Dock from Safari, because the packaged Cinny Desktop was slow to reconnect after sleep.
+Managed hosts share common packages through feature modules on both Darwin and NixOS. All three Macs install Element Desktop as their Matrix client ([`modules/desktop/element.nix`](modules/desktop/element.nix)). Matrix is now mainly for bot alerts, so the client is native: it keeps notifying after its window closes, which neither Element's web build nor the Cinny web app can do, and it leaves Cmd-H to macOS (Cinny binds it to spoiler formatting). Cinny Desktop was dropped earlier because it was slow to reconnect after sleep; Gnarbox still installs it on its own. The iPad build of Element X runs on Apple-silicon Macs but can't be installed declaratively (mas doesn't support iPad apps).
 
 Feature modules define both Darwin and NixOS aspects. Gnarbox is the published NixOS system output; other Linux machines use only the development flakes and manage their operating systems separately.
 

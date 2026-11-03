@@ -16,6 +16,7 @@
       rust
       activation
       personal-desktop
+      element
       # Desktop features
       gaming
       # Service modules

@@ -23,6 +23,7 @@
       cli-tools
       activation
       personal-desktop
+      element
       # Service modules
       ollama
       open-webui

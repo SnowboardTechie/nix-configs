@@ -14,6 +14,7 @@
       git
       cli-tools
       activation
+      element
       # Service modules
       syncthing
     ];
