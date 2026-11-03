@@ -1,7 +1,8 @@
 # Hermes Agent client packages and macOS service supervision.
 #
-# The upstream Nix package makes the CLI/Desktop reproducible on all client
-# hosts. On macOS, Matrix is intentionally excluded from that package upstream,
+# The upstream Nix package makes the CLI reproducible on all client hosts, and
+# Desktop on Linux; macOS Desktop comes from Nous's signed Homebrew cask.
+# On macOS, Matrix is intentionally excluded from that package upstream,
 # so Studio server processes use isolated per-user managed venvs while
 # nix-darwin owns their launchd definitions and lifecycle. The Nix package
 # remains the interactive client package, not a server runtime.
@@ -25,7 +26,6 @@
       runtimeVenv = "${hermesHome}/hermes-agent/venv";
       runtimePython =
         if cfg.runtimePython != null then cfg.runtimePython else "${runtimeVenv}/bin/python";
-      upstreamDesktop = inputs.hermes-agent.packages.${system}.desktop;
       # Reviewed runtime patches the updater may carry (exact bytes pinned by the preflight):
       # Matrix-through-gateway (#191) and the Rex program-status report.
       runtimePatchArgs = lib.concatStringsSep " " [
@@ -814,8 +814,13 @@
 
       config = lib.mkIf cfg.enable (lib.mkMerge [
         {
-          environment.systemPackages = [ cfg.package ]
-            ++ lib.optional cfg.desktop.enable upstreamDesktop;
+          environment.systemPackages = [ cfg.package ];
+
+          # On macOS the upstream Nix Desktop package is only a `hermes-desktop`
+          # command (Electron plus a script, no .app), so it can't be opened from
+          # Finder, Spotlight or the Dock. Install Nous's signed Hermes.app from
+          # the official Homebrew cask instead.
+          homebrew.casks = lib.optional cfg.desktop.enable "hermes-desktop";
 
           assertions = [
             {
