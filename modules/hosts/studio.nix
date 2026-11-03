@@ -180,6 +180,11 @@
       proxy.ipv6Subnet = "fd85:1c07:74fb:2dc7::/64";
       # Free tailnet HTTPS port (Serve held 443, 9120, 10443 and 11434).
       page.tailscaleHttpsPort = 8790;
+      # Model-provider proxy (durable-pi-workspace#268; the application's
+      # workspaces/proxies/OPERATIONS.md) on the gateway at the default 8892,
+      # which must equal `listen.port` in ~/.config/pi-durable/model-proxy.json.
+      # It exits 1 until that file exists; launchd retries.
+      modelProxy.enable = true;
     };
 
     # Shared Claude usage sampler (#236; the application's

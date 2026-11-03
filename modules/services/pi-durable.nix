@@ -1,6 +1,8 @@
 # Pi Durable SGG PR pre-review: the workspace's launchd agent, its egress
 # proxy and the standing page's Tailscale route. Also the shared Claude usage
 # sampler (workspaces/sampler/OPERATIONS.md): its agent and its page's route.
+# And the model-provider proxy (workspaces/proxies/OPERATIONS.md): its agent on
+# Nix's Node, its firewall exception and its port in the sandbox's pf anchor.
 #
 # Application and runbook: ~/code/durable-pi-workspace
 # (workspaces/sgg/OPERATIONS.md). The service starts paused and holds every
@@ -36,6 +38,12 @@
       # Do not substitute a temporary worktree or an installed-plist override.
       checkout = "${home}/.local/share/pi-durable/sgg-deployment";
       tinyproxy = "${pkgs.tinyproxy}/bin/tinyproxy";
+      # The model proxy's Node: a store path, so the firewall exception below
+      # names exactly this binary and Homebrew's node never gets one. The slim
+      # package's bin/node is the binary itself; nodejs_24's is a symlink to it,
+      # and the firewall would see the target, not the name it was given.
+      # Node 24 satisfies the application's engines (>=22.19.0).
+      node = "${pkgs.nodejs-slim_24}/bin/node";
 
       # Canonical dotted-quad only (octets 0-255, no leading zeros, whitespace
       # or newline), so a value can never widen or add a tinyproxy directive.
@@ -74,11 +82,14 @@
       # so this host's own connections from the gateway address still work.
       # Link-local IPv6 carries no address of the network, so TCP and UDP from
       # link-local are refused on every bridge vmnet may use.
+      #
+      # Each port the network may reach on the gateway: tinyproxy's, then the
+      # model proxy's when it runs. Nothing else is passed.
       pfAnchor = "com.apple/100.pi-durable-sgg";
+      gatewayPorts = [ cfg.proxy.port ] ++ lib.optional cfg.modelProxy.enable cfg.modelProxy.port;
       pfRules = pkgs.writeText "pi-durable-sgg.pf" ''
         # Pi Durable SGG sandbox isolation: nix-configs modules/services/pi-durable.nix
-        pass in quick inet proto tcp from { ${lib.concatStringsSep " " cfg.proxy.allowedClients} } to ${toString cfg.proxy.listenAddress} port ${toString cfg.proxy.port} flags S/SA keep state
-        block return in quick on ! lo0 inet from { ${lib.concatStringsSep " " cfg.proxy.allowedClients} } to any
+        ${lib.concatMapStrings (port: "pass in quick inet proto tcp from { ${lib.concatStringsSep " " cfg.proxy.allowedClients} } to ${toString cfg.proxy.listenAddress} port ${toString port} flags S/SA keep state\n") gatewayPorts}block return in quick on ! lo0 inet from { ${lib.concatStringsSep " " cfg.proxy.allowedClients} } to any
         block return in quick on ! lo0 inet6 from ${toString cfg.proxy.ipv6Subnet} to any
         block return in quick on { ${lib.concatMapStringsSep " " (n: "bridge${toString n}") (lib.range 100 115)} } inet6 proto { tcp udp } from fe80::/10 to any
       '';
@@ -188,6 +199,25 @@
               "release-assets.githubusercontent.com"
             ];
             description = "Exact lowercase hostnames the VM may reach through the proxy; every other destination is refused.";
+          };
+        };
+
+        modelProxy = {
+          enable = lib.mkEnableOption ''
+            the model-provider proxy: the sandbox's VMs reach Claude and Jev
+            through it with a per-case placeholder, and it alone reads the real
+            credentials. It listens on the sandbox network's gateway
+            (`proxy.listenAddress`), so it requires the sandbox proxy, and
+            exits 1 until ~/.config/pi-durable/model-proxy.json exists; see the
+            application's workspaces/proxies/OPERATIONS.md before enabling'';
+          port = lib.mkOption {
+            type = lib.types.port;
+            default = 8892;
+            description = ''
+              Port the model proxy listens on at `proxy.listenAddress`, the one
+              pf passes the network to besides tinyproxy's. Must equal
+              `listen.port` in model-proxy.json.
+            '';
           };
         };
 
@@ -310,6 +340,54 @@
               lib.mkAfter (pageRoute "standing page" cfg.page.tailscaleHttpsPort cfg.page.port);
           })
         ]))
+
+        # The model proxy rides on the sandbox proxy: its gateway address and the
+        # pf anchor that confines the network both come from there.
+        (lib.mkIf cfg.modelProxy.enable {
+          assertions = [
+            {
+              assertion = cfg.enable && cfg.proxy.listenAddress != null;
+              message = "services.pi-durable.modelProxy requires services.pi-durable.enable and proxy.listenAddress: it listens on the sandbox network's gateway, and only the sandbox proxy's pf anchor confines that network";
+            }
+            {
+              assertion = cfg.modelProxy.port != cfg.proxy.port;
+              message = "services.pi-durable.modelProxy.port must differ from services.pi-durable.proxy.port (tinyproxy)";
+            }
+            {
+              assertion = cfg.modelProxy.port != cfg.page.port && (!cfg.sampler.enable || cfg.modelProxy.port != cfg.sampler.port);
+              message = "services.pi-durable.modelProxy.port must differ from the pages' ports (page.port and sampler.port)";
+            }
+          ];
+
+          # Until the internal network's gateway exists the bind fails; the
+          # proxy retries in-process and KeepAlive covers an exit. Without
+          # model-proxy.json, `run` exits 1 and KeepAlive retries it at
+          # launchd's throttle.
+          launchd.user.agents.pi-durable-model-proxy.serviceConfig = {
+            ProgramArguments = [
+              node
+              "${checkout}/dist/workspaces/proxies/src/model-main.js"
+              "run"
+              "--config"
+              "${home}/.config/pi-durable/model-proxy.json"
+            ];
+            # HOME only: the proxy finds its config, grants and token files
+            # under it and runs no other program, so it needs no PATH. launchd's
+            # default (/usr/bin:/bin:/usr/sbin:/sbin) holds no node, and Node is
+            # named by store path above. No secret: it reads its 0600 files.
+            EnvironmentVariables.HOME = home;
+            RunAtLoad = true;
+            KeepAlive = true;
+            StandardOutPath = "/tmp/pi-durable-model-proxy.log";
+            StandardErrorPath = "/tmp/pi-durable-model-proxy.error.log";
+          };
+
+          system.activationScripts.extraActivation.text = lib.mkAfter ''
+            # === pi-durable model proxy firewall ===
+            /usr/libexec/ApplicationFirewall/socketfilterfw --add ${node} >/dev/null 2>&1 || true
+            /usr/libexec/ApplicationFirewall/socketfilterfw --unblock ${node} >/dev/null 2>&1 || true
+          '';
+        })
 
         # The sampler runs on its own: it reads the workspaces' state
         # directories and its own config, and needs nothing above enabled.

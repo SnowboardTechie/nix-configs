@@ -25,9 +25,11 @@ PF_ANCHOR = "com.apple/100.pi-durable-sgg"
 BRIDGES = [f"bridge{n}" for n in range(100, 116)]
 # Studio's anchor, as measured on 2026-10-16: the sandbox network reached every
 # service bound to all interfaces, over IPv4 and IPv6, and the tailnet-only ones.
+# Its gateway ports: tinyproxy (8888) and the model proxy (8892, #268).
 STUDIO_PF_RULES = (
     "# Pi Durable SGG sandbox isolation: nix-configs modules/services/pi-durable.nix\n"
     "pass in quick inet proto tcp from { 192.168.128.0/24 } to 192.168.128.1 port 8888 flags S/SA keep state\n"
+    "pass in quick inet proto tcp from { 192.168.128.0/24 } to 192.168.128.1 port 8892 flags S/SA keep state\n"
     "block return in quick on ! lo0 inet from { 192.168.128.0/24 } to any\n"
     "block return in quick on ! lo0 inet6 from fd85:1c07:74fb:2dc7::/64 to any\n"
     f"block return in quick on {{ {' '.join(BRIDGES)} }} inet6 proto {{ tcp udp }} from fe80::/10 to any\n"
@@ -79,7 +81,7 @@ PF_RULES = f'(builtins.head (builtins.filter (lib.hasSuffix "-pi-durable-sgg.pf"
 # Studio sets the commissioning inputs, so a scenario forces the ones it is about.
 ENABLED = (
     "{ enable = lib.mkForce true; proxy = { listenAddress = lib.mkForce null; allowedClients = lib.mkForce [ ]; }; "
-    "page.tailscaleHttpsPort = lib.mkForce null; sampler.enable = lib.mkForce false; }"
+    "page.tailscaleHttpsPort = lib.mkForce null; sampler.enable = lib.mkForce false; modelProxy.enable = lib.mkForce false; }"
 )
 PROXY = (
     '{ enable = lib.mkForce true; proxy = { listenAddress = lib.mkForce "192.168.128.1"; '
@@ -96,6 +98,7 @@ class StudioAsCommissioned(unittest.TestCase):
         self.assertEqual([], s["failed"])
         self.assertIn("pi-durable-sgg", s["agents"])
         self.assertIn("pi-durable-proxy", s["agents"])
+        self.assertIn("pi-durable-model-proxy", s["agents"])
         # The only root job: the boot-time pf loader.
         self.assertEqual(["pi-durable-pf"], [name for name in s["system"] if "pi-durable" in name])
         self.assertIn(f"/sbin/pfctl {PF_ANCHOR} ", s["activation"])
@@ -143,6 +146,7 @@ class EnabledWithoutCommissioningInputs(unittest.TestCase):
         self.assertEqual([], s["failed"])
         self.assertIn("pi-durable-sgg", s["agents"])
         self.assertNotIn("pi-durable-proxy", s["agents"])
+        self.assertNotIn("pi-durable-model-proxy", s["agents"])
         self.assertEqual([], [name for name in s["system"] if "pi-durable" in name])
         self.assertNotIn("tinyproxy", s["activation"])
         self.assertNotIn("pfctl", s["activation"])
@@ -262,8 +266,68 @@ class CommissionedWiring(unittest.TestCase):
         self.assertIn("8443 http://127.0.0.1:8790", activation)
 
 
+class ModelProxy(unittest.TestCase):
+    """The model-provider proxy (#268): Nix's Node on the gateway, its firewall exception and pf port."""
+
+    def test_agent_runs_the_contract_command_on_nix_node_without_secrets(self):
+        agent = studio("{ }", "config.launchd.user.agents.pi-durable-model-proxy.serviceConfig")
+        node = agent["ProgramArguments"][0]
+        self.assertTrue(node.startswith("/nix/store/") and node.endswith("/bin/node"), node)
+        self.assertNotIn("homebrew", node)
+        self.assertEqual(
+            [
+                f"{HOME}/.local/share/pi-durable/sgg-deployment/dist/workspaces/proxies/src/model-main.js",
+                "run",
+                "--config",
+                f"{HOME}/.config/pi-durable/model-proxy.json",
+            ],
+            agent["ProgramArguments"][1:],
+        )
+        # HOME only: no PATH that could find Homebrew's node, and no secret.
+        self.assertEqual({"HOME": HOME}, agent["EnvironmentVariables"])
+        self.assertTrue(agent["RunAtLoad"])
+        self.assertTrue(agent["KeepAlive"])
+        self.assertEqual("/tmp/pi-durable-model-proxy.log", agent["StandardOutPath"])
+        self.assertEqual("/tmp/pi-durable-model-proxy.error.log", agent["StandardErrorPath"])
+        # The firewall exception names exactly that binary, which is a file, not a symlink.
+        activation = studio("{ }", "config.system.activationScripts.extraActivation.text")
+        self.assertIn(f"socketfilterfw --add {node} ", activation)
+        self.assertIn(f"socketfilterfw --unblock {node} ", activation)
+        self.assertNotRegex(activation, r"socketfilterfw --add /opt/homebrew/\S*node")
+
+    def test_disabled_declares_no_agent_firewall_or_pf_port(self):
+        s = studio("{ modelProxy.enable = lib.mkForce false; }", SUMMARY)
+        self.assertEqual([], s["failed"])
+        self.assertNotIn("pi-durable-model-proxy", s["agents"])
+        self.assertNotIn("model proxy firewall", s["activation"])
+        rules = studio("{ modelProxy.enable = lib.mkForce false; }", f"builtins.readFile {PF_RULES}")
+        self.assertEqual(STUDIO_PF_RULES.replace(STUDIO_PF_RULES.splitlines(True)[2], ""), rules)
+
+    def test_port_follows_the_option_into_pf(self):
+        rules = studio("{ modelProxy.port = lib.mkForce 9892; }", f"builtins.readFile {PF_RULES}")
+        self.assertIn("to 192.168.128.1 port 9892 flags S/SA keep state\n", rules)
+        self.assertNotIn("port 8892", rules)
+
+    def test_refuses_without_the_sandbox_proxy_or_on_a_clashing_port(self):
+        accepted, no_listen, disabled, tiny, page, sampler = failures(
+            "{ }",
+            "{ proxy.listenAddress = lib.mkForce null; }",
+            "{ enable = lib.mkForce false; }",
+            "{ modelProxy.port = lib.mkForce 8888; }",
+            "{ modelProxy.port = lib.mkForce 8790; }",
+            "{ modelProxy.port = lib.mkForce 8791; }",
+        )
+        self.assertEqual([], accepted)
+        for failed in (no_listen, disabled):
+            self.assertTrue(any("modelProxy requires" in m for m in failed), failed)
+        self.assertTrue(any("modelProxy.port must differ from services.pi-durable.proxy.port" in m for m in tiny), tiny)
+        for failed in (page, sampler):
+            self.assertTrue(any("modelProxy.port must differ from the pages' ports" in m for m in failed), failed)
+
+
 SAMPLER_ONLY = (
-    "{ enable = lib.mkForce false; sampler = { enable = lib.mkForce true; tailscaleHttpsPort = lib.mkForce null; }; }"
+    "{ enable = lib.mkForce false; modelProxy.enable = lib.mkForce false; "
+    "sampler = { enable = lib.mkForce true; tailscaleHttpsPort = lib.mkForce null; }; }"
 )
 
 
@@ -324,7 +388,7 @@ class Sampler(unittest.TestCase):
         self.assertTrue(any("sampler.port" in m for m in same_port), same_port)
         self.assertTrue(any("sampler.tailscaleHttpsPort" in m for m in same_route), same_route)
         # Without the SGG agent, its ports are not the sampler's concern.
-        self.assertEqual([], failures("{ enable = lib.mkForce false; sampler.port = lib.mkForce 8790; }")[0])
+        self.assertEqual([], failures("{ enable = lib.mkForce false; modelProxy.enable = lib.mkForce false; sampler.port = lib.mkForce 8790; }")[0])
         failed = json.loads(nix("eval", "--json", "--impure", "--expr", f"""
           let
             studio = (builtins.getFlake "path:{REPO}").darwinConfigurations.studio;
@@ -453,18 +517,20 @@ class SandboxPf(unittest.TestCase):
         self.assertEqual(0, parsed.returncode, parsed.stderr)
         lines = parsed.stdout.splitlines()
         passing = "pass in quick inet proto tcp from 192.168.128.0/24 to 192.168.128.1 port = 8888 flags S/SA keep state"
+        model = "pass in quick inet proto tcp from 192.168.128.0/24 to 192.168.128.1 port = 8892 flags S/SA keep state"
         blocking = "block return in quick on ! lo0 inet from 192.168.128.0/24 to any"
         link_local = {
             f"block return in quick on {bridge} inet6 proto {proto} from fe80::/10 to any"
             for bridge in BRIDGES for proto in ("tcp", "udp")
         }
         self.assertEqual(
-            {passing, blocking, "block return in quick on ! lo0 inet6 from fd85:1c07:74fb:2dc7::/64 to any"} | link_local,
+            {passing, model, blocking, "block return in quick on ! lo0 inet6 from fd85:1c07:74fb:2dc7::/64 to any"} | link_local,
             set(lines),
         )
         self.assertEqual(len(lines), len(set(lines)))
         # pfctl may reorder rules that cannot both match; the proxy's pass must still come first.
         self.assertLess(lines.index(passing), lines.index(blocking))
+        self.assertLess(lines.index(model), lines.index(blocking))
 
     def test_a_root_daemon_reloads_it_at_every_boot(self):
         daemon = studio("{ }", PF_DAEMON)
