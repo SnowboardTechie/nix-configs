@@ -21,7 +21,6 @@
       editors
       git
       cli-tools
-      activation
       personal-desktop
       element
       # Service modules
@@ -300,7 +299,6 @@
         "syncthing"
       ];
       casks = [
-        "codex"
         "jellyfin"
         "zen"
       ];

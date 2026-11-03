@@ -52,7 +52,6 @@
 
     # Nix-only packages
     environment.systemPackages = with pkgs; [
-      alacritty
       bun
       fd
       htop
@@ -80,11 +79,9 @@
   flake.modules.nixos.cli-tools = { pkgs, ... }: {
     # All CLI tools as nix packages
     environment.systemPackages = (with pkgs; [
-      alacritty
       bat
       biome
       bun
-      codex
       direnv
       dnsutils # dig, nslookup (brew: bind)
       eza

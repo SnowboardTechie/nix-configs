@@ -13,7 +13,6 @@
       editors
       git
       cli-tools
-      activation
       element
       # Service modules
       syncthing
@@ -76,7 +75,6 @@
         "notion"
         "rectangle"
         "slack"
-        "superwhisper"
         "vivaldi"
         "yubico-authenticator"
         "zoom"

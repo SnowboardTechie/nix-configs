@@ -13,7 +13,6 @@
           git
           cli-tools
           rust
-          activation
           gnome
           gaming
           audio

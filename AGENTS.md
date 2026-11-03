@@ -32,7 +32,7 @@ nix-configs/
 ├── flake.nix              # Entry point: flake-parts + import-tree
 ├── modules/
 │   ├── _options.nix       # Declares flake.modules option for import-tree merging
-│   ├── base/              # Core: fonts, homebrew, nix-settings, zsh, activation
+│   ├── base/              # Core: fonts, homebrew, nix-settings, zsh
 │   ├── dev/               # Dev tools: cli-tools, editors, git
 │   ├── desktop/           # NixOS-only modules: gnome, gaming, audio
 │   ├── services/          # Daemons: ollama, open-webui, monitoring, smb-mount, syncthing, icloud-backup
@@ -80,7 +80,6 @@ Is this a host-specific setting (only one host needs it)?
 | Change editor config | `modules/dev/editors.nix` | Vim, Neovim |
 | Modify shell/zsh | `modules/base/zsh.nix` | |
 | Add NixOS desktop feature | `modules/desktop/` | gnome.nix, gaming.nix, audio.nix |
-| Change activation scripts | `modules/base/activation.nix` | Alacritty symlink |
 
 ## Build/Lint/Test Commands
 
@@ -126,7 +125,7 @@ Every `.nix` file under `modules/` is auto-imported by import-tree. Each module 
 { inputs, ... }: {
   flake.modules.darwin.a6mbp = { pkgs, ... }: {
     imports = with inputs.self.modules.darwin; [
-      fonts nix-settings zsh homebrew editors git cli-tools activation
+      fonts nix-settings zsh homebrew editors git cli-tools
       syncthing  # services
     ];
     # Host-specific config...

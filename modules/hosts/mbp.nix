@@ -14,7 +14,6 @@
       git
       cli-tools
       rust
-      activation
       personal-desktop
       element
       # Desktop features

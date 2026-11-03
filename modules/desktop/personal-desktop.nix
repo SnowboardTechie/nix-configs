@@ -24,7 +24,6 @@
         "logi-options+" # Logitech device configuration
         "rectangle-pro"
         "slack"
-        "superwhisper"
         "vivaldi"
         "yubico-authenticator"
         "zoom"
