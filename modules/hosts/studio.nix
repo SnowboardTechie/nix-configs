@@ -74,6 +74,8 @@
       enable = true;
       secureHome = true;
       gateway.enable = true;
+      # Desktop attaches to this gateway (`hermes gateway ensure`) for Bot Mode.
+      desktop.enable = true;
       autoUpdate = {
         # The guarded updater follows this install's channel and preserves only
         # the reviewed classic /status and #170 matrix-send patches; unrelated
