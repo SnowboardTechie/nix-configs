@@ -24,7 +24,6 @@
       "gitleaks" # Secret scan in the global pre-commit hook (dotfiles)
       "gnupg"
       "googleworkspace-cli"
-      "herdr"
       "jq"
       "just"
       "lazydocker"
@@ -130,7 +129,6 @@
       yaml-language-server
     ]) ++ [
       # External flake inputs (not in nixpkgs)
-      inputs.herdr.packages.${pkgs.stdenv.hostPlatform.system}.default
       #inputs.googleworkspace-cli.packages.${pkgs.stdenv.hostPlatform.system}.default
       inputs.worktrunk.packages.${pkgs.stdenv.hostPlatform.system}.default
     ];
