@@ -221,6 +221,14 @@
           };
         };
 
+        githubProxy.enable = lib.mkEnableOption ''
+          the GitHub write proxy: the workspaces' services write to GitHub only
+          through it, on a Unix socket in its state directory, and it alone reads
+          the agents' GitHub tokens. It opens no port, so it needs no firewall
+          exception or pf rule, and exits 1 until
+          ~/.config/pi-durable/github-proxy.json exists; see the application's
+          workspaces/proxies/OPERATIONS.md §7 before enabling'';
+
         sampler = {
           enable = lib.mkEnableOption ''
             the shared Claude usage sampler: it reads each subscription's usage
@@ -387,6 +395,30 @@
             /usr/libexec/ApplicationFirewall/socketfilterfw --add ${node} >/dev/null 2>&1 || true
             /usr/libexec/ApplicationFirewall/socketfilterfw --unblock ${node} >/dev/null 2>&1 || true
           '';
+        })
+
+        # The GitHub write proxy runs on its own from the same deployment
+        # checkout: it listens only on its Unix socket (0600, in a 0700 state
+        # directory), so it needs no sandbox network, firewall exception or pf
+        # rule. Without github-proxy.json, `run` exits 1 and KeepAlive retries
+        # it at launchd's throttle.
+        (lib.mkIf cfg.githubProxy.enable {
+          launchd.user.agents.pi-durable-github-proxy.serviceConfig = {
+            ProgramArguments = [
+              node
+              "${checkout}/dist/workspaces/proxies/src/github-main.js"
+              "run"
+              "--config"
+              "${home}/.config/pi-durable/github-proxy.json"
+            ];
+            # HOME only: it finds its config, the policy plugin's files and the
+            # agents' 0600 token files under it, and runs no other program.
+            EnvironmentVariables.HOME = home;
+            RunAtLoad = true;
+            KeepAlive = true;
+            StandardOutPath = "/tmp/pi-durable-github-proxy.log";
+            StandardErrorPath = "/tmp/pi-durable-github-proxy.error.log";
+          };
         })
 
         # The sampler runs on its own: it reads the workspaces' state

@@ -187,6 +187,10 @@
       # which must equal `listen.port` in ~/.config/pi-durable/model-proxy.json.
       # It exits 1 until that file exists; launchd retries.
       modelProxy.enable = true;
+      # GitHub write proxy (durable-pi-workspace#268 slice 2; OPERATIONS.md §7):
+      # a Unix socket only, no port. It exits 1 until
+      # ~/.config/pi-durable/github-proxy.json exists; launchd retries.
+      githubProxy.enable = true;
     };
 
     # Shared Claude usage sampler (#236; the application's
