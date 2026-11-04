@@ -126,10 +126,22 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+class StatusServer(ThreadingHTTPServer):
+    # Dashy checks every tile at once on page load. socketserver's default
+    # backlog of 5 (before Python 3.15) overflows, and macOS resets the extra
+    # connections, which Caddy reports as 502s and Dashy as red dots.
+    request_queue_size = 128
+    daemon_threads = True
+
+
+def build_server(host: str, port: int, state_path: Path) -> StatusServer:
+    handler = type("ConfiguredStatusHandler", (StatusHandler,), {"state_path": state_path})
+    return StatusServer((host, port), handler)
+
+
 def main() -> int:
     args = parse_args()
-    handler = type("ConfiguredStatusHandler", (StatusHandler,), {"state_path": args.state})
-    server = ThreadingHTTPServer((args.host, args.port), handler)
+    server = build_server(args.host, args.port, args.state)
     server.serve_forever()
     return 0
 
