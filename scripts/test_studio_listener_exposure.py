@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Studio's monitoring, Open WebUI and Ollama listeners stay off the LAN.
+"""Studio's monitoring, Open WebUI, Ollama and Dashy listeners stay off the LAN.
 
 Every listener binds 127.0.0.1 except Alloy's syslog receiver (UDP 1514, for
-Unraid). Grafana, Prometheus and the Alloy UI are published tailnet-only over
-HTTPS through Tailscale Serve on their own port numbers.
+Unraid). Grafana, Prometheus, the Alloy UI and the Dashy portal are published
+tailnet-only over HTTPS through Tailscale Serve on their own port numbers.
 """
 import json
 import subprocess
@@ -126,6 +126,39 @@ class MonitoringListenerTests(unittest.TestCase):
         )
         self.assertEqual(
             f"https://{TAILNET_HOST}:12345", nix_eval_json(f"{STUDIO}.services.dashy.alloyUrl")
+        )
+
+
+class DashyListenerTests(unittest.TestCase):
+    def caddy_config(self):
+        args = program_arguments("user.agents", "dashy")
+        config_file = Path(args[args.index("--config") + 1])
+        build_studio()
+        return json.loads(config_file.read_text())
+
+    def test_portal_binds_loopback(self):
+        server = self.caddy_config()["apps"]["http"]["servers"]["dashy"]
+        self.assertEqual(["127.0.0.1:8088"], server["listen"])
+
+    def test_portal_is_served_tailnet_only_on_its_own_port(self):
+        script = activation()
+        block = script[script.index("# === dashy: portal via Tailscale Serve ===") :]
+        block = block[: block.index("fi\n")]
+        self.assertIn("--https=8088", block)
+        self.assertIn("http://127.0.0.1:8088;", block)
+        self.assertNotIn("funnel", block)
+
+    def test_loopback_portal_gets_no_firewall_rule(self):
+        self.assertNotIn("# === Dashy firewall ===", activation())
+
+    def test_pi_durable_links_follow_the_served_pages(self):
+        links = nix_eval_json(f"{STUDIO}.services.dashy.piDurableLinks")
+        self.assertEqual(
+            [
+                ("SGG pre-review", f"https://{TAILNET_HOST}:8790/", "SGG pre-review"),
+                ("Claude usage", f"https://{TAILNET_HOST}:8791/", "Claude usage"),
+            ],
+            [(link["title"], link["url"], link["statusName"]) for link in links],
         )
 
 

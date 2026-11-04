@@ -151,12 +151,34 @@
       in
       {
         enable = true;
-        host = "100.121.238.48";
+        # Loopback only; Tailscale Serve publishes it tailnet-only over HTTPS on
+        # the same port number (it listened on the tailnet address over plain
+        # HTTP until 2026-11-03).
+        host = "127.0.0.1";
+        tailscaleHttpsPort = 8088;
         # Derived so the portal links follow the authoritative monitoring ports,
         # which Tailscale Serve publishes tailnet-only over HTTPS.
         grafanaBaseUrl = tailnetUrl monitoring.grafana.port;
         prometheusUrl = tailnetUrl monitoring.prometheus.port;
         alloyUrl = tailnetUrl monitoring.alloy.port;
+        # Each Pi Durable workspace page, from its own Serve port. The status
+        # names are the Hermes watchdog's probes (check-studio-services.py).
+        piDurableLinks = [
+          {
+            title = "SGG pre-review";
+            description = "Pre-reviews, dependencies and audit fixes";
+            url = "${tailnetUrl config.services.pi-durable.page.tailscaleHttpsPort}/";
+            icon = "🔎";
+            statusName = "SGG pre-review";
+          }
+          {
+            title = "Claude usage";
+            description = "Subscription use by workspace and week";
+            url = "${tailnetUrl config.services.pi-durable.sampler.tailscaleHttpsPort}/";
+            icon = "📈";
+            statusName = "Claude usage";
+          }
+        ];
       };
 
     # Loopback-only static review service for the Summit Point website
