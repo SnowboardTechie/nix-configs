@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Expose allowlisted Studio watchdog state in Dashy's status-check format."""
+"""Expose allowlisted Studio watchdog state in Dashy's status-check format.
+
+A service turns red only when the watchdog has alerted on it (``alerted`` is
+JSON ``true``, after 3 failed checks in a row). A latest check that failed
+below that threshold stays green, with a message giving the failure count.
+Watchdog error text is never exposed.
+"""
 
 from __future__ import annotations
 
@@ -37,6 +43,12 @@ def _payload(success: bool, status_code: int, status_text: str, message: str) ->
     }
 
 
+def _failure_message(failures: object) -> str:
+    if type(failures) is int and failures > 0:
+        return f"Latest check failed ({failures} in a row)"
+    return "Latest check failed"
+
+
 def service_status(state_path: Path, service_name: str, *, now: float | None = None) -> tuple[int, dict]:
     current_time = time.time() if now is None else now
     try:
@@ -60,8 +72,10 @@ def service_status(state_path: Path, service_name: str, *, now: float | None = N
     record = services.get(service_name)
     if not isinstance(record, dict):
         return HTTPStatus.OK, _payload(False, 503, "Unknown", "Service state is invalid")
-    if record.get("last_error") is not None:
+    if record.get("alerted") is True:
         return HTTPStatus.OK, _payload(False, 503, "Unhealthy", "Latest check failed")
+    if record.get("last_error") is not None:
+        return HTTPStatus.OK, _payload(True, 200, "Check failed", _failure_message(record.get("failures")))
     return HTTPStatus.OK, _payload(True, 200, "Healthy", "Latest check passed")
 
 

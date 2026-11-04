@@ -46,18 +46,75 @@ class ServiceStatusTest(unittest.TestCase):
         self.assertEqual(payload["statusCode"], 200)
         self.assertNotIn("last_error", payload)
 
-    def test_current_failure_is_visible_before_notification_threshold(self) -> None:
+    def status_for(self, record: dict) -> tuple[int, dict]:
         with tempfile.TemporaryDirectory() as temporary:
-            path = self.write_state(
-                Path(temporary),
-                {"Grafana": {"failures": 1, "alerted": False, "last_error": "HTTP 500"}},
-            )
-            status, payload = self.module.service_status(path, "Grafana", now=time.time())
+            path = self.write_state(Path(temporary), {"Grafana": record})
+            return self.module.service_status(path, "Grafana", now=time.time())
 
+    def test_failures_below_alert_threshold_stay_green_with_count(self) -> None:
+        for failures in (1, 2):
+            with self.subTest(failures=failures):
+                status, payload = self.status_for(
+                    {"failures": failures, "alerted": False, "last_error": "HTTP 500"}
+                )
+                self.assertEqual(status, 200)
+                self.assertIs(payload["successStatus"], True)
+                self.assertEqual(payload["statusCode"], 200)
+                self.assertIn(str(failures), payload["message"])
+                self.assertIn("failed", payload["message"])
+                self.assertNotIn("HTTP 500", json.dumps(payload))
+
+    def test_alerted_service_is_red_without_error_text(self) -> None:
+        status, payload = self.status_for(
+            {"failures": 3, "alerted": True, "last_error": "HTTP 500"}
+        )
         self.assertEqual(status, 200)
         self.assertIs(payload["successStatus"], False)
         self.assertEqual(payload["statusCode"], 503)
+        self.assertEqual(payload["statusText"], "Unhealthy")
         self.assertNotIn("HTTP 500", json.dumps(payload))
+
+    def test_only_json_true_counts_as_alerted(self) -> None:
+        for alerted in ("yes", 1, "true", [True]):
+            with self.subTest(alerted=alerted):
+                status, payload = self.status_for(
+                    {"failures": 3, "alerted": alerted, "last_error": "HTTP 500"}
+                )
+                self.assertEqual(status, 200)
+                self.assertIs(payload["successStatus"], True)
+                self.assertEqual(payload["statusCode"], 200)
+                self.assertNotIn("HTTP 500", json.dumps(payload))
+
+    def test_malformed_failure_count_stays_green_with_generic_message(self) -> None:
+        for record in (
+            {"alerted": False, "last_error": "HTTP 500"},
+            {"failures": "two", "alerted": False, "last_error": "HTTP 500"},
+            {"failures": None, "alerted": False, "last_error": "HTTP 500"},
+            {"failures": 2.5, "alerted": False, "last_error": "HTTP 500"},
+            {"failures": True, "alerted": False, "last_error": "HTTP 500"},
+        ):
+            with self.subTest(record=record):
+                status, payload = self.status_for(record)
+                self.assertEqual(status, 200)
+                self.assertIs(payload["successStatus"], True)
+                self.assertEqual(payload["statusCode"], 200)
+                self.assertEqual(payload["message"], "Latest check failed")
+                self.assertNotIn("HTTP 500", json.dumps(payload))
+
+    def test_non_dict_record_is_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self.write_state(Path(temporary), {"Grafana": "broken"})
+            status, payload = self.module.service_status(path, "Grafana", now=time.time())
+        self.assertEqual(status, 200)
+        self.assertIs(payload["successStatus"], False)
+        self.assertEqual(payload["statusText"], "Unknown")
+
+    def test_unreadable_state_is_watchdog_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "missing.json"
+            status, payload = self.module.service_status(path, "Grafana", now=time.time())
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["statusText"], "Watchdog unavailable")
 
     def test_unknown_service_is_rejected_without_network_access(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
