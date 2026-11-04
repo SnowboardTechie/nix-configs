@@ -28,6 +28,7 @@
       # Common Homebrew casks (GUI applications)
       casks = [
         "anomalyco/tap/hex" # Local voice dictation — anoma.ly/hex
+        "calendr" # Next meeting + countdown in the menu bar — github.com/pakerwreah/Calendr
         "font-meslo-lg-nerd-font"
         "obsidian"
         "yaak"
