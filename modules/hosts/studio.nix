@@ -209,9 +209,12 @@
       # which must equal `listen.port` in ~/.config/pi-durable/model-proxy.json.
       # It exits 1 until that file exists; launchd retries.
       modelProxy.enable = true;
-      # GitHub write proxy (durable-pi-workspace#268 slice 2; OPERATIONS.md §7):
-      # a Unix socket only, no port. It exits 1 until
-      # ~/.config/pi-durable/github-proxy.json exists; launchd retries.
+      # GitHub write proxy (durable-pi-workspace#268; OPERATIONS.md §7): its
+      # API route on a Unix socket, and (slice 3) case VMs' pushes and
+      # signature requests on the gateway at the default 8893, which must
+      # equal `push.listen.port` in ~/.config/pi-durable/github-proxy.json.
+      # Without that `push` block it opens no port. It exits 1 until the file
+      # exists; launchd retries.
       githubProxy.enable = true;
     };
 

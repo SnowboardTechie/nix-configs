@@ -3,6 +3,9 @@
 # sampler (workspaces/sampler/OPERATIONS.md): its agent and its page's route.
 # And the model-provider proxy (workspaces/proxies/OPERATIONS.md): its agent on
 # Nix's Node, its firewall exception and its port in the sandbox's pf anchor.
+# And the GitHub write proxy (the same runbook, §7): its agent on the same Node,
+# with Nix's git and openssh on its PATH, and its gateway port (8893: case VMs'
+# pushes and signature requests) in the pf anchor, sharing that exception.
 #
 # Application and runbook: ~/code/durable-pi-workspace
 # (workspaces/sgg/OPERATIONS.md). The service starts paused and holds every
@@ -38,12 +41,14 @@
       # Do not substitute a temporary worktree or an installed-plist override.
       checkout = "${home}/.local/share/pi-durable/sgg-deployment";
       tinyproxy = "${pkgs.tinyproxy}/bin/tinyproxy";
-      # The model proxy's Node: a store path, so the firewall exception below
+      # The proxies' Node: a store path, so the firewall exception below
       # names exactly this binary and Homebrew's node never gets one. The slim
       # package's bin/node is the binary itself; nodejs_24's is a symlink to it,
       # and the firewall would see the target, not the name it was given.
       # Node 24 satisfies the application's engines (>=22.19.0).
       node = "${pkgs.nodejs-slim_24}/bin/node";
+      # Either proxy listening on the gateway needs that one exception.
+      nodeListens = cfg.modelProxy.enable || cfg.githubProxy.enable;
 
       # Canonical dotted-quad only (octets 0-255, no leading zeros, whitespace
       # or newline), so a value can never widen or add a tinyproxy directive.
@@ -84,9 +89,12 @@
       # link-local are refused on every bridge vmnet may use.
       #
       # Each port the network may reach on the gateway: tinyproxy's, then the
-      # model proxy's when it runs. Nothing else is passed.
+      # model proxy's and the write proxy's when each runs. Nothing else is
+      # passed, so with both disabled the anchor is exactly tinyproxy's.
       pfAnchor = "com.apple/100.pi-durable-sgg";
-      gatewayPorts = [ cfg.proxy.port ] ++ lib.optional cfg.modelProxy.enable cfg.modelProxy.port;
+      gatewayPorts = [ cfg.proxy.port ]
+        ++ lib.optional cfg.modelProxy.enable cfg.modelProxy.port
+        ++ lib.optional cfg.githubProxy.enable cfg.githubProxy.port;
       pfRules = pkgs.writeText "pi-durable-sgg.pf" ''
         # Pi Durable SGG sandbox isolation: nix-configs modules/services/pi-durable.nix
         ${lib.concatMapStrings (port: "pass in quick inet proto tcp from { ${lib.concatStringsSep " " cfg.proxy.allowedClients} } to ${toString cfg.proxy.listenAddress} port ${toString port} flags S/SA keep state\n") gatewayPorts}block return in quick on ! lo0 inet from { ${lib.concatStringsSep " " cfg.proxy.allowedClients} } to any
@@ -221,13 +229,29 @@
           };
         };
 
-        githubProxy.enable = lib.mkEnableOption ''
-          the GitHub write proxy: the workspaces' services write to GitHub only
-          through it, on a Unix socket in its state directory, and it alone reads
-          the agents' GitHub tokens. It opens no port, so it needs no firewall
-          exception or pf rule, and exits 1 until
-          ~/.config/pi-durable/github-proxy.json exists; see the application's
-          workspaces/proxies/OPERATIONS.md §7 before enabling'';
+        githubProxy = {
+          enable = lib.mkEnableOption ''
+            the GitHub write proxy: the workspaces' services write to GitHub
+            only through it, on a Unix socket in its state directory, and it
+            alone reads the agents' GitHub tokens and signing keys. Case VMs
+            push and request commit signatures through its listener on the
+            sandbox network's gateway (`proxy.listenAddress`, at `port`), so it
+            requires the sandbox proxy. It exits 1 until
+            ~/.config/pi-durable/github-proxy.json exists; see the application's
+            workspaces/proxies/OPERATIONS.md §7 before enabling'';
+          port = lib.mkOption {
+            type = lib.types.port;
+            default = 8893;
+            description = ''
+              Port the write proxy's push and signing listener uses at
+              `proxy.listenAddress`, which pf passes the network to besides
+              tinyproxy's and the model proxy's. Must equal `push.listen.port`
+              in github-proxy.json (the application's
+              workspaces/proxies/OPERATIONS.md §7). Without that `push` block
+              the proxy opens no port, and pf passing it reaches nothing.
+            '';
+          };
+        };
 
         sampler = {
           enable = lib.mkEnableOption ''
@@ -389,20 +413,42 @@
             StandardOutPath = "/tmp/pi-durable-model-proxy.log";
             StandardErrorPath = "/tmp/pi-durable-model-proxy.error.log";
           };
+        })
 
+        # Both proxies listen on the gateway from the same Node binary: one
+        # exception, while either is enabled.
+        (lib.mkIf nodeListens {
           system.activationScripts.extraActivation.text = lib.mkAfter ''
-            # === pi-durable model proxy firewall ===
+            # === pi-durable proxies' Node firewall ===
             /usr/libexec/ApplicationFirewall/socketfilterfw --add ${node} >/dev/null 2>&1 || true
             /usr/libexec/ApplicationFirewall/socketfilterfw --unblock ${node} >/dev/null 2>&1 || true
           '';
         })
 
-        # The GitHub write proxy runs on its own from the same deployment
-        # checkout: it listens only on its Unix socket (0600, in a 0700 state
-        # directory), so it needs no sandbox network, firewall exception or pf
-        # rule. Without github-proxy.json, `run` exits 1 and KeepAlive retries
-        # it at launchd's throttle.
+        # The GitHub write proxy, from the same deployment checkout: its API
+        # route is a Unix socket (0600, in a 0700 state directory); with the
+        # `push` block in github-proxy.json it also listens on the gateway at
+        # `githubProxy.port` for case VMs' pushes and `/sign`, retrying the
+        # bind until vmnet brings the gateway up, as the model proxy does.
+        # Like the model proxy, it rides on the sandbox proxy's address and pf
+        # anchor. Without github-proxy.json, `run` exits 1 and KeepAlive
+        # retries it at launchd's throttle.
         (lib.mkIf cfg.githubProxy.enable {
+          assertions = [
+            {
+              assertion = cfg.enable && cfg.proxy.listenAddress != null;
+              message = "services.pi-durable.githubProxy requires services.pi-durable.enable and proxy.listenAddress: its push listener is on the sandbox network's gateway, and only the sandbox proxy's pf anchor confines that network";
+            }
+            {
+              assertion = cfg.githubProxy.port != cfg.proxy.port && (!cfg.modelProxy.enable || cfg.githubProxy.port != cfg.modelProxy.port);
+              message = "services.pi-durable.githubProxy.port must differ from services.pi-durable.proxy.port (tinyproxy) and modelProxy.port";
+            }
+            {
+              assertion = cfg.githubProxy.port != cfg.page.port && (!cfg.sampler.enable || cfg.githubProxy.port != cfg.sampler.port);
+              message = "services.pi-durable.githubProxy.port must differ from the pages' ports (page.port and sampler.port)";
+            }
+          ];
+
           launchd.user.agents.pi-durable-github-proxy.serviceConfig = {
             ProgramArguments = [
               node
@@ -411,9 +457,19 @@
               "--config"
               "${home}/.config/pi-durable/github-proxy.json"
             ];
-            # HOME only: it finds its config, the policy plugin's files and the
-            # agents' 0600 token files under it, and runs no other program.
-            EnvironmentVariables.HOME = home;
+            # HOME: it finds its config, the policy plugin's files and the
+            # agents' 0600 token and signing-key files under it. PATH: only
+            # Nix's git (git, `git http-backend`, `git verify-commit`) and
+            # openssh (`ssh-keygen -Y sign`, and verify-commit's ssh-keygen),
+            # at store paths, so nothing finds Homebrew's node or any other
+            # tool. No system directory: on Studio (2026-11-03), with only these
+            # two, git signed and verified a commit, served receive-pack, ran a
+            # `#!/bin/sh` pre-receive hook and reached GitHub over HTTPS without
+            # a certificate variable. No secret.
+            EnvironmentVariables = {
+              HOME = home;
+              PATH = lib.makeBinPath [ pkgs.git pkgs.openssh ];
+            };
             RunAtLoad = true;
             KeepAlive = true;
             StandardOutPath = "/tmp/pi-durable-github-proxy.log";
