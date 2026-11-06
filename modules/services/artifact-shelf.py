@@ -406,22 +406,34 @@ def check_source(src: Path) -> Path:
     return resolved
 
 
-def check_inner_links(src: Path) -> None:
-    """Refuse a source holding a symlink that leads outside it.
+def check_inner_links(tree: Path) -> None:
+    """Refuse a tree holding a symlink that could lead outside it.
 
-    Caddy follows symlinks, so one pointing at ~/.ssh or similar would serve
-    that file on the tailnet. Links that stay inside the source are fine.
+    Caddy follows symlinks, so a link to ~/.ssh or similar would serve that
+    file on the tailnet. Every link must be relative and resolve inside the
+    tree; absolute links are refused even when they point inside, because a
+    copy would keep pointing back at the (mutable, possibly pruned) source.
+    A directory the walk can't read refuses the tree rather than being
+    skipped.
     """
-    for directory, dirnames, filenames in os.walk(src, followlinks=False):
+    tree = tree.resolve()
+
+    def unreadable(error: OSError) -> None:
+        raise ShelfError(f"refusing {tree}: cannot inspect {error.filename}: {error.strerror}")
+
+    for directory, dirnames, filenames in os.walk(tree, onerror=unreadable, followlinks=False):
         for name in dirnames + filenames:
             path = Path(directory) / name
             if not path.is_symlink():
                 continue
+            text = os.readlink(path)
+            if os.path.isabs(text):
+                raise ShelfError(f"refusing {path}: absolute symlink ({text}); use a relative link inside the source")
             try:
                 target = path.resolve(strict=True)
             except (OSError, RuntimeError):
                 raise ShelfError(f"refusing {path}: broken or looping symlink")
-            if not target.is_relative_to(src):
+            if not target.is_relative_to(tree):
                 raise ShelfError(f"refusing {path}: symlink points outside the source, to {target}")
 
 
@@ -475,6 +487,9 @@ def cmd_publish(args: argparse.Namespace) -> int:
             os.symlink(src, staged)
         else:
             shutil.copytree(src, staged, symlinks=True)
+            # Check what will actually be served, not just the source, which
+            # can change between the first check and the copy.
+            check_inner_links(staged)
         swap_into_place(staged, target)
     finally:
         if os.path.lexists(staged):

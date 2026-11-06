@@ -150,8 +150,10 @@ class PublishTests(ShelfTestCase):
                     for child in src.iterdir():
                         if child.is_symlink():
                             child.unlink()
-                    target = secret / "id_ed25519" if kind == "file" else secret
+                    # Relative, so the outside check (not the absolute one) refuses it.
+                    target = "../../secret/id_ed25519" if kind == "file" else "../../secret"
                     (src / "notes").symlink_to(target)
+                    self.assertTrue((src / "notes").exists())
                     code, _, err = self.publish(src, "2026-11-06-leak", *extra)
                     self.assertEqual(2, code)
                     self.assertIn("points outside the source", err)
@@ -164,10 +166,47 @@ class PublishTests(ShelfTestCase):
         src = self.source()
         (src / "img").mkdir()
         (src / "img" / "a.png").write_bytes(b"png")
-        (src / "alias.png").symlink_to(src / "img" / "a.png")
+        (src / "alias.png").symlink_to("img/a.png")
         code, _, err = self.publish(src, "2026-11-06-inner")
         self.assertEqual(0, code, err)
         self.assertTrue((self.root / "items/2026-11-06-inner/alias.png").is_symlink())
+
+    def test_absolute_symlink_refused_even_inside_the_source(self):
+        src = self.source()
+        (src / "a.png").write_bytes(b"png")
+        (src / "alias.png").symlink_to(src / "a.png")
+        for extra in ((), ("--link",)):
+            with self.subTest(link=bool(extra)):
+                code, _, err = self.publish(src, "2026-11-06-abs", *extra)
+                self.assertEqual(2, code)
+                self.assertIn("absolute symlink", err)
+
+    def test_staged_copy_is_checked_before_it_goes_live(self):
+        src = self.source()
+        real_copytree = shelf.shutil.copytree
+
+        def racing_copytree(source, dest, **kwargs):
+            # The source gains an outward link after the first check.
+            result = real_copytree(source, dest, **kwargs)
+            (Path(dest) / "late").symlink_to("../../../secret")
+            return result
+
+        with mock.patch.object(shelf.shutil, "copytree", racing_copytree):
+            code, _, err = self.publish(src, "2026-11-06-race")
+        self.assertEqual(2, code)
+        self.assertIn("refusing", err)
+        self.assertFalse(os.path.lexists(self.root / "items" / "2026-11-06-race"))
+        self.assertEqual([], [p.name for p in (self.root / "items").iterdir() if p.name.startswith(".")])
+
+    def test_unreadable_directory_refuses_the_source(self):
+        src = self.source()
+        locked = src / "locked"
+        locked.mkdir()
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o755)
+        code, _, err = self.publish(src, "2026-11-06-locked", "--link")
+        self.assertEqual(2, code)
+        self.assertIn("cannot inspect", err)
 
     def test_slug_validation(self):
         src = self.source()
