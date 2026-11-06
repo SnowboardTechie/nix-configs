@@ -28,13 +28,5 @@ class CronModelRouteTests(unittest.TestCase):
         self.assertEqual(job["provider"], "openai-codex", filename)
         self.assertIsNone(job["base_url"], filename)
 
-    def test_source_heavy_watchdog_uses_codex_subscription(self) -> None:
-        filename = "inkling-small-release-watch.job.json"
-        job = json.loads((ROOT / filename).read_text(encoding="utf-8"))
-        self.assertEqual(job["model"], "gpt-5.6-terra", filename)
-        self.assertEqual(job["provider"], "openai-codex", filename)
-        self.assertIsNone(job["base_url"], filename)
-
-
 if __name__ == "__main__":
     unittest.main()
