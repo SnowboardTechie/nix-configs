@@ -39,6 +39,23 @@
         else
           item link;
       loopback = cfg.host == "127.0.0.1";
+      # One portal link, shown with piDurableItem.
+      linkType = lib.types.submodule {
+        options = {
+          title = lib.mkOption { type = lib.types.str; };
+          description = lib.mkOption { type = lib.types.str; };
+          url = lib.mkOption { type = lib.types.str; };
+          icon = lib.mkOption { type = lib.types.str; };
+          statusName = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = ''
+              The Hermes watchdog's name for this service, which drives the
+              status dot. Null shows the link without one.
+            '';
+          };
+        };
+      };
       dashyPackage = pkgs.dashy-ui.override {
         settings = {
           pageInfo = {
@@ -97,7 +114,7 @@
                   url = grafanaBase;
                   icon = "📊";
                 })
-              ];
+              ] ++ map piDurableItem cfg.dailyLinks;
             }
           ] ++ lib.optional (cfg.piDurableLinks != [ ]) {
             name = "Pi Durable";
@@ -253,26 +270,19 @@
           '';
         };
         piDurableLinks = lib.mkOption {
-          type = lib.types.listOf (lib.types.submodule {
-            options = {
-              title = lib.mkOption { type = lib.types.str; };
-              description = lib.mkOption { type = lib.types.str; };
-              url = lib.mkOption { type = lib.types.str; };
-              icon = lib.mkOption { type = lib.types.str; };
-              statusName = lib.mkOption {
-                type = lib.types.nullOr lib.types.str;
-                default = null;
-                description = ''
-                  The Hermes watchdog's name for this service, which drives the
-                  status dot. Null shows the link without one.
-                '';
-              };
-            };
-          });
+          type = lib.types.listOf linkType;
           default = [ ];
           description = ''
             Pi Durable workspace pages, shown in their own section in this
             order. Hosts should derive each URL from the page's Serve port.
+          '';
+        };
+        dailyLinks = lib.mkOption {
+          type = lib.types.listOf linkType;
+          default = [ ];
+          description = ''
+            Extra links appended to the Daily Services section, in this order.
+            Hosts should derive each URL from the service's own options.
           '';
         };
       };

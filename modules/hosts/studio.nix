@@ -2,7 +2,7 @@
 #
 # Features: fonts, nix-settings, zsh, homebrew, editors, git, cli-tools, personal desktop
 # Services: Hermes (with a nightly NAS backup), ollama, open-webui, monitoring, fseventsd
-# watchdog, smb-mount, syncthing, iCloud backup
+# watchdog, smb-mount, syncthing, iCloud backup, Dashy, Artifact Shelf
 # (Pi Durable SGG pre-review enabled for commissioning 2026-10-16; now commissioned.)
 # (oMLX imported for an isolated GLM-5.3-Flash trial; disabled until commissioning.)
 # (Obsidian Headless Sync and the vault Git backup were retired 2026-09-16. Since 2026-10-31
@@ -34,6 +34,7 @@
       hermes
       hermes-nas-backup
       dashy
+      artifact-shelf
       summit-point-gallery
       pi-durable
       omlx
@@ -179,7 +180,27 @@
             statusName = "Claude usage";
           }
         ];
+        dailyLinks = [
+          {
+            title = "Artifact Shelf";
+            description = "Pages and visuals Hermes made for you";
+            url = "${tailnetUrl config.services.artifact-shelf.tailscaleHttpsPort}/";
+            icon = "🗂️";
+            statusName = "Artifact Shelf";
+          }
+        ];
       };
+
+    # Artifact Shelf: one page holding every visual artifact Hermes prepares,
+    # each at a stable URL (publish with `artifact-shelf publish`). Loopback
+    # Caddy on 8092, published tailnet-only over HTTPS on the same port. On
+    # 2026-11-06 Serve held 443, 8088, 8790, 8791, 9090, 9120, 10443-10445
+    # (previews), 11434, 12345 and 33000; nothing listened on 8092.
+    services.artifact-shelf = {
+      enable = true;
+      tailscaleHttpsPort = 8092;
+      baseUrl = "https://${config.services.monitoring.tailscaleServe.hostName}:8092";
+    };
 
     # Loopback-only static review service for the Summit Point website
     # concept preview. Only summitpoint.thompson.codes reaches it, through the

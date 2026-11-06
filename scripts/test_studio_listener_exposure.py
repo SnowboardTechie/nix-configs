@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Studio's monitoring, Open WebUI, Ollama and Dashy listeners stay off the LAN.
+"""Studio's monitoring, Open WebUI, Ollama, Dashy and Artifact Shelf listeners stay off the LAN.
 
 Every listener binds 127.0.0.1 except Alloy's syslog receiver (UDP 1514, for
-Unraid). Grafana, Prometheus, the Alloy UI and the Dashy portal are published
-tailnet-only over HTTPS through Tailscale Serve on their own port numbers.
+Unraid). Grafana, Prometheus, the Alloy UI, the Dashy portal and the Artifact
+Shelf are published tailnet-only over HTTPS through Tailscale Serve on their
+own port numbers.
 """
 import json
 import subprocess
@@ -160,6 +161,42 @@ class DashyListenerTests(unittest.TestCase):
             ],
             [(link["title"], link["url"], link["statusName"]) for link in links],
         )
+
+
+class ArtifactShelfListenerTests(unittest.TestCase):
+    def caddy_config(self):
+        args = program_arguments("user.agents", "artifact-shelf")
+        self.assertEqual("run", args[1])
+        config_file = Path(args[args.index("--config") + 1])
+        build_studio()
+        return json.loads(config_file.read_text())
+
+    def test_shelf_binds_loopback(self):
+        server = self.caddy_config()["apps"]["http"]["servers"]["artifact-shelf"]
+        self.assertEqual(["127.0.0.1:8092"], server["listen"])
+
+    def test_shelf_is_served_tailnet_only_on_its_own_port(self):
+        script = activation()
+        block = script[script.index("# === artifact-shelf: shelf via Tailscale Serve ===") :]
+        block = block[: block.index("fi\n")]
+        self.assertIn("--https=8092", block)
+        self.assertIn("http://127.0.0.1:8092;", block)
+        self.assertNotIn("funnel", block)
+
+    def test_shelf_gets_no_firewall_rule(self):
+        script = activation()
+        caddy = program_arguments("user.agents", "artifact-shelf")[0]
+        firewall_lines = [line for line in script.splitlines() if "socketfilterfw" in line]
+        self.assertFalse([line for line in firewall_lines if caddy in line or "artifact-shelf" in line])
+
+    def test_dashy_shows_the_shelf_tile(self):
+        args = program_arguments("user.agents", "dashy")
+        config_file = Path(args[args.index("--config") + 1])
+        build_studio()
+        root = json.loads(config_file.read_text())["apps"]["http"]["servers"]["dashy"]["routes"][-1]["handle"][0]["root"]
+        conf = (Path(root) / "conf.yml").read_text()
+        self.assertIn("Artifact Shelf", conf)
+        self.assertIn(f"https://{TAILNET_HOST}:8092/", conf)
 
 
 class LocalModelListenerTests(unittest.TestCase):

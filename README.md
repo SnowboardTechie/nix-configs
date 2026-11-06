@@ -11,7 +11,7 @@ modules/
 ├── base/       # Core system: fonts, homebrew, nix-settings, zsh
 ├── dev/        # Development: cli-tools, editors, git
 ├── desktop/    # GUI: shared macOS apps plus NixOS gnome, gaming, and audio
-├── services/   # Daemons/agents: Hermes, ollama, monitoring, fseventsd watchdog, SMB, syncthing, Pi Durable (Studio; Obsidian Sync/backup modules retained, unused), oMLX trial (imported, disabled)
+├── services/   # Daemons/agents: Hermes, ollama, monitoring, fseventsd watchdog, SMB, syncthing, Dashy, Artifact Shelf, Pi Durable (Studio; Obsidian Sync/backup modules retained, unused), oMLX trial (imported, disabled)
 ├── hosts/      # Compositions: a6mbp, mbp, studio (Darwin), gnarbox (NixOS)
 └── dev-envs/   # VA project environments
 ```
@@ -40,6 +40,8 @@ Studio manages the Jellyfin media server app through its host-specific Homebrew 
 Third-party agent memory is retired. Agents use their harness-native memory and history plus the existing project vaults and personal Apple Notes. Hindsight's service, dedicated database, proxy and scheduled upkeep are no longer declared; its encrypted backups and inactive local data are preserved, not imported into another memory system. Dotfiles owns removal of the Hindsight, context-mode and claude-mem client integrations.
 
 The private Studio service portal is available tailnet-only at `https://bryans-mac-studio.tail5ba690.ts.net:8088` (Tailscale Serve in front of a loopback listener), with a Pi Durable section linking each workspace's page. It uses the immutable Nixpkgs Dashy static build for links and a read-only local adapter for health state from the model-free Hermes service watchdog; it has no public ingress, arbitrary proxy, or mutable web configuration.
+
+Studio also runs the **Artifact Shelf** (`services.artifact-shelf`): one tailnet-only page at `https://bryans-mac-studio.tail5ba690.ts.net:8092/` (Tailscale Serve in front of loopback Caddy on 8092, linked from the portal's Daily Services) holding every visual artifact Hermes prepares, each at a stable URL. Agents publish with the `artifact-shelf` CLI into `~/Library/Application Support/Artifact Shelf/`, and a launchd agent rebuilds the index when items change and every 10 minutes, so items whose files disappear drop off the page by themselves.
 
 Studio also serves the **Summit Point concept preview** (`services.summit-point-gallery`) on loopback `127.0.0.1:4321`. It is an unlisted, public-by-link design review preview for the separate private repository `bryan/summit-point-site`, exposed through one hostname, `summitpoint.thompson.codes`, on the existing remotely managed Cloudflare Tunnel. Caddy answers any other Host header with a 404. The served tree is the `current` symlink under `~/Library/Application Support/Thompson Codes/Summit Point Gallery/`, staged by that repository's `scripts/publish-review.sh` as an immutable `releases/<sha>/` build; rollback is `scripts/publish-review.sh --rollback <sha>`, an atomic symlink change that needs no rebuild and no activation. Responses are `noindex`/`no-store`. The preview carries no approved Summit Point content.
 
