@@ -189,6 +189,11 @@ class ArtifactShelfListenerTests(unittest.TestCase):
         firewall_lines = [line for line in script.splitlines() if "socketfilterfw" in line]
         self.assertFalse([line for line in firewall_lines if caddy in line or "artifact-shelf" in line])
 
+    def test_cli_links_follow_the_served_port(self):
+        self.assertEqual(
+            f"https://{TAILNET_HOST}:8092", nix_eval_json(f"{STUDIO}.services.artifact-shelf.baseUrl")
+        )
+
     def test_dashy_shows_the_shelf_tile(self):
         args = program_arguments("user.agents", "dashy")
         config_file = Path(args[args.index("--config") + 1])

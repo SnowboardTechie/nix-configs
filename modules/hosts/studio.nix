@@ -199,7 +199,7 @@
     services.artifact-shelf = {
       enable = true;
       tailscaleHttpsPort = 8092;
-      baseUrl = "https://${config.services.monitoring.tailscaleServe.hostName}:8092";
+      baseUrl = "https://${config.services.monitoring.tailscaleServe.hostName}:${toString config.services.artifact-shelf.tailscaleHttpsPort}";
     };
 
     # Loopback-only static review service for the Summit Point website
