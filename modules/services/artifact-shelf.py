@@ -406,6 +406,25 @@ def check_source(src: Path) -> Path:
     return resolved
 
 
+def check_inner_links(src: Path) -> None:
+    """Refuse a source holding a symlink that leads outside it.
+
+    Caddy follows symlinks, so one pointing at ~/.ssh or similar would serve
+    that file on the tailnet. Links that stay inside the source are fine.
+    """
+    for directory, dirnames, filenames in os.walk(src, followlinks=False):
+        for name in dirnames + filenames:
+            path = Path(directory) / name
+            if not path.is_symlink():
+                continue
+            try:
+                target = path.resolve(strict=True)
+            except (OSError, RuntimeError):
+                raise ShelfError(f"refusing {path}: broken or looping symlink")
+            if not target.is_relative_to(src):
+                raise ShelfError(f"refusing {path}: symlink points outside the source, to {target}")
+
+
 def under_pruned(path: Path) -> Path | None:
     for candidate in pruned_roots():
         for form in {candidate, candidate.resolve()}:
@@ -437,6 +456,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
     src = check_source(Path(args.src))
     if not (src / entry).is_file():
         raise ShelfError(f"entry {entry!r} not found in {src}")
+    check_inner_links(src)
     if args.link:
         pruned = under_pruned(src)
         if pruned is not None:

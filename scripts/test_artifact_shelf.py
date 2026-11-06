@@ -139,6 +139,36 @@ class PublishTests(ShelfTestCase):
             code, _, err = self.publish(self.source(), "2026-11-06-x")
         self.assertEqual(0, code, err)
 
+    def test_symlink_leading_outside_the_source_refused(self):
+        secret = self.tmp / "secret"
+        secret.mkdir()
+        (secret / "id_ed25519").write_text("private")
+        for kind in ("file", "dir"):
+            for extra in ((), ("--link",)):
+                with self.subTest(kind=kind, link=bool(extra)):
+                    src = self.source(f"leak-{kind}")
+                    for child in src.iterdir():
+                        if child.is_symlink():
+                            child.unlink()
+                    target = secret / "id_ed25519" if kind == "file" else secret
+                    (src / "notes").symlink_to(target)
+                    code, _, err = self.publish(src, "2026-11-06-leak", *extra)
+                    self.assertEqual(2, code)
+                    self.assertIn("points outside the source", err)
+                    self.assertFalse(os.path.lexists(self.root / "items" / "2026-11-06-leak"))
+        broken = self.source("broken")
+        (broken / "dangling").symlink_to(self.tmp / "nowhere")
+        self.assertEqual(2, self.publish(broken, "2026-11-06-leak")[0])
+
+    def test_symlink_inside_the_source_allowed(self):
+        src = self.source()
+        (src / "img").mkdir()
+        (src / "img" / "a.png").write_bytes(b"png")
+        (src / "alias.png").symlink_to(src / "img" / "a.png")
+        code, _, err = self.publish(src, "2026-11-06-inner")
+        self.assertEqual(0, code, err)
+        self.assertTrue((self.root / "items/2026-11-06-inner/alias.png").is_symlink())
+
     def test_slug_validation(self):
         src = self.source()
         for bad in ("../etc", "2026-11-06-../x", "a/b", "Upper", "2026-11-06-Upper", "a.b", "2026-11-06-a.b",
