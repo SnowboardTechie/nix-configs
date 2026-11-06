@@ -333,6 +333,31 @@ class IndexTests(ShelfTestCase):
         self.assertTrue(listing["2026-11-06-broken"]["linked"])
         self.assertIn("1 artifact,", page)
 
+    def test_linked_item_turned_unsafe_is_hidden_and_listed(self):
+        secret = self.tmp / "secret"
+        secret.mkdir()
+        cases = {
+            "2026-11-06-leaks": lambda d: (d / "notes").symlink_to("../../secret"),
+            "2026-11-06-dangles": lambda d: (d / "gone").symlink_to("nowhere"),
+            "2026-11-06-loops": lambda d: (d / "loop").symlink_to("loop"),
+        }
+        for slug, spoil in cases.items():
+            src = self.source(slug)
+            self.assertEqual(0, self.publish(src, slug, "--link")[0])
+            spoil(src)
+        safe = self.source("safe")
+        self.publish(safe, "2026-11-06-safe", "--link")
+        (safe / "alias.html").symlink_to("index.html")
+        self.assertEqual(0, self.run_cli("index")[0])
+        page = self.index()
+        listing = self.listing()
+        for slug in cases:
+            with self.subTest(slug=slug):
+                self.assertNotIn(slug, page)
+                self.assertEqual("unsafe", listing[slug]["status"])
+        self.assertIn("2026-11-06-safe/", page)
+        self.assertEqual("ok", listing["2026-11-06-safe"]["status"])
+
     def test_recent_and_older_split_at_threshold(self):
         self.publish(self.source("a"), "2026-11-06-fresh", now="2026-11-01T10:00:00-07:00")
         self.publish(self.source("b"), "2026-10-07-edge", now="2026-10-07T10:00:01-07:00")

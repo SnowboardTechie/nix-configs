@@ -7,6 +7,11 @@ Layout under ARTIFACT_SHELF_ROOT:
   meta/<slug>.json     one record per item, not served
   retired/             retired items and their records, not served
 
+Linked items are re-checked on every `index`: one whose tree has gained a
+symlink that leaves it (or is broken or loops) is reported `unsafe` and left
+off the page. Caddy would still serve such a path if asked for it directly,
+which is why `publish` checks too.
+
 Stdlib only; runs under Nix's python3Minimal.
 """
 
@@ -204,7 +209,18 @@ def item_status(slug: str, entry: str) -> str:
     if not valid_entry(entry):
         return "missing"
     # Path.is_file follows symlinks: a broken link reads as missing.
-    return "ok" if (item / entry).is_file() else "missing"
+    if not (item / entry).is_file():
+        return "missing"
+    if item.is_symlink():
+        # A linked source can change after publish. Walk it again (names and
+        # link text only, no file contents) and hide it if it now holds a
+        # link that leaves it, is broken or loops.
+        try:
+            check_inner_links(item)
+        except ShelfError as error:
+            print(f"artifact-shelf: {slug} is unsafe: {error}", file=sys.stderr)
+            return "unsafe"
+    return "ok"
 
 
 def collect() -> list[dict]:

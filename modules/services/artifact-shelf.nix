@@ -15,7 +15,10 @@
 # publishes it tailnet-only over HTTPS (never Funnel). The index agent
 # rebuilds the page when items/ or meta/ change and every
 # refreshIntervalSeconds, which catches linked sources that vanish and items
-# aging into the Older section.
+# aging into the Older section. Each rebuild re-walks linked items and leaves
+# off any that gained a symlink leaving the item (status `unsafe` in
+# `artifact-shelf list`); Caddy would still serve such a path if asked for it
+# directly, so `publish` refuses those links up front as well.
 { inputs, ... }:
 {
   flake.modules.darwin.artifact-shelf =
