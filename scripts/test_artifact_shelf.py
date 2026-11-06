@@ -126,6 +126,23 @@ class PublishTests(ShelfTestCase):
                 self.assertIn("refusing --link", err)
                 self.assertFalse(os.path.lexists(self.root / "items" / "2026-11-06-x"))
 
+    def test_link_refused_for_protected_folders_but_copy_allowed(self):
+        for name in ("Desktop", "Documents", "Downloads", "Pictures", "Movies", "Music",
+                     "Library/Mobile Documents/com~apple~CloudDocs", "Library/CloudStorage/Drive"):
+            with self.subTest(folder=name):
+                src = self.source(where=self.home / name)
+                code, _, err = self.publish(src, "2026-11-06-tcc", "--link")
+                self.assertEqual(2, code)
+                self.assertIn("refusing --link", err)
+                self.assertIn("publish without --link to copy it", err)
+                self.assertFalse(os.path.lexists(self.root / "items" / "2026-11-06-tcc"))
+        code, _, err = self.publish(self.source(where=self.home / "Documents"), "2026-11-06-tcc")
+        self.assertEqual(0, code, err)
+        self.assertFalse((self.root / "items" / "2026-11-06-tcc").is_symlink())
+        # A sibling that merely shares a prefix is not protected.
+        code, _, err = self.publish(self.source(where=self.home / "Documentsx"), "2026-11-06-near", "--link")
+        self.assertEqual(0, code, err)
+
     def test_link_refused_for_system_temp_by_default(self):
         with mock.patch.dict(os.environ):
             del os.environ["ARTIFACT_SHELF_PRUNED_DIRS"]

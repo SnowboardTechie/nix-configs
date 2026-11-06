@@ -437,6 +437,24 @@ def check_inner_links(tree: Path) -> None:
                 raise ShelfError(f"refusing {path}: symlink points outside the source, to {target}")
 
 
+# macOS privacy (TCC) blocks launchd agents from these, so Caddy and the index
+# agent can't read a linked item there; copying works, the CLI runs in the
+# caller's session.
+PROTECTED = (
+    "Desktop", "Documents", "Downloads", "Pictures", "Movies", "Music",
+    "Library/Mobile Documents", "Library/CloudStorage",
+)
+
+
+def under_protected(path: Path) -> Path | None:
+    for name in PROTECTED:
+        candidate = Path.home() / name
+        for form in {candidate, candidate.resolve()}:
+            if path == form or path.is_relative_to(form):
+                return candidate
+    return None
+
+
 def under_pruned(path: Path) -> Path | None:
     for candidate in pruned_roots():
         for form in {candidate, candidate.resolve()}:
@@ -473,6 +491,12 @@ def cmd_publish(args: argparse.Namespace) -> int:
         pruned = under_pruned(src)
         if pruned is not None:
             raise ShelfError(f"refusing --link: {src} is under {pruned}, which gets pruned; publish without --link to copy it")
+        protected = under_protected(src)
+        if protected is not None:
+            raise ShelfError(
+                f"refusing --link: {src} is under {protected}, which macOS keeps from the shelf's "
+                "background agents, so it would 404; publish without --link to copy it"
+            )
 
     target = items_dir() / slug
     existing = read_meta(slug)
