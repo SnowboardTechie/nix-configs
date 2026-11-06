@@ -254,6 +254,29 @@ class PublishTests(ShelfTestCase):
         self.assertEqual(f"{BASE}/2026-11-06-e/pages/start.html\n", out)
         self.assertEqual(2, self.publish(src, "2026-11-06-f", "--entry", "../x.html")[0])
 
+    def test_root_absolute_references_warn_but_publish(self):
+        body = (
+            '<link href="/_astro/a.css"><script src="/_astro/b.js"></script>'
+            "<img src='/img/c.png'><a href=/about>x</a><style>i{background:url(/bg.png)}"
+            'b{background:url("/fonts/f.woff2")}</style><img src="/img/c.png">'
+            '<img src="/sixth.png"><a href="//cdn.example/x">ok</a><a href="rel/ok.html">ok</a>'
+            '<a href="https://x.example/">ok</a>'
+        )
+        code, out, err = self.publish(self.source(body=body), "2026-11-06-astro")
+        self.assertEqual(0, code)
+        self.assertEqual(f"{BASE}/2026-11-06-astro/\n", out)
+        self.assertIn("warning", err)
+        self.assertIn("/_astro/a.css, /_astro/b.js, /img/c.png, /about, /bg.png", err)
+        self.assertNotIn("/fonts/f.woff2", err, "at most five")
+        self.assertNotIn("cdn.example", err)
+        self.assertIn("base /2026-11-06-astro/", err)
+
+    def test_relative_page_gets_no_warning(self):
+        body = '<img src="img/a.png"><a href="//cdn.example/x">x</a><style>i{background:url(bg.png)}</style>'
+        code, _, err = self.publish(self.source(body=body), "2026-11-06-rel")
+        self.assertEqual(0, code)
+        self.assertEqual("", err)
+
     def test_duplicate_refused_and_replace_keeps_created(self):
         src = self.source(body="v1")
         self.assertEqual(0, self.publish(src, "2026-11-06-d")[0])

@@ -412,6 +412,40 @@ def write_index() -> Path:
 # --- commands ----------------------------------------------------------------
 
 
+# A reference starting with one "/" (not "//") resolves against the shelf's
+# root, not the item's /<slug>/ folder, so it breaks once published.
+ROOT_ABSOLUTE = re.compile(
+    r"""(?:\b(?:src|href)\s*=\s*["']?|url\(\s*["']?)(/(?!/)[^"'\s>)]*)""",
+    re.IGNORECASE,
+)
+
+
+def root_absolute_refs(page: Path, limit: int = 5) -> list[str]:
+    try:
+        text = page.read_text(encoding="utf-8", errors="replace")[:2_000_000]
+    except OSError:
+        return []
+    found: list[str] = []
+    for match in ROOT_ABSOLUTE.finditer(text):
+        ref = match.group(1)
+        if ref not in found:
+            found.append(ref)
+            if len(found) == limit:
+                break
+    return found
+
+
+def warn_root_absolute(slug: str, entry: str, page: Path) -> None:
+    refs = root_absolute_refs(page)
+    if refs:
+        print(
+            f"artifact-shelf: warning: {entry} uses root-absolute references, which break under /{slug}/: "
+            + ", ".join(refs)
+            + f". Use relative paths, or build it with base /{slug}/.",
+            file=sys.stderr,
+        )
+
+
 def check_source(src: Path) -> Path:
     if not src.is_dir():
         raise ShelfError(f"source {src} is not a directory")
@@ -550,6 +584,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
             "source": str(src),
         }
     )
+    warn_root_absolute(slug, entry, target / entry)
     print(item_url(slug, entry))
     write_index()
     return 0
