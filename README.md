@@ -153,16 +153,6 @@ The nightly job logs to `/tmp/vault-git-backup.log` and `/tmp/vault-git-backup.e
 
 The corresponding agent policy lives in the `second-brain` repository's `AGENTS.md`, which now marks that vault as a frozen archive.
 
-### Inkling-Small release watchdog
-
-The tracked watchdog in [`scripts/check-inkling-small-release.py`](scripts/check-inkling-small-release.py) checks the official Thinking Machines Hugging Face namespace daily for a public, ungated Inkling-Small repository with actual weight files. It stays silent while the release is pending. Once weights appear, its Hermes cron job reviews the official model card, formats and sizes, Apple Silicon runtime support, quantized availability, licensing, and fit on Studio's M2 Ultra with 128 GB unified memory before sending one notification. The release remains pending until that review explicitly acknowledges it, so an interrupted review retries on the next daily run. The job never downloads weights, installs software, or changes the running Ollama/Open WebUI stack.
-
-The recreatable job definition is [`scripts/inkling-small-release-watch.job.json`](scripts/inkling-small-release-watch.job.json). Runtime state is private under `~/.hermes/state/inkling-small-release-watch.json` and is not committed.
-
-### Colibrì GLM-5.2 readiness watchdog
-
-The Hermes watchdog checks grouped-quality Metal support, a complete compatible checkpoint, reproducible Ultra-class Mac Studio evidence, tool-calling stabilization, and blocking regressions before recommending a controlled GLM-5.2 proof of concept. The recreatable, read-only job definition is [`scripts/colibri-glm52-readiness-watch.job.json`](scripts/colibri-glm52-readiness-watch.job.json). Runtime notification state remains private under `~/.hermes/state/` and is not committed.
-
 ### GitHub incident recovery watchdog
 
 The tracked monitor in [`scripts/check-github-status.py`](scripts/check-github-status.py) polls GitHub's official Statuspage summary every five minutes and emits a timestamp-free snapshot. Hermes suppresses unchanged ticks and uses the OpenAI Codex subscription only when the official status changes. This incident-specific finite watch stays silent for its initial baseline and source-health noise, notifies Bryan in Matrix when service meaningfully improves or worsens, and automatically stops after 36 checks (about three hours). The recreatable job definition is [`scripts/github-status-watch.job.json`](scripts/github-status-watch.job.json).
