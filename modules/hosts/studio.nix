@@ -2,7 +2,8 @@
 #
 # Features: fonts, nix-settings, zsh, homebrew, editors, git, cli-tools, personal desktop
 # Services: Hermes (with a nightly NAS backup), ollama, open-webui, monitoring, fseventsd
-# watchdog, smb-mount, syncthing, iCloud backup, Dashy, Artifact Shelf
+# watchdog, smb-mount, syncthing, iCloud backup, Dashy, Artifact Shelf, a Forgejo Actions
+# runner (durable-pi-workspace's gate)
 # (Pi Durable SGG pre-review enabled for commissioning 2026-10-16; now commissioned.)
 # (oMLX imported for an isolated GLM-5.3-Flash trial; disabled until commissioning.)
 # (Obsidian Headless Sync and the vault Git backup were retired 2026-09-16. Since 2026-10-31
@@ -37,6 +38,7 @@
       artifact-shelf
       summit-point-gallery
       pi-durable
+      forgejo-runner
       omlx
     ];
 
@@ -249,6 +251,21 @@
       # Free tailnet HTTPS port (2026-11-01 Serve held 443, 8790, 9090, 9120,
       # 10443, 11434, 12345 and 33000; nothing listened on 8791).
       tailscaleHttpsPort = 8791;
+    };
+
+    # Forgejo Actions runner for durable-pi-workspace's canonical gate
+    # (durable-pi-workspace#357, its docs/ci.md), as the hidden account
+    # `_forgejo-runner` (uid/gid 450, free on 2026-11-07). It waits until
+    # Bryan registers it (modules/services/AGENTS.md, "forgejo-runner").
+    services.forgejo-runner = {
+      enable = true;
+      labels = [ "studio-gate:host" ];
+      # The Nix-installed Hermes's interpreter (the env whose bin/hermes is on
+      # the system path), which imports Hermes's tools.send_message_tool.
+      hermesPython = "${config.services.hermes.package.passthru.hermesVenv}/bin/python3";
+      # The approved Chrome copy, its record and disposition (#47). The
+      # coordinator places them; Bryan-owned, not writable by the runner.
+      browserApproval = "/Users/Shared/durable-pi-ci/browser/browser-approval.json";
     };
 
     # oMLX trial server (docs/omlx-glm53-trial.md): an on-demand, loopback-only
