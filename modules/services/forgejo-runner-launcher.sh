@@ -9,7 +9,9 @@
 # waiting, while the uuid is not one canonical lowercase UUID or the token is
 # readable by anyone but its owner. Then writes the effective config, TEMPLATE
 # with the UUID filled in, to STATE_DIR/config.yaml at 0600 and execs
-# `RUNNER daemon --config` on it.
+# `RUNNER daemon --config` on it, under umask 022: the 077 below covers only
+# the launcher's own writes, and every job inherits the runner's umask (a gate
+# expects a login shell's 022).
 #
 # It never reads, copies or prints the token: the runner loads it itself
 # through the config's `token_url`.
@@ -70,4 +72,5 @@ tmp=$(/usr/bin/mktemp "$state/.config.yaml.XXXXXX")
 
 echo "forgejo-runner-launcher: registration found; starting the runner" >&2
 cd "$state"
+umask 022
 exec "$runner" daemon --config "$config"

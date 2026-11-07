@@ -37,6 +37,7 @@
       logDir = "/var/log/forgejo-runner";
       uuidPlaceholder = "@FORGEJO_RUNNER_UUID@";
       runner = "${cfg.package}/bin/forgejo-runner";
+      worktrunk = inputs.worktrunk.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
       # libolm is marked insecure in nixpkgs (CVE-2024-45191 to 45193, timing
       # side channels; deprecated upstream). This Python only runs the Matrix
@@ -246,11 +247,13 @@
             "30"
           ];
           # Jobs inherit this. Nix's Node 26 (the same as Homebrew's node the
-          # services run on) and git, then the system; no Homebrew. No secret.
+          # services run on), git and Worktrunk (the flake input cli-tools
+          # installs, the same `wt` as Homebrew's on Studio), then the system;
+          # no Homebrew. No secret.
           EnvironmentVariables = {
             HOME = stateDir;
             PATH = lib.concatStringsSep ":" [
-              (lib.makeBinPath [ pkgs.nodejs_26 pkgs.git ])
+              (lib.makeBinPath [ pkgs.nodejs_26 pkgs.git worktrunk ])
               "/usr/bin:/bin:/usr/sbin:/sbin"
             ];
           };

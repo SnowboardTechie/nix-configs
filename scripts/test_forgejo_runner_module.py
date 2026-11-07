@@ -33,10 +33,11 @@ def nix(*args):
 
 
 def studio_expr(settings, expr):
-    """`expr` with `config` and `pkgs` bound to Studio plus `services.forgejo-runner = settings`."""
+    """`expr` with `config` and `pkgs` bound to Studio plus `services.forgejo-runner = settings`, and `flake`."""
     return f"""
       let
-        studio = (builtins.getFlake "path:{REPO}").darwinConfigurations.studio;
+        flake = builtins.getFlake "path:{REPO}";
+        studio = flake.darwinConfigurations.studio;
         pkgs = studio.pkgs;
         inherit (pkgs) lib;
         config = (studio.extendModules {{
@@ -131,10 +132,14 @@ class StudioAsConfigured(unittest.TestCase):
         self.assertEqual({"HOME", "PATH"}, set(env))
         self.assertEqual(STATE, env["HOME"])
         path = env["PATH"].split(":")
-        node, git = path[:2]
+        node, git, wt = path[:3]
         self.assertRegex(node, r"^/nix/store/[a-z0-9]{32}-nodejs-26\.13\.0/bin$")
         self.assertRegex(git, r"^/nix/store/[a-z0-9]{32}-git-[0-9.]+/bin$")
-        self.assertEqual(["/usr/bin", "/bin", "/usr/sbin", "/sbin"], path[2:])
+        # Worktrunk is the flake's worktrunk input, the one cli-tools installs.
+        worktrunk = studio("{ }", '"${flake.inputs.worktrunk.packages.${pkgs.stdenv.hostPlatform.system}.default}"')
+        self.assertRegex(worktrunk, r"^/nix/store/[a-z0-9]{32}-")
+        self.assertEqual(f"{worktrunk}/bin", wt)
+        self.assertEqual(["/usr/bin", "/bin", "/usr/sbin", "/sbin"], path[3:])
         self.assertNotIn("/opt/homebrew", env["PATH"])
 
     def test_activation_creates_state_and_logs_after_the_account(self):
@@ -267,6 +272,7 @@ STAND_IN = """#!/bin/sh
 printf '%s\\n' "$@" > "$RECORD/args"
 cp "$3" "$RECORD/config"
 pwd > "$RECORD/cwd"
+umask > "$RECORD/umask"
 exit 0
 """
 
@@ -335,6 +341,8 @@ class Launcher(unittest.TestCase):
         self.assertEqual(str(self.state.resolve()), str(Path((self.record / "cwd").read_text().strip()).resolve()))
         config = self.state / "config.yaml"
         self.assertEqual(0o600, stat.S_IMODE(config.stat().st_mode))
+        # The runner (and so every job) runs under a login shell's umask, not the launcher's 077.
+        self.assertEqual("0022", (self.record / "umask").read_text().strip())
         self.assertEqual(self.template.read_text().replace(PLACEHOLDER, UUID), config.read_text())
         self.assertNotIn(self.token, config.read_text())
         self.assertNotIn(self.token, self.stderr.read_text())
