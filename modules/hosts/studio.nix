@@ -239,6 +239,11 @@
       # Without that `push` block it opens no port. It exits 1 until the file
       # exists; launchd retries.
       githubProxy.enable = true;
+      # Replay proxy (durable-pi-workspace#21) for the evaluation's replay VMs,
+      # on the gateway at the default 8889, which must equal `sandbox.proxy`'s
+      # port in ~/.config/pi-durable/replay.json. Its allowlist is the package
+      # hosts only: GitHub is denied by design.
+      replayProxy.enable = true;
     };
 
     # Shared Claude usage sampler (#236; the application's

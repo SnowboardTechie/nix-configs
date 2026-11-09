@@ -6,6 +6,9 @@
 # And the GitHub write proxy (the same runbook, §7): its agent on the same Node,
 # with Nix's git and openssh on its PATH, and its gateway port (8893: case VMs'
 # pushes and signature requests) in the pf anchor, sharing that exception.
+# And the replay proxy (durable-pi-workspace#21): a second tinyproxy on the same
+# gateway for the evaluation's replay VMs, whose allowlist holds the package
+# hosts and no GitHub host, so GitHub context comes only from a case's bundle.
 #
 # Application and runbook: ~/code/durable-pi-workspace
 # (workspaces/sgg/OPERATIONS.md). The service starts paused and holds every
@@ -74,6 +77,24 @@
         Filter "${pkgs.writeText "pi-durable-proxy-allowlist" (lib.concatLines cfg.proxy.allowedDomains)}"
       '';
 
+      # The replay proxy: the sandbox proxy's listener and clients on its own
+      # port, with its own allowlist. A replay VM sits on the same network as
+      # a review's, so pf cannot tell them apart; this filter is what denies a
+      # replay GitHub (the application's live replay gate attests it).
+      replayProxyConfig = pkgs.writeText "pi-durable-replay-tinyproxy.conf" ''
+        Listen ${toString cfg.proxy.listenAddress}
+        Port ${toString cfg.replayProxy.port}
+        ${lib.concatMapStrings (client: "Allow ${client}\n") cfg.proxy.allowedClients}
+        ConnectPort 443
+        FilterType fnmatch
+        FilterDefaultDeny Yes
+        Filter "${pkgs.writeText "pi-durable-replay-proxy-allowlist" (lib.concatLines cfg.replayProxy.allowedDomains)}"
+      '';
+      isGithubHost = domain:
+        domain == "github.com"
+        || lib.hasSuffix ".github.com" domain
+        || lib.hasSuffix "githubusercontent.com" domain;
+
       # The sandbox network reaches tinyproxy on its gateway and nothing else:
       # no service of this host on any address (gateway, LAN, tailnet), no
       # LAN, tailnet or internet. Without it, a VM on the network reached every
@@ -89,12 +110,14 @@
       # link-local are refused on every bridge vmnet may use.
       #
       # Each port the network may reach on the gateway: tinyproxy's, then the
-      # model proxy's and the write proxy's when each runs. Nothing else is
-      # passed, so with both disabled the anchor is exactly tinyproxy's.
+      # model proxy's, the write proxy's and the replay proxy's when each runs.
+      # Nothing else is passed, so with all three disabled the anchor is
+      # exactly tinyproxy's.
       pfAnchor = "com.apple/100.pi-durable-sgg";
       gatewayPorts = [ cfg.proxy.port ]
         ++ lib.optional cfg.modelProxy.enable cfg.modelProxy.port
-        ++ lib.optional cfg.githubProxy.enable cfg.githubProxy.port;
+        ++ lib.optional cfg.githubProxy.enable cfg.githubProxy.port
+        ++ lib.optional cfg.replayProxy.enable cfg.replayProxy.port;
       pfRules = pkgs.writeText "pi-durable-sgg.pf" ''
         # Pi Durable SGG sandbox isolation: nix-configs modules/services/pi-durable.nix
         ${lib.concatMapStrings (port: "pass in quick inet proto tcp from { ${lib.concatStringsSep " " cfg.proxy.allowedClients} } to ${toString cfg.proxy.listenAddress} port ${toString port} flags S/SA keep state\n") gatewayPorts}block return in quick on ! lo0 inet from { ${lib.concatStringsSep " " cfg.proxy.allowedClients} } to any
@@ -250,6 +273,37 @@
               workspaces/proxies/OPERATIONS.md §7). Without that `push` block
               the proxy opens no port, and pf passing it reaches nothing.
             '';
+          };
+        };
+
+        replayProxy = {
+          enable = lib.mkEnableOption ''
+            the replay proxy: a second tinyproxy on the sandbox network's
+            gateway (`proxy.listenAddress`) for the evaluation's replay VMs,
+            whose allowlist omits GitHub so a replay's GitHub context comes
+            only from its case's bundle. It requires the sandbox proxy, and
+            its port must equal `sandbox.proxy`'s in
+            ~/.config/pi-durable/replay.json'';
+          port = lib.mkOption {
+            type = lib.types.port;
+            default = 8889;
+            description = ''
+              Port the replay proxy listens on at `proxy.listenAddress`, which
+              pf passes the network to besides the other proxies'. The replay
+              config's `sandbox.proxy` is http://<listenAddress>:<port>.
+            '';
+          };
+          allowedDomains = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            # The sandbox allowlist's package hosts. No GitHub host may ever be
+            # added: a replay's GitHub context comes only from its case's
+            # bundle, and an assertion refuses one.
+            default = [
+              "registry.npmjs.org"
+              "pypi.org"
+              "files.pythonhosted.org"
+            ];
+            description = "Exact lowercase hostnames a replay VM may reach through the replay proxy, never a GitHub host; every other destination is refused.";
           };
         };
 
@@ -474,6 +528,41 @@
             KeepAlive = true;
             StandardOutPath = "/tmp/pi-durable-github-proxy.log";
             StandardErrorPath = "/tmp/pi-durable-github-proxy.error.log";
+          };
+        })
+
+        # The replay proxy rides on the sandbox proxy: its listen address,
+        # clients and pf anchor come from there, and so does its firewall
+        # exception (the same tinyproxy binary, added while listenAddress is
+        # set, which this requires).
+        (lib.mkIf cfg.replayProxy.enable {
+          assertions = [
+            {
+              assertion = cfg.enable && cfg.proxy.listenAddress != null;
+              message = "services.pi-durable.replayProxy requires services.pi-durable.enable and proxy.listenAddress: it listens on the sandbox network's gateway, and only the sandbox proxy's pf anchor confines that network";
+            }
+            {
+              assertion = lib.all (domain: builtins.match "[a-z0-9.-]+" domain != null) cfg.replayProxy.allowedDomains;
+              message = "services.pi-durable.replayProxy.allowedDomains takes exact lowercase hostnames, no wildcards";
+            }
+            {
+              assertion = !lib.any isGithubHost cfg.replayProxy.allowedDomains;
+              message = "services.pi-durable.replayProxy.allowedDomains must hold no GitHub host (github.com, *.github.com, *githubusercontent.com): a replay's GitHub context comes only from its case's bundle";
+            }
+            {
+              assertion = cfg.replayProxy.port != cfg.proxy.port && cfg.replayProxy.port != cfg.modelProxy.port && cfg.replayProxy.port != cfg.githubProxy.port;
+              message = "services.pi-durable.replayProxy.port must differ from services.pi-durable.proxy.port (tinyproxy), modelProxy.port and githubProxy.port";
+            }
+          ];
+
+          launchd.user.agents.pi-durable-replay-proxy.serviceConfig = {
+            ProgramArguments = [ tinyproxy "-d" "-c" "${replayProxyConfig}" ];
+            RunAtLoad = true;
+            # As the sandbox proxy: until a VM brings the gateway up the bind
+            # fails, tinyproxy exits and launchd retries.
+            KeepAlive = true;
+            StandardOutPath = "/tmp/pi-durable-replay-proxy.log";
+            StandardErrorPath = "/tmp/pi-durable-replay-proxy.error.log";
           };
         })
 

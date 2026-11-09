@@ -26,13 +26,16 @@ BRIDGES = [f"bridge{n}" for n in range(100, 116)]
 # Studio's anchor, as measured on 2026-10-16: the sandbox network reached every
 # service bound to all interfaces, over IPv4 and IPv6, and the tailnet-only ones.
 # Its gateway ports: tinyproxy (8888), the model proxy (8892, #268) and the
-# GitHub write proxy's push and signing listener (8893, #268 slice 3).
+# GitHub write proxy's push and signing listener (8893, #268 slice 3) and the
+# replay proxy (8889, durable-pi-workspace#21), last.
 WRITE_PROXY_PF_RULE = "pass in quick inet proto tcp from { 192.168.128.0/24 } to 192.168.128.1 port 8893 flags S/SA keep state\n"
+REPLAY_PROXY_PF_RULE = "pass in quick inet proto tcp from { 192.168.128.0/24 } to 192.168.128.1 port 8889 flags S/SA keep state\n"
 STUDIO_PF_RULES = (
     "# Pi Durable SGG sandbox isolation: nix-configs modules/services/pi-durable.nix\n"
     "pass in quick inet proto tcp from { 192.168.128.0/24 } to 192.168.128.1 port 8888 flags S/SA keep state\n"
     "pass in quick inet proto tcp from { 192.168.128.0/24 } to 192.168.128.1 port 8892 flags S/SA keep state\n"
-    + WRITE_PROXY_PF_RULE +
+    + WRITE_PROXY_PF_RULE
+    + REPLAY_PROXY_PF_RULE +
     "block return in quick on ! lo0 inet from { 192.168.128.0/24 } to any\n"
     "block return in quick on ! lo0 inet6 from fd85:1c07:74fb:2dc7::/64 to any\n"
     f"block return in quick on {{ {' '.join(BRIDGES)} }} inet6 proto {{ tcp udp }} from fe80::/10 to any\n"
@@ -85,7 +88,7 @@ PF_RULES = f'(builtins.head (builtins.filter (lib.hasSuffix "-pi-durable-sgg.pf"
 ENABLED = (
     "{ enable = lib.mkForce true; proxy = { listenAddress = lib.mkForce null; allowedClients = lib.mkForce [ ]; }; "
     "page.tailscaleHttpsPort = lib.mkForce null; sampler.enable = lib.mkForce false; modelProxy.enable = lib.mkForce false; "
-    "githubProxy.enable = lib.mkForce false; }"
+    "githubProxy.enable = lib.mkForce false; replayProxy.enable = lib.mkForce false; }"
 )
 PROXY = (
     '{ enable = lib.mkForce true; proxy = { listenAddress = lib.mkForce "192.168.128.1"; '
@@ -104,6 +107,7 @@ class StudioAsCommissioned(unittest.TestCase):
         self.assertIn("pi-durable-proxy", s["agents"])
         self.assertIn("pi-durable-model-proxy", s["agents"])
         self.assertIn("pi-durable-github-proxy", s["agents"])
+        self.assertIn("pi-durable-replay-proxy", s["agents"])
         # The only root job: the boot-time pf loader.
         self.assertEqual(["pi-durable-pf"], [name for name in s["system"] if "pi-durable" in name])
         self.assertIn(f"/sbin/pfctl {PF_ANCHOR} ", s["activation"])
@@ -153,6 +157,7 @@ class EnabledWithoutCommissioningInputs(unittest.TestCase):
         self.assertNotIn("pi-durable-proxy", s["agents"])
         self.assertNotIn("pi-durable-model-proxy", s["agents"])
         self.assertNotIn("pi-durable-github-proxy", s["agents"])
+        self.assertNotIn("pi-durable-replay-proxy", s["agents"])
         self.assertNotIn(NODE_FIREWALL, s["activation"])
         self.assertEqual([], [name for name in s["system"] if "pi-durable" in name])
         self.assertNotIn("tinyproxy", s["activation"])
@@ -426,8 +431,112 @@ class GithubProxy(unittest.TestCase):
             self.assertTrue(any("githubProxy.port must differ from the pages' ports" in m for m in failed), failed)
 
 
+TINYPROXY_FIREWALL = "# === pi-durable proxy firewall ==="
+PACKAGE_HOSTS = ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"]
+
+
+class ReplayProxy(unittest.TestCase):
+    """The replay proxy (durable-pi-workspace#21): a second tinyproxy on the gateway, package hosts only, never GitHub."""
+
+    AGENT = "config.launchd.user.agents.pi-durable-replay-proxy.serviceConfig"
+    SANDBOX = "config.launchd.user.agents.pi-durable-proxy.serviceConfig"
+
+    def test_agent_runs_the_nix_tinyproxy_like_the_sandbox_proxy(self):
+        agent = studio("{ }", self.AGENT)
+        sandbox = studio("{ }", self.SANDBOX)
+        tinyproxy = agent["ProgramArguments"][0]
+        self.assertRegex(tinyproxy, r"^/nix/store/[0-9a-z]{32}-tinyproxy-[0-9.]+/bin/tinyproxy$")
+        self.assertEqual(sandbox["ProgramArguments"][0], tinyproxy)
+        self.assertEqual(["-d", "-c"], agent["ProgramArguments"][1:3])
+        self.assertTrue(agent["ProgramArguments"][3].endswith("-pi-durable-replay-tinyproxy.conf"))
+        self.assertEqual(4, len(agent["ProgramArguments"]))
+        # No environment beyond the sandbox proxy's (none): no secret, nothing to find.
+        self.assertEqual(sandbox.get("EnvironmentVariables"), agent.get("EnvironmentVariables"))
+        self.assertTrue(agent["RunAtLoad"])
+        self.assertTrue(agent["KeepAlive"])
+        self.assertEqual("/tmp/pi-durable-replay-proxy.log", agent["StandardOutPath"])
+        self.assertEqual("/tmp/pi-durable-replay-proxy.error.log", agent["StandardErrorPath"])
+
+    def test_config_is_the_sandbox_proxys_listener_with_its_own_port_and_package_hosts_only(self):
+        config = studio("{ }", f"builtins.readFile (builtins.elemAt {self.AGENT}.ProgramArguments 3)")
+        sandbox = studio("{ }", f"builtins.readFile (builtins.elemAt {self.SANDBOX}.ProgramArguments 3)")
+        lines = config.splitlines()
+        def directives(text, name):
+            return [line for line in text.splitlines() if line.startswith(name + " ")]
+        self.assertEqual(directives(sandbox, "Listen"), directives(config, "Listen"))
+        self.assertEqual(["Listen 192.168.128.1"], directives(config, "Listen"))
+        self.assertEqual(directives(sandbox, "Allow"), directives(config, "Allow"))
+        self.assertEqual(["Allow 192.168.128.0/24"], directives(config, "Allow"))
+        for line in ("Port 8889", "ConnectPort 443", "FilterType fnmatch", "FilterDefaultDeny Yes"):
+            self.assertEqual(1, lines.count(line), line)
+        self.assertEqual([], directives(config, "Port")[1:])
+        [filter_line] = directives(config, "Filter")
+        path = filter_line.split('"')[1]
+        self.assertTrue(path.endswith("-pi-durable-replay-proxy-allowlist"), path)
+        self.assertEqual(PACKAGE_HOSTS, studio("{ }", f'lib.splitString "\\n" (lib.removeSuffix "\\n" (builtins.readFile "{path}"))'))
+
+    def test_disabled_leaves_the_anchor_byte_identical_and_declares_no_agent(self):
+        off = "{ replayProxy.enable = lib.mkForce false; }"
+        s = studio(off, SUMMARY)
+        self.assertEqual([], s["failed"])
+        self.assertNotIn("pi-durable-replay-proxy", s["agents"])
+        self.assertIn("pi-durable-proxy", s["agents"])
+        rules = studio(off, f"builtins.readFile {PF_RULES}")
+        self.assertEqual(STUDIO_PF_RULES.replace(REPLAY_PROXY_PF_RULE, ""), rules)
+        self.assertNotIn("8889", rules)
+
+    def test_port_follows_the_option_into_pf(self):
+        rules = studio("{ replayProxy.port = lib.mkForce 9889; }", f"builtins.readFile {PF_RULES}")
+        self.assertEqual(STUDIO_PF_RULES.replace("port 8889 ", "port 9889 "), rules)
+        config = studio("{ replayProxy.port = lib.mkForce 9889; }", f"builtins.readFile (builtins.elemAt {self.AGENT}.ProgramArguments 3)")
+        self.assertIn("Port 9889\n", config)
+
+    def test_refuses_github_hosts_inexact_names_clashing_ports_and_a_missing_sandbox_proxy(self):
+        github = ["github.com", "api.github.com", "raw.githubusercontent.com", "objects.githubusercontent.com"]
+        inexact = ["*.npmjs.org", "Registry.npmjs.org"]
+        clashing = [8888, 8892, 8893]
+        results = failures(
+            "{ }",
+            *[f'{{ replayProxy.allowedDomains = lib.mkForce [ "registry.npmjs.org" "{d}" ]; }}' for d in github + inexact],
+            *[f"{{ replayProxy.port = lib.mkForce {port}; }}" for port in clashing],
+            "{ proxy.listenAddress = lib.mkForce null; modelProxy.enable = lib.mkForce false; githubProxy.enable = lib.mkForce false; }",
+            "{ enable = lib.mkForce false; modelProxy.enable = lib.mkForce false; githubProxy.enable = lib.mkForce false; }",
+        )
+        self.assertEqual([], results[0])
+        results = iter(results[1:])
+        for domain in github:
+            with self.subTest(domain=domain):
+                failed = next(results)
+                self.assertTrue(any("replayProxy.allowedDomains must hold no GitHub host" in m for m in failed), failed)
+        for domain in inexact:
+            with self.subTest(domain=domain):
+                failed = next(results)
+                self.assertTrue(any("replayProxy.allowedDomains takes exact lowercase hostnames" in m for m in failed), failed)
+        for port in clashing:
+            with self.subTest(port=port):
+                failed = next(results)
+                self.assertTrue(any("replayProxy.port must differ" in m for m in failed), failed)
+        for name in ("no listenAddress", "not enabled"):
+            with self.subTest(name):
+                failed = next(results)
+                self.assertTrue(any("replayProxy requires" in m for m in failed), failed)
+
+    def test_one_firewall_exception_for_the_shared_tinyproxy(self):
+        tinyproxy = studio("{ }", f"builtins.head {self.AGENT}.ProgramArguments")
+        for name, settings in {
+            "with the replay proxy": "{ }",
+            "without it": "{ replayProxy.enable = lib.mkForce false; }",
+        }.items():
+            with self.subTest(name):
+                activation = studio(settings, "config.system.activationScripts.extraActivation.text")
+                self.assertEqual(1, activation.count(TINYPROXY_FIREWALL))
+                self.assertEqual(1, activation.count(f"socketfilterfw --add {tinyproxy} "))
+                self.assertEqual(1, activation.count(f"socketfilterfw --unblock {tinyproxy} "))
+
+
 SAMPLER_ONLY = (
     "{ enable = lib.mkForce false; modelProxy.enable = lib.mkForce false; githubProxy.enable = lib.mkForce false; "
+    "replayProxy.enable = lib.mkForce false; "
     "sampler = { enable = lib.mkForce true; tailscaleHttpsPort = lib.mkForce null; }; }"
 )
 
@@ -489,7 +598,7 @@ class Sampler(unittest.TestCase):
         self.assertTrue(any("sampler.port" in m for m in same_port), same_port)
         self.assertTrue(any("sampler.tailscaleHttpsPort" in m for m in same_route), same_route)
         # Without the SGG agent, its ports are not the sampler's concern.
-        self.assertEqual([], failures("{ enable = lib.mkForce false; modelProxy.enable = lib.mkForce false; githubProxy.enable = lib.mkForce false; sampler.port = lib.mkForce 8790; }")[0])
+        self.assertEqual([], failures("{ enable = lib.mkForce false; modelProxy.enable = lib.mkForce false; githubProxy.enable = lib.mkForce false; replayProxy.enable = lib.mkForce false; sampler.port = lib.mkForce 8790; }")[0])
         failed = json.loads(nix("eval", "--json", "--impure", "--expr", f"""
           let
             studio = (builtins.getFlake "path:{REPO}").darwinConfigurations.studio;
@@ -620,13 +729,14 @@ class SandboxPf(unittest.TestCase):
         passing = "pass in quick inet proto tcp from 192.168.128.0/24 to 192.168.128.1 port = 8888 flags S/SA keep state"
         model = "pass in quick inet proto tcp from 192.168.128.0/24 to 192.168.128.1 port = 8892 flags S/SA keep state"
         github = "pass in quick inet proto tcp from 192.168.128.0/24 to 192.168.128.1 port = 8893 flags S/SA keep state"
+        replay = "pass in quick inet proto tcp from 192.168.128.0/24 to 192.168.128.1 port = 8889 flags S/SA keep state"
         blocking = "block return in quick on ! lo0 inet from 192.168.128.0/24 to any"
         link_local = {
             f"block return in quick on {bridge} inet6 proto {proto} from fe80::/10 to any"
             for bridge in BRIDGES for proto in ("tcp", "udp")
         }
         self.assertEqual(
-            {passing, model, github, blocking, "block return in quick on ! lo0 inet6 from fd85:1c07:74fb:2dc7::/64 to any"} | link_local,
+            {passing, model, github, replay, blocking, "block return in quick on ! lo0 inet6 from fd85:1c07:74fb:2dc7::/64 to any"} | link_local,
             set(lines),
         )
         self.assertEqual(len(lines), len(set(lines)))
@@ -634,6 +744,7 @@ class SandboxPf(unittest.TestCase):
         self.assertLess(lines.index(passing), lines.index(blocking))
         self.assertLess(lines.index(model), lines.index(blocking))
         self.assertLess(lines.index(github), lines.index(blocking))
+        self.assertLess(lines.index(replay), lines.index(blocking))
 
     def test_a_root_daemon_reloads_it_at_every_boot(self):
         daemon = studio("{ }", PF_DAEMON)
