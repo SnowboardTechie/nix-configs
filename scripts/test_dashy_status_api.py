@@ -394,6 +394,21 @@ class StudioWiringTest(unittest.TestCase):
         self.assertNotIn("Alertmanager", result["probes"])
         self.assertEqual(dashy_conf(result["root"])["tiles"]["Alertmanager"], {"statusCheck": "false"})
 
+    def test_a_pi_durable_link_follows_its_service(self) -> None:
+        # A page's link, like its probe, exists only while its service runs.
+        for setting, gone in (
+            ("sampler.enable = lib.mkForce false;", "Claude usage"),
+            ("forgeBroker.enable = lib.mkForce false; vmBroker.enable = lib.mkForce false;"
+             " planning.enable = lib.mkForce false;", "Planning"),
+            ("planning.tailscaleHttpsPort = lib.mkForce null;", "Planning"),
+        ):
+            with self.subTest(gone=gone, setting=setting):
+                result = nix_eval(studio_dashy(f"{{ lib, ... }}: {{ services.pi-durable = {{ {setting} }}; }}"))
+                self.assertEqual(result["failed"], [])
+                tiles = dashy_conf(result["root"])["tiles"]
+                self.assertNotIn(gone, tiles)
+                self.assertIn("SGG pre-review", tiles)
+
     def test_a_link_naming_no_probe_is_refused(self) -> None:
         result = nix_eval(studio_dashy(
             '{ lib, ... }: { services.dashy.dailyLinks = lib.mkAfter [ { title = "X"; description = "x";'

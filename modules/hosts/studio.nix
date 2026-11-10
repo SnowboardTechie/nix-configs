@@ -13,7 +13,7 @@
 # Host-specific: Media server tools (cloudflared, etc.)
 { inputs, ... }:
 {
-  flake.modules.darwin.studio = { config, ... }: {
+  flake.modules.darwin.studio = { config, lib, ... }: {
     imports = with inputs.self.modules.darwin; [
       # Base features
       fonts
@@ -188,7 +188,12 @@
     services.dashy =
       let
         monitoring = config.services.monitoring;
+        piDurable = config.services.pi-durable;
         tailnetUrl = port: "https://${monitoring.tailscaleServe.hostName}:${toString port}";
+        # A Pi Durable page's link exists only while its service runs and Serve
+        # publishes it; that service is also what declares the link's probe.
+        servedLink = enabled: port: link:
+          lib.optional (enabled && port != null) (link // { url = "${tailnetUrl port}/"; });
       in
       {
         enable = true;
@@ -204,29 +209,26 @@
         alloyUrl = tailnetUrl monitoring.alloy.port;
         # Each Pi Durable workspace page, from its own Serve port. Each status
         # name is the page's content probe (services.monitoring.blackbox).
-        piDurableLinks = [
-          {
-            title = "SGG pre-review";
-            description = "Pre-reviews, dependencies and audit fixes";
-            url = "${tailnetUrl config.services.pi-durable.page.tailscaleHttpsPort}/";
-            icon = "🔎";
-            statusName = "SGG pre-review";
-          }
-          {
+        piDurableLinks =
+          servedLink piDurable.enable piDurable.page.tailscaleHttpsPort
+            {
+              title = "SGG pre-review";
+              description = "Pre-reviews, dependencies and audit fixes";
+              icon = "🔎";
+              statusName = "SGG pre-review";
+            }
+          ++ servedLink piDurable.sampler.enable piDurable.sampler.tailscaleHttpsPort {
             title = "Claude usage";
             description = "Subscription use by workspace and week";
-            url = "${tailnetUrl config.services.pi-durable.sampler.tailscaleHttpsPort}/";
             icon = "📈";
             statusName = "Claude usage";
           }
-          {
+          ++ servedLink piDurable.planning.enable piDurable.planning.tailscaleHttpsPort {
             title = "Planning";
             description = "Planning conversations and runs";
-            url = "${tailnetUrl config.services.pi-durable.planning.tailscaleHttpsPort}/";
             icon = "🧭";
             statusName = "Planning";
-          }
-        ];
+          };
         dailyLinks = [
           {
             title = "Artifact Shelf";
