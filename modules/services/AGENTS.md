@@ -301,11 +301,27 @@ receiver config.
 `services.monitoring.extraAlertRules` (appended to the service-health group and
 delivered like every other rule), `services.monitoring.extraDashboards`
 (`name.json` → file, provisioned beside the built-in dashboards; built-in names
-are refused) and `services.monitoring.nodeExporter.textfileDirectories` (each
-becomes a `--collector.textfile.directory`). A module that may land on a host
-without monitoring sets them under `lib.optionalAttrs (options.services ?
-monitoring)`, as `fseventsd-watchdog.nix` does. Note that `HighCpuUsage`
-averages all cores, so one process pinning a single core (about 4% of Studio)
+are refused), `services.monitoring.nodeExporter.textfileDirectories` (each
+becomes a `--collector.textfile.directory`) and
+`services.monitoring.blackbox.contentProbes` (below). A module that may land on
+a host without monitoring sets them under `lib.optionalAttrs (options.services ?
+monitoring)`, as `fseventsd-watchdog.nix` does.
+
+**Content probes.** `blackbox.targets` only checks for a 2xx.
+`blackbox.contentProbes.<name> = { url; bodyMatches; }` also requires the body
+to match a Go regular expression, so a page answering with the wrong content
+counts as down. Each probe gets its own blackbox module (`http_content_<name>`)
+and is a target in the same `blackbox` job, labelled `probe="<name>"`, so
+`ServiceDown` (5 minutes) and the Service Health dashboard cover it. A URL is
+probed once, in one list or the other. On Studio: Dashy, Artifact Shelf, SGG
+pre-review and Claude usage come from their modules, Grafana Alloy from
+`monitoring.nix`, Jellyfin from `hosts/studio.nix`. The names are the ones the
+Hermes watchdog uses, which Dashy's status dots read today. Tests:
+`python3 scripts/test_monitoring_content_probes.py` (runs the real
+blackbox_exporter with Studio's modules against a stand-in: each healthy body
+passes, a 200 with the wrong body and a 500 with the right one fail).
+
+Note that `HighCpuUsage` averages all cores, so one process pinning a single core (about 4% of Studio)
 never trips it; a per-process signal needs its own exporter and rule.
 
 Grafana is kept as pure visualization — it gets Alertmanager added as a

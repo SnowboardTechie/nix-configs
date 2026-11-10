@@ -24,6 +24,7 @@
   flake.modules.darwin.artifact-shelf =
     { config
     , lib
+    , options
     , pkgs
     , ...
     }:
@@ -148,7 +149,7 @@
         };
       };
 
-      config = lib.mkIf cfg.enable {
+      config = lib.mkIf cfg.enable (lib.mkMerge [{
         assertions = [
           {
             assertion = loopback;
@@ -205,7 +206,16 @@
             exit 1
           fi
         '');
-      };
+      }
+
+        # Only hosts that import the monitoring module have this option. The
+        # index page carries the generator marker the CLI writes.
+        (lib.optionalAttrs (options.services ? monitoring) {
+          services.monitoring.blackbox.contentProbes."Artifact Shelf" = {
+            url = "http://${listen}/";
+            bodyMatches = "<meta name=\"generator\" content=\"artifact-shelf\">";
+          };
+        })]);
     };
 
   # NixOS stub per repository convention: the shelf is Studio-only for now.

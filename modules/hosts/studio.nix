@@ -325,6 +325,14 @@
       "http://192.168.1.3/login" # UNRAID Web UI (avoids / → /Main → /login redirects)
     ];
 
+    # Probes that must also see the right content. Dashy, Artifact Shelf, the
+    # Pi Durable pages and Alloy add theirs from their own modules; Jellyfin
+    # is a Studio-only cask, so its probe is here.
+    services.monitoring.blackbox.contentProbes.Jellyfin = {
+      url = "http://127.0.0.1:8096/health";
+      bodyMatches = "^Healthy\\s*$";
+    };
+
     services.monitoring.extraScrapeConfigs = [
       {
         job_name = "unraid-node";
