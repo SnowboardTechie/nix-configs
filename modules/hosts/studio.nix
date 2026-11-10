@@ -1,7 +1,8 @@
 # Host configuration: studio (Home Server and Personal Desktop Mac)
 #
 # Features: fonts, nix-settings, zsh, homebrew, editors, git, cli-tools, personal desktop
-# Services: Hermes (with a nightly NAS backup), ollama, open-webui, monitoring, fseventsd
+# Services: Hermes (with a nightly NAS backup), the bot service's encrypted NAS
+# backup, NAS share mounts, ollama, open-webui, monitoring, fseventsd
 # watchdog, smb-mount, syncthing, iCloud backup, Dashy, Artifact Shelf, a Forgejo Actions
 # runner (durable-pi-workspace's gate)
 # (Pi Durable SGG pre-review enabled for commissioning 2026-10-16; now commissioned.)
@@ -30,11 +31,13 @@
       monitoring
       fseventsd-watchdog
       nas-storage-health
+      nas-mounts
       smb-mount
       syncthing
       icloud-backup
       hermes
       hermes-nas-backup
+      pi-bots-backup
       dashy
       artifact-shelf
       summit-point-gallery
@@ -130,15 +133,37 @@
       };
     };
 
+    # Bryan's NAS share, mounted by Nix for the backups and the write probe
+    # (smb-mount owns only the media share). The password comes from the login
+    # keychain.
+    services.nas-mounts = {
+      enable = true;
+      shares.Bryan = {
+        url = "//bryan@192.168.1.3/Bryan";
+        mountPoint = "/Users/bryan/NAS/Bryan";
+      };
+    };
+
+    # Nightly encrypted (age) archive of the bot service's state and secrets on
+    # the NAS. Only the public key is here; the identity stays in ~/.secrets on
+    # the Studio, never on the NAS.
+    services.pi-bots-backup = {
+      enable = true;
+      ageRecipients = [ "age1cw3x6qq5lnhr2wkxu5z6u5wcr8kcvmz3weprxp9934pzh7jvndlsxrrh4s" ];
+      ageIdentity = "/Users/bryan/.secrets/pi-bots-backup/age-identity.txt";
+      mountPoint = "/Users/bryan/NAS/Bryan";
+      destDir = "/Users/bryan/NAS/Bryan/Backups/pi-bots";
+    };
+
     # Nightly copy of Bryan's Hermes state (state.db, memories, cron jobs, skills,
     # redacted config) to his NAS share, an hour before the 04:00 Hermes update.
-    # Nix doesn't mount this share (smb-mount handles only the media share); an
-    # unmounted share fails the run with a Matrix alert instead of writing to
-    # the local disk.
+    # Kept until Hermes's final archive is taken; the bot service's backup above
+    # replaces it. An unmounted share fails the run with a Matrix alert instead
+    # of writing to the local disk.
     services.hermes-nas-backup = {
       enable = true;
-      mountPoint = "/Volumes/Bryan";
-      destDir = "/Volumes/Bryan/Backups/hermes";
+      mountPoint = "/Users/bryan/NAS/Bryan";
+      destDir = "/Users/bryan/NAS/Bryan/Backups/hermes";
       keep = 7;
       hour = 3;
       notifications = {
@@ -396,8 +421,8 @@
     services.nas-storage-health = {
       enable = true;
       shares.Bryan = {
-        mountPoint = "/Volumes/Bryan";
-        directory = "/Volumes/Bryan/Backups";
+        mountPoint = "/Users/bryan/NAS/Bryan";
+        directory = "/Users/bryan/NAS/Bryan/Backups";
       };
     };
 

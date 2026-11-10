@@ -306,7 +306,7 @@ class Module(unittest.TestCase):
     def test_studio_probes_the_backup_share_every_ten_minutes(self):
         agent = studio("probe")
         self.assertEqual("org.nixos.nas-write-probe", agent["Label"])
-        self.assertEqual(["Bryan", "/Volumes/Bryan", "/Volumes/Bryan/Backups"], agent["ProgramArguments"][1:])
+        self.assertEqual(["Bryan", "/Users/bryan/NAS/Bryan", "/Users/bryan/NAS/Bryan/Backups"], agent["ProgramArguments"][1:])
         self.assertEqual(600, agent["StartInterval"])
         self.assertTrue(agent["RunAtLoad"])
         self.assertGreater(agent["ExitTimeOut"], int(agent["EnvironmentVariables"]["TIMEOUT"]) + 5)
