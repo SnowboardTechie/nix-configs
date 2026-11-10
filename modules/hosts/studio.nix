@@ -37,6 +37,7 @@
       icloud-backup
       hermes
       hermes-nas-backup
+      pi-bots
       pi-bots-backup
       dashy
       artifact-shelf
@@ -146,6 +147,13 @@
         url = "//bryan@192.168.1.3/Bryan";
         mountPoint = "/Users/bryan/NAS/Bryan";
       };
+    };
+
+    # The bot service (bryan/pi-bots), run from its checkout. Its health file
+    # feeds node_exporter and the PiBots* alert rules.
+    services.pi-bots = {
+      enable = true;
+      homeserver = "https://matrix.snowboardtechie.com";
     };
 
     # Nightly encrypted (age) archive of the bot service's state and secrets on
