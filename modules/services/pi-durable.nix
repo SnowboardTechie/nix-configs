@@ -9,6 +9,13 @@
 # And the replay proxy (durable-pi-workspace#21): a second tinyproxy on the same
 # gateway for the evaluation's replay VMs, whose allowlist holds the package
 # hosts and no GitHub host, so GitHub context comes only from a case's bundle.
+# And planning on VMs (durable-pi-workspace#48): the forge broker (proxies
+# runbook §8) on both networks' gateways at 8894; the VM broker (§9) on the
+# planning service network's gateway alone at 8895; the planning service's
+# launcher and its relay (planning runbook §4.1), the relay's page routed
+# through the same Serve guard; and a second pf anchor that confines the
+# planning service network to those two brokers. The VM broker's port never
+# enters the sandbox's anchor, so an agent VM cannot reach it.
 #
 # Application and runbook: ~/code/durable-pi-workspace
 # (workspaces/sgg/OPERATIONS.md). The service starts paused and holds every
@@ -50,8 +57,10 @@
       # and the firewall would see the target, not the name it was given.
       # Node 24 satisfies the application's engines (>=22.19.0).
       node = "${pkgs.nodejs-slim_24}/bin/node";
-      # Either proxy listening on the gateway needs that one exception.
-      nodeListens = cfg.modelProxy.enable || cfg.githubProxy.enable;
+      # Each proxy or broker listening on a gateway needs that one exception.
+      # The planning relay listens on loopback only and needs none.
+      nodeListens = cfg.modelProxy.enable || cfg.githubProxy.enable
+        || cfg.forgeBroker.enable || cfg.vmBroker.enable;
 
       # Canonical dotted-quad only (octets 0-255, no leading zeros, whitespace
       # or newline), so a value can never widen or add a tinyproxy directive.
@@ -110,21 +119,73 @@
       # link-local are refused on every bridge vmnet may use.
       #
       # Each port the network may reach on the gateway: tinyproxy's, then the
-      # model proxy's, the write proxy's and the replay proxy's when each runs.
-      # Nothing else is passed, so with all three disabled the anchor is
-      # exactly tinyproxy's.
+      # model proxy's, the write proxy's, the replay proxy's and the forge
+      # broker's when each runs. Nothing else is passed, so with all four
+      # disabled the anchor is exactly tinyproxy's. Never the VM broker's: an
+      # agent VM on this network must not start VMs (an assertion refuses it).
       pfAnchor = "com.apple/100.pi-durable-sgg";
       gatewayPorts = [ cfg.proxy.port ]
         ++ lib.optional cfg.modelProxy.enable cfg.modelProxy.port
         ++ lib.optional cfg.githubProxy.enable cfg.githubProxy.port
-        ++ lib.optional cfg.replayProxy.enable cfg.replayProxy.port;
-      pfRules = pkgs.writeText "pi-durable-sgg.pf" ''
-        # Pi Durable SGG sandbox isolation: nix-configs modules/services/pi-durable.nix
-        ${lib.concatMapStrings (port: "pass in quick inet proto tcp from { ${lib.concatStringsSep " " cfg.proxy.allowedClients} } to ${toString cfg.proxy.listenAddress} port ${toString port} flags S/SA keep state\n") gatewayPorts}block return in quick on ! lo0 inet from { ${lib.concatStringsSep " " cfg.proxy.allowedClients} } to any
-        block return in quick on ! lo0 inet6 from ${toString cfg.proxy.ipv6Subnet} to any
+        ++ lib.optional cfg.replayProxy.enable cfg.replayProxy.port
+        ++ lib.optional cfg.forgeBroker.enable cfg.forgeBroker.port;
+      # One network's confinement: its clients reach `address` at `ports` and
+      # nothing else on any interface but lo0, and link-local IPv6 is refused
+      # on every bridge vmnet may use.
+      confinement = { title, clients, address, ports, ipv6Subnet }: ''
+        # ${title}: nix-configs modules/services/pi-durable.nix
+        ${lib.concatMapStrings (port: "pass in quick inet proto tcp from { ${lib.concatStringsSep " " clients} } to ${toString address} port ${toString port} flags S/SA keep state\n") ports}block return in quick on ! lo0 inet from { ${lib.concatStringsSep " " clients} } to any
+        block return in quick on ! lo0 inet6 from ${toString ipv6Subnet} to any
         block return in quick on { ${lib.concatMapStringsSep " " (n: "bridge${toString n}") (lib.range 100 115)} } inet6 proto { tcp udp } from fe80::/10 to any
       '';
+      pfRules = pkgs.writeText "pi-durable-sgg.pf" (confinement {
+        title = "Pi Durable SGG sandbox isolation";
+        clients = cfg.proxy.allowedClients;
+        address = cfg.proxy.listenAddress;
+        ports = gatewayPorts;
+        inherit (cfg.proxy) ipv6Subnet;
+      });
       pfLoader = [ "${pkgs.bash}/bin/bash" "${./pi-durable-pf.sh}" "/sbin/pfctl" pfAnchor "${pfRules}" "/var/run/pi-durable-pf.token" ];
+
+      # The planning service network, the same way in its own anchor: the
+      # service VM reaches the forge broker and the VM broker on its gateway
+      # and nothing else. The same loader keeps it, with its own enable
+      # reference, at activation and from its own boot daemon.
+      planningPfAnchor = "com.apple/101.pi-durable-planning";
+      planningPfRules = pkgs.writeText "pi-durable-planning.pf" (confinement {
+        title = "Pi Durable planning service network isolation";
+        clients = cfg.planning.allowedClients;
+        address = cfg.planning.listenAddress;
+        ports = [ cfg.forgeBroker.port cfg.vmBroker.port ];
+        inherit (cfg.planning) ipv6Subnet;
+      });
+      planningPfLoader = [ "${pkgs.bash}/bin/bash" "${./pi-durable-pf.sh}" "/sbin/pfctl" planningPfAnchor "${planningPfRules}" "/var/run/pi-durable-planning-pf.token" ];
+
+      # pf rules do not survive a restart, and nix-darwin does not re-run
+      # activation at boot. Retried until the anchor is loaded and checked.
+      pfBootDaemon = loader: log: {
+        ProgramArguments = [
+          "/bin/sh"
+          "-c"
+          ''
+            while [ ! -x "$1" ]; do
+              /bin/sleep 1
+            done
+            exec "$@"
+          ''
+          "wait-for-nix-store"
+        ] ++ loader;
+        RunAtLoad = true;
+        KeepAlive.SuccessfulExit = false;
+        StandardOutPath = log;
+        StandardErrorPath = log;
+      };
+
+      # The pages' loopback ports: the SGG page's, and the sampler's and the
+      # planning relay's when each runs.
+      pagePorts = [ cfg.page.port ]
+        ++ lib.optional cfg.sampler.enable cfg.sampler.port
+        ++ lib.optional cfg.planning.enable cfg.planning.relayPort;
 
       # No secret: only what finds node, git, claude, hermes and container
       # (Apple's installer puts it in /usr/local/bin).
@@ -307,6 +368,100 @@
           };
         };
 
+        forgeBroker = {
+          enable = lib.mkEnableOption ''
+            the forge broker: agent and service VMs fetch from and push to
+            Forgejo only through it, with a grant's placeholder, and it alone
+            reads the machine accounts' tokens and signing keys. It listens on
+            the sandbox network's gateway (`proxy.listenAddress`) and, with
+            `planning`, on the planning service network's, so it requires the
+            sandbox proxy. It exits 1 until ~/.config/pi-durable/forge-broker.json
+            exists; see the application's workspaces/proxies/OPERATIONS.md §8
+            before enabling'';
+          port = lib.mkOption {
+            type = lib.types.port;
+            default = 8894;
+            description = ''
+              Port the forge broker listens on at each gateway, which both
+              networks' pf anchors pass their clients to. Must equal
+              `listen.port` in forge-broker.json.
+            '';
+          };
+        };
+
+        vmBroker = {
+          enable = lib.mkEnableOption ''
+            the VM broker: the planning service starts, drives and stops agent
+            VMs only through it, and it alone runs the `container` CLI for
+            them and writes their grants. It listens on the planning service
+            network's gateway alone (`planning.listenAddress`), so it requires
+            `planning`, and its port is never passed by the sandbox network's
+            anchor. It exits 1 until ~/.config/pi-durable/vm-broker.json
+            exists; see the application's workspaces/proxies/OPERATIONS.md §9
+            before enabling'';
+          port = lib.mkOption {
+            type = lib.types.port;
+            default = 8895;
+            description = ''
+              Port the VM broker listens on at `planning.listenAddress`, which
+              only the planning anchor passes. Must equal `listen.port` in
+              vm-broker.json.
+            '';
+          };
+        };
+
+        planning = {
+          enable = lib.mkEnableOption ''
+            the planning service in its VM: the launcher that runs it on the
+            planning service network, the relay that carries its page from
+            loopback to the VM's published socket, and the pf anchor that
+            confines that network to the forge broker and the VM broker. It
+            requires both brokers; see the application's
+            workspaces/planning/OPERATIONS.md §4.1 before enabling'';
+          listenAddress = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = ''
+              Gateway IPv4 address of the planning service network
+              (`container network create --internal`), where the brokers
+              listen for the service VM. Required with `enable`; never the
+              sandbox network's.
+            '';
+          };
+          allowedClients = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            description = ''
+              Addresses or CIDR ranges of the planning service network: its
+              subnet. pf passes them to the brokers and refuses them
+              everything else.
+            '';
+          };
+          ipv6Subnet = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = ''
+              The planning service network's IPv6 prefix (`container network
+              inspect`: `ipv6Subnet`); pf refuses it everything. Required with
+              `enable`.
+            '';
+          };
+          relayPort = lib.mkOption {
+            type = lib.types.port;
+            default = 8792;
+            description = "Loopback port of the relay to the service's page. Must equal `listen.port` in planning-relay.json (its default, 8792).";
+          };
+          tailscaleHttpsPort = lib.mkOption {
+            type = lib.types.nullOr lib.types.port;
+            default = null;
+            description = ''
+              Tailnet-only HTTPS port that Tailscale Serve forwards to the
+              relay. Null: no route. Activation refuses a port that already
+              serves another route.
+            '';
+          };
+        };
+
         sampler = {
           enable = lib.mkEnableOption ''
             the shared Claude usage sampler: it reads each subscription's usage
@@ -400,25 +555,7 @@
               fi
             '';
 
-            # pf rules do not survive a restart, and nix-darwin does not re-run
-            # activation at boot. Retried until the anchor is loaded and checked.
-            launchd.daemons.pi-durable-pf.serviceConfig = {
-              ProgramArguments = [
-                "/bin/sh"
-                "-c"
-                ''
-                  while [ ! -x "$1" ]; do
-                    /bin/sleep 1
-                  done
-                  exec "$@"
-                ''
-                "wait-for-nix-store"
-              ] ++ pfLoader;
-              RunAtLoad = true;
-              KeepAlive.SuccessfulExit = false;
-              StandardOutPath = "/var/log/pi-durable-pf.log";
-              StandardErrorPath = "/var/log/pi-durable-pf.log";
-            };
+            launchd.daemons.pi-durable-pf.serviceConfig = pfBootDaemon pfLoader "/var/log/pi-durable-pf.log";
           })
 
           (lib.mkIf (cfg.page.tailscaleHttpsPort != null) {
@@ -565,6 +702,218 @@
             StandardErrorPath = "/tmp/pi-durable-replay-proxy.error.log";
           };
         })
+
+        # The forge broker, from the same deployment checkout on the same
+        # Node: it listens on the sandbox network's gateway (agent VMs) and,
+        # with `planning`, the planning service network's (the service VM),
+        # retrying each bind until vmnet brings that gateway up. Like the
+        # proxies, it rides on the sandbox proxy's address and pf anchor; its
+        # port joins that anchor's and the planning one's. Without
+        # forge-broker.json, `run` exits 1 and KeepAlive retries it at
+        # launchd's throttle.
+        (lib.mkIf cfg.forgeBroker.enable {
+          assertions = [
+            {
+              assertion = cfg.enable && cfg.proxy.listenAddress != null;
+              message = "services.pi-durable.forgeBroker requires services.pi-durable.enable and proxy.listenAddress: it listens on the sandbox network's gateway, and only the sandbox proxy's pf anchor confines that network";
+            }
+            {
+              assertion = !lib.elem cfg.forgeBroker.port ([ cfg.proxy.port ]
+                ++ lib.optional cfg.modelProxy.enable cfg.modelProxy.port
+                ++ lib.optional cfg.githubProxy.enable cfg.githubProxy.port
+                ++ lib.optional cfg.replayProxy.enable cfg.replayProxy.port);
+              message = "services.pi-durable.forgeBroker.port must differ from services.pi-durable.proxy.port (tinyproxy), modelProxy.port, githubProxy.port and replayProxy.port";
+            }
+            {
+              assertion = !lib.elem cfg.forgeBroker.port pagePorts;
+              message = "services.pi-durable.forgeBroker.port must differ from the pages' ports (page.port, sampler.port and planning.relayPort)";
+            }
+          ];
+
+          launchd.user.agents.pi-durable-forge-broker.serviceConfig = {
+            ProgramArguments = [
+              node
+              "${checkout}/dist/workspaces/proxies/src/forge-main.js"
+              "run"
+              "--config"
+              "${home}/.config/pi-durable/forge-broker.json"
+            ];
+            # As the write proxy's: HOME for its config, the grants and the
+            # machine accounts' 0600 token and key files; PATH only Nix's git
+            # (`git http-backend`, fetches and pushes to Forgejo) and openssh
+            # (`ssh-keygen -Y sign` and verify). No secret.
+            EnvironmentVariables = {
+              HOME = home;
+              PATH = lib.makeBinPath [ pkgs.git pkgs.openssh ];
+            };
+            RunAtLoad = true;
+            KeepAlive = true;
+            StandardOutPath = "/tmp/pi-durable-forge-broker.log";
+            StandardErrorPath = "/tmp/pi-durable-forge-broker.error.log";
+          };
+        })
+
+        # The VM broker: the planning service's one way to start agent VMs.
+        # It listens on the planning service network's gateway alone; the
+        # sandbox network's anchor never passes its port, so an agent VM
+        # cannot start another. Without vm-broker.json, `run` exits 1 and
+        # KeepAlive retries it at launchd's throttle.
+        (lib.mkIf cfg.vmBroker.enable {
+          assertions = [
+            {
+              assertion = cfg.planning.enable;
+              message = "services.pi-durable.vmBroker requires services.pi-durable.planning: it listens on the planning service network's gateway, and only the planning pf anchor confines that network";
+            }
+            {
+              assertion = !lib.elem cfg.vmBroker.port gatewayPorts;
+              message = "services.pi-durable.vmBroker.port must never be passed by the sandbox network's pf anchor (proxy.port, modelProxy.port, githubProxy.port, replayProxy.port and forgeBroker.port): an agent VM must not reach the VM broker";
+            }
+            {
+              assertion = !lib.elem cfg.vmBroker.port pagePorts;
+              message = "services.pi-durable.vmBroker.port must differ from the pages' ports (page.port, sampler.port and planning.relayPort)";
+            }
+          ];
+
+          launchd.user.agents.pi-durable-vm-broker.serviceConfig = {
+            ProgramArguments = [
+              node
+              "${checkout}/dist/workspaces/proxies/src/vm-broker-main.js"
+              "run"
+              "--config"
+              "${home}/.config/pi-durable/vm-broker.json"
+            ];
+            # HOME for its config, grants and records. PATH: Nix's git first
+            # (a builder's commit-msg hook, the clone on a volume), then the
+            # system directories for Apple's `container` CLI, which its config
+            # names as `container` (/usr/local/bin) and is not in Nix. No
+            # secret: it writes grants, never a token.
+            EnvironmentVariables = {
+              HOME = home;
+              PATH = "${lib.makeBinPath [ pkgs.git ]}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+            };
+            RunAtLoad = true;
+            KeepAlive = true;
+            # SIGTERM removes its VMs (within 10 s) before it exits.
+            ExitTimeOut = 30;
+            StandardOutPath = "/tmp/pi-durable-vm-broker.log";
+            StandardErrorPath = "/tmp/pi-durable-vm-broker.error.log";
+          };
+        })
+
+        # The planning service in its VM: the launcher (the only host code
+        # that starts the service VM), the relay from loopback to the VM's
+        # published socket, the planning network's pf anchor, and the relay's
+        # Serve route. It needs both brokers: the service fetches through the
+        # forge broker and starts agents through the VM broker.
+        (lib.mkIf cfg.planning.enable (lib.mkMerge [
+          {
+            assertions = [
+              {
+                assertion = cfg.enable && cfg.forgeBroker.enable && cfg.vmBroker.enable;
+                message = "services.pi-durable.planning requires services.pi-durable.enable, forgeBroker and vmBroker: the service VM fetches through the forge broker and starts agent VMs through the VM broker";
+              }
+              {
+                assertion = cfg.planning.listenAddress != null && isAddress cfg.planning.listenAddress;
+                message = "services.pi-durable.planning.listenAddress must be the planning service network's gateway as one canonical IPv4 address, not a wildcard, name or anything else";
+              }
+              {
+                assertion = cfg.planning.allowedClients != [ ] && lib.all isClient cfg.planning.allowedClients;
+                message = "services.pi-durable.planning.allowedClients must name the planning service network's subnet as canonical IPv4 addresses or CIDR ranges with a /1 to /32 prefix";
+              }
+              {
+                assertion = cfg.planning.ipv6Subnet != null && isIpv6Subnet cfg.planning.ipv6Subnet;
+                message = "services.pi-durable.planning.ipv6Subnet must name the planning service network's IPv6 prefix (`container network inspect`: ipv6Subnet) in lowercase hex with a /1 to /128 prefix, so pf can confine the network";
+              }
+              {
+                assertion = cfg.planning.listenAddress != cfg.proxy.listenAddress
+                  && !lib.any (client: lib.elem client cfg.proxy.allowedClients) cfg.planning.allowedClients
+                  && cfg.planning.ipv6Subnet != cfg.proxy.ipv6Subnet;
+                message = "services.pi-durable.planning's listenAddress, allowedClients and ipv6Subnet must never equal the sandbox network's (proxy.*): the planning service network is its own";
+              }
+              {
+                assertion = cfg.planning.relayPort != cfg.page.port && (!cfg.sampler.enable || cfg.planning.relayPort != cfg.sampler.port);
+                message = "services.pi-durable.planning.relayPort must differ from the pages' ports (page.port and sampler.port)";
+              }
+              {
+                assertion = cfg.planning.tailscaleHttpsPort == null || config.services.tailscale.enable;
+                message = "services.pi-durable.planning.tailscaleHttpsPort requires services.tailscale";
+              }
+              {
+                assertion = cfg.planning.tailscaleHttpsPort == null
+                  || (cfg.planning.tailscaleHttpsPort != cfg.page.tailscaleHttpsPort
+                  && (!cfg.sampler.enable || cfg.planning.tailscaleHttpsPort != cfg.sampler.tailscaleHttpsPort));
+                message = "services.pi-durable.planning.tailscaleHttpsPort must differ from the other pages' Serve ports (page.tailscaleHttpsPort and sampler.tailscaleHttpsPort)";
+              }
+            ];
+
+            # Attached to the service VM: it ends when the VM does (exit 1,
+            # for launchd to start a fresh one) and reconciles any VM and
+            # grant left before starting anew. Without
+            # planning-service-vm.json, `run` exits 1 and KeepAlive retries it.
+            launchd.user.agents.pi-durable-planning-service.serviceConfig = {
+              ProgramArguments = [
+                node
+                "${checkout}/dist/workspaces/planning/src/service-vm.js"
+                "run"
+                "--config"
+                "${home}/.config/pi-durable/planning-service-vm.json"
+              ];
+              # HOME for its config, grant store and state. PATH: the system
+              # directories only, for Apple's `container` CLI (/usr/local/bin),
+              # the one program it runs. No secret: the grant's placeholder
+              # goes to the CLI by environment, never into this plist.
+              EnvironmentVariables = {
+                HOME = home;
+                PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+              };
+              RunAtLoad = true;
+              KeepAlive = true;
+              # SIGTERM stops the attached CLI (SIGKILL after 10 s), then
+              # removes the VM, confirmed, and deletes its grant.
+              ExitTimeOut = 60;
+              StandardOutPath = "/tmp/pi-durable-planning-service.log";
+              StandardErrorPath = "/tmp/pi-durable-planning-service.error.log";
+            };
+
+            # Bytes only, from 127.0.0.1:relayPort to the service VM's
+            # published socket; while the socket is absent it closes each
+            # connection. A port it can't bind exits 1, for launchd to retry.
+            launchd.user.agents.pi-durable-planning-relay.serviceConfig = {
+              ProgramArguments = [
+                node
+                "${checkout}/dist/workspaces/proxies/src/relay-main.js"
+                "run"
+                "--config"
+                "${home}/.config/pi-durable/planning-relay.json"
+              ];
+              # HOME only: it finds its config and state under it and runs no
+              # other program. No secret.
+              EnvironmentVariables.HOME = home;
+              RunAtLoad = true;
+              KeepAlive = true;
+              StandardOutPath = "/tmp/pi-durable-planning-relay.log";
+              StandardErrorPath = "/tmp/pi-durable-planning-relay.error.log";
+            };
+
+            system.activationScripts.extraActivation.text = lib.mkAfter ''
+              # === pi-durable planning service network isolation (pf) ===
+              if ! ${lib.escapeShellArgs planningPfLoader}; then
+                echo "Failed to load the Pi Durable planning service network's pf anchor ${planningPfAnchor}" >&2
+                exit 1
+              fi
+            '';
+
+            launchd.daemons.pi-durable-planning-pf.serviceConfig =
+              pfBootDaemon planningPfLoader "/var/log/pi-durable-planning-pf.log";
+          }
+
+          # After every mkAfter block (1500), so the planning network's pf
+          # anchor is loaded before its page is routed.
+          (lib.mkIf (cfg.planning.tailscaleHttpsPort != null) {
+            system.activationScripts.extraActivation.text =
+              lib.mkOrder 1600 (pageRoute "planning page" cfg.planning.tailscaleHttpsPort cfg.planning.relayPort);
+          })
+        ]))
 
         # The sampler runs on its own: it reads the workspaces' state
         # directories and its own config, and needs nothing above enabled.

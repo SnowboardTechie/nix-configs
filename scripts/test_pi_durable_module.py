@@ -27,17 +27,35 @@ BRIDGES = [f"bridge{n}" for n in range(100, 116)]
 # service bound to all interfaces, over IPv4 and IPv6, and the tailnet-only ones.
 # Its gateway ports: tinyproxy (8888), the model proxy (8892, #268) and the
 # GitHub write proxy's push and signing listener (8893, #268 slice 3) and the
-# replay proxy (8889, durable-pi-workspace#21), last.
+# replay proxy (8889, durable-pi-workspace#21) and the forge broker (8894,
+# durable-pi-workspace#48), last.
 WRITE_PROXY_PF_RULE = "pass in quick inet proto tcp from { 192.168.128.0/24 } to 192.168.128.1 port 8893 flags S/SA keep state\n"
 REPLAY_PROXY_PF_RULE = "pass in quick inet proto tcp from { 192.168.128.0/24 } to 192.168.128.1 port 8889 flags S/SA keep state\n"
+FORGE_BROKER_PF_RULE = "pass in quick inet proto tcp from { 192.168.128.0/24 } to 192.168.128.1 port 8894 flags S/SA keep state\n"
 STUDIO_PF_RULES = (
     "# Pi Durable SGG sandbox isolation: nix-configs modules/services/pi-durable.nix\n"
     "pass in quick inet proto tcp from { 192.168.128.0/24 } to 192.168.128.1 port 8888 flags S/SA keep state\n"
     "pass in quick inet proto tcp from { 192.168.128.0/24 } to 192.168.128.1 port 8892 flags S/SA keep state\n"
     + WRITE_PROXY_PF_RULE
-    + REPLAY_PROXY_PF_RULE +
+    + REPLAY_PROXY_PF_RULE
+    + FORGE_BROKER_PF_RULE +
     "block return in quick on ! lo0 inet from { 192.168.128.0/24 } to any\n"
     "block return in quick on ! lo0 inet6 from fd85:1c07:74fb:2dc7::/64 to any\n"
+    f"block return in quick on {{ {' '.join(BRIDGES)} }} inet6 proto {{ tcp udp }} from fe80::/10 to any\n"
+)
+# The sandbox anchor before planning on VMs (durable-pi-workspace#48): with the
+# forge broker, the VM broker and planning disabled it is exactly this.
+SANDBOX_PF_RULES_WITHOUT_PLANNING = STUDIO_PF_RULES.replace(FORGE_BROKER_PF_RULE, "")
+# The planning service network's anchor (durable-pi-workspace#48): the network
+# reaches the forge broker (8894) and the VM broker (8895) on its gateway and
+# nothing else.
+PLANNING_PF_ANCHOR = "com.apple/101.pi-durable-planning"
+PLANNING_PF_RULES = (
+    "# Pi Durable planning service network isolation: nix-configs modules/services/pi-durable.nix\n"
+    "pass in quick inet proto tcp from { 192.168.129.0/24 } to 192.168.129.1 port 8894 flags S/SA keep state\n"
+    "pass in quick inet proto tcp from { 192.168.129.0/24 } to 192.168.129.1 port 8895 flags S/SA keep state\n"
+    "block return in quick on ! lo0 inet from { 192.168.129.0/24 } to any\n"
+    "block return in quick on ! lo0 inet6 from fdd2:4a0c:729f:fb6::/64 to any\n"
     f"block return in quick on {{ {' '.join(BRIDGES)} }} inet6 proto {{ tcp udp }} from fe80::/10 to any\n"
 )
 
@@ -84,11 +102,15 @@ SUMMARY = f"""{{
 }}"""
 PF_DAEMON = "config.launchd.daemons.pi-durable-pf.serviceConfig"
 PF_RULES = f'(builtins.head (builtins.filter (lib.hasSuffix "-pi-durable-sgg.pf") {PF_DAEMON}.ProgramArguments))'
+PLANNING_PF_DAEMON = "config.launchd.daemons.pi-durable-planning-pf.serviceConfig"
+PLANNING_PF_RULES_FILE = f'(builtins.head (builtins.filter (lib.hasSuffix "-pi-durable-planning.pf") {PLANNING_PF_DAEMON}.ProgramArguments))'
+# Planning on VMs off: the forge broker, the VM broker and the planning service.
+NO_PLANNING = "forgeBroker.enable = lib.mkForce false; vmBroker.enable = lib.mkForce false; planning.enable = lib.mkForce false;"
 # Studio sets the commissioning inputs, so a scenario forces the ones it is about.
 ENABLED = (
     "{ enable = lib.mkForce true; proxy = { listenAddress = lib.mkForce null; allowedClients = lib.mkForce [ ]; }; "
     "page.tailscaleHttpsPort = lib.mkForce null; sampler.enable = lib.mkForce false; modelProxy.enable = lib.mkForce false; "
-    "githubProxy.enable = lib.mkForce false; replayProxy.enable = lib.mkForce false; }"
+    f"githubProxy.enable = lib.mkForce false; replayProxy.enable = lib.mkForce false; {NO_PLANNING} }}"
 )
 PROXY = (
     '{ enable = lib.mkForce true; proxy = { listenAddress = lib.mkForce "192.168.128.1"; '
@@ -108,8 +130,12 @@ class StudioAsCommissioned(unittest.TestCase):
         self.assertIn("pi-durable-model-proxy", s["agents"])
         self.assertIn("pi-durable-github-proxy", s["agents"])
         self.assertIn("pi-durable-replay-proxy", s["agents"])
-        # The only root job: the boot-time pf loader.
-        self.assertEqual(["pi-durable-pf"], [name for name in s["system"] if "pi-durable" in name])
+        for agent in ("pi-durable-forge-broker", "pi-durable-vm-broker", "pi-durable-planning-service", "pi-durable-planning-relay"):
+            self.assertIn(agent, s["agents"])
+        # The only root jobs: the boot-time pf loaders, one per anchor.
+        self.assertEqual(["pi-durable-pf", "pi-durable-planning-pf"], [name for name in s["system"] if "pi-durable" in name])
+        self.assertIn(f"/sbin/pfctl {PLANNING_PF_ANCHOR} ", s["activation"])
+        self.assertIn("8792 http://127.0.0.1:8792", s["activation"])
         self.assertIn(f"/sbin/pfctl {PF_ANCHOR} ", s["activation"])
         # Apple container is installed by hand from its signed installer; nothing here installs it or tinyproxy.
         for item in s["brews"] + s["casks"] + s["packages"]:
@@ -122,6 +148,7 @@ class StudioAsCommissioned(unittest.TestCase):
         self.assertIn("Listen 192.168.128.1\n", proxy_config)
         self.assertIn("Allow 192.168.128.0/24\n", proxy_config)
         self.assertEqual(STUDIO_PF_RULES, studio("{ }", f"builtins.readFile {PF_RULES}"))
+        self.assertEqual(PLANNING_PF_RULES, studio("{ }", f"builtins.readFile {PLANNING_PF_RULES_FILE}"))
 
 
 class EnabledWithoutCommissioningInputs(unittest.TestCase):
@@ -186,6 +213,31 @@ def proxy(listen='"192.168.128.1"', clients='[ "192.168.128.0/24" ]', ipv6='"fd8
     )
 
 
+# Address cases as Nix source, accepted and refused; the planning service
+# network's addresses take the same ones (Planning, below).
+LISTEN_REFUSED = (
+    '"0.0.0.0"', '"999.1.1.1"', '"192.168.128.256"', '"192.168.128.01"', '"192.168.128"',
+    '"192.168.128.1 "', r'"192.168.128.1\nListen 0.0.0.0"', '"studio.local"', '"::"', '""',
+)
+CLIENTS_ACCEPTED = (
+    '[ "192.168.128.0/24" ]',
+    '[ "192.168.128.0/24" "192.168.128.5" ]',
+    '[ "10.0.0.0/8" "192.168.128.7/32" ]',
+)
+CLIENTS_REFUSED = (
+    "[ ]", '[ "0.0.0.0/0" ]', '[ "0.0.0.0/00" ]', '[ "0.0.0.1/0" ]', '[ "192.168.128.0/33" ]',
+    '[ "192.168.128.0/024" ]', '[ "256.168.128.0/24" ]', '[ "010.0.0.0/8" ]', '[ "192.168.128.0/" ]',
+    r'[ "192.168.128.0/24\nConnectPort 22" ]', '[ "192.168.128.0/24 0.0.0.0/0" ]',
+    '[ " 192.168.128.0/24" ]', '[ "192.168.128.0/24" "0.0.0.0" ]', '[ "::/0" ]', '[ "localhost" ]', '[ "" ]',
+)
+IPV6_ACCEPTED = ('"fd85:1c07:74fb:2dc7::/64"', '"fd00::/8"', '"fd85:1c07:74fb:2dc7:0:0:0:0/128"')
+IPV6_REFUSED = (
+    "null", '""', '"fd85:1c07:74fb:2dc7::"', '"fd85:1c07:74fb:2dc7::/0"', '"fd85:1c07:74fb:2dc7::/129"',
+    '"fd85:1c07:74fb:2dc7::/064"', '"FD85:1C07:74FB:2DC7::/64"', '"192.168.128.0/24"', '"fd85::/64 to any"',
+    r'"fd85::/64\npass quick all"', '"fd85::/64 }"', '"{ fd85::/64 }"', '"any"',
+)
+
+
 class FailClosedAssertions(unittest.TestCase):
     """Values are Nix source, so `\\n` reaches the module as a real newline.
 
@@ -205,37 +257,21 @@ class FailClosedAssertions(unittest.TestCase):
         self.assertOnlyRefuses(
             "proxy.listenAddress",
             [proxy()],
-            [proxy(listen=value) for value in (
-                '"0.0.0.0"', '"999.1.1.1"', '"192.168.128.256"', '"192.168.128.01"', '"192.168.128"',
-                '"192.168.128.1 "', r'"192.168.128.1\nListen 0.0.0.0"', '"studio.local"', '"::"', '""',
-            )],
+            [proxy(listen=value) for value in LISTEN_REFUSED],
         )
 
     def test_clients_are_canonical_ipv4_addresses_or_cidrs(self):
         self.assertOnlyRefuses(
             "proxy.allowedClients",
-            [proxy(clients=clients) for clients in (
-                '[ "192.168.128.0/24" ]',
-                '[ "192.168.128.0/24" "192.168.128.5" ]',
-                '[ "10.0.0.0/8" "192.168.128.7/32" ]',
-            )],
-            [proxy(clients=clients) for clients in (
-                "[ ]", '[ "0.0.0.0/0" ]', '[ "0.0.0.0/00" ]', '[ "0.0.0.1/0" ]', '[ "192.168.128.0/33" ]',
-                '[ "192.168.128.0/024" ]', '[ "256.168.128.0/24" ]', '[ "010.0.0.0/8" ]', '[ "192.168.128.0/" ]',
-                r'[ "192.168.128.0/24\nConnectPort 22" ]', '[ "192.168.128.0/24 0.0.0.0/0" ]',
-                '[ " 192.168.128.0/24" ]', '[ "192.168.128.0/24" "0.0.0.0" ]', '[ "::/0" ]', '[ "localhost" ]', '[ "" ]',
-            )],
+            [proxy(clients=clients) for clients in CLIENTS_ACCEPTED],
+            [proxy(clients=clients) for clients in CLIENTS_REFUSED],
         )
 
     def test_ipv6_subnet_is_required_lowercase_hex_with_a_prefix(self):
         self.assertOnlyRefuses(
             "proxy.ipv6Subnet",
-            [proxy(ipv6=value) for value in ('"fd85:1c07:74fb:2dc7::/64"', '"fd00::/8"', '"fd85:1c07:74fb:2dc7:0:0:0:0/128"')],
-            [proxy(ipv6=value) for value in (
-                "null", '""', '"fd85:1c07:74fb:2dc7::"', '"fd85:1c07:74fb:2dc7::/0"', '"fd85:1c07:74fb:2dc7::/129"',
-                '"fd85:1c07:74fb:2dc7::/064"', '"FD85:1C07:74FB:2DC7::/64"', '"192.168.128.0/24"', '"fd85::/64 to any"',
-                r'"fd85::/64\npass quick all"', '"fd85::/64 }"', '"{ fd85::/64 }"', '"any"',
-            )],
+            [proxy(ipv6=value) for value in IPV6_ACCEPTED],
+            [proxy(ipv6=value) for value in IPV6_REFUSED],
         )
 
     def test_allowlist_takes_exact_hostnames_only(self):
@@ -391,7 +427,7 @@ class GithubProxy(unittest.TestCase):
                 self.assertEqual(1, activation.count(f"socketfilterfw --add {node} "))
                 self.assertEqual(1, activation.count(f"socketfilterfw --unblock {node} "))
                 self.assertNotRegex(activation, r"socketfilterfw --add /opt/homebrew/\S*node")
-        activation, node = self.node_firewall("{ modelProxy.enable = lib.mkForce false; githubProxy.enable = lib.mkForce false; }")
+        activation, node = self.node_firewall(f"{{ modelProxy.enable = lib.mkForce false; githubProxy.enable = lib.mkForce false; {NO_PLANNING} }}")
         self.assertNotIn(NODE_FIREWALL, activation)
         self.assertNotIn(node, activation)
 
@@ -536,7 +572,7 @@ class ReplayProxy(unittest.TestCase):
 
 SAMPLER_ONLY = (
     "{ enable = lib.mkForce false; modelProxy.enable = lib.mkForce false; githubProxy.enable = lib.mkForce false; "
-    "replayProxy.enable = lib.mkForce false; "
+    f"replayProxy.enable = lib.mkForce false; {NO_PLANNING} "
     "sampler = { enable = lib.mkForce true; tailscaleHttpsPort = lib.mkForce null; }; }"
 )
 
@@ -581,11 +617,11 @@ class Sampler(unittest.TestCase):
 
     def test_route_goes_through_the_guard_on_its_own_port(self):
         activation = studio(
-            "{ sampler = { enable = lib.mkForce true; port = lib.mkForce 8792; tailscaleHttpsPort = lib.mkForce 8444; }; }",
+            "{ sampler = { enable = lib.mkForce true; port = lib.mkForce 8793; tailscaleHttpsPort = lib.mkForce 8444; }; planning.tailscaleHttpsPort = lib.mkForce null; }",
             "config.system.activationScripts.extraActivation.text",
         )
         self.assertEqual(2, activation.count("pi-durable-page-route.sh"))
-        self.assertIn("8444 http://127.0.0.1:8792", activation)
+        self.assertIn("8444 http://127.0.0.1:8793", activation)
         self.assertIn("8790 http://127.0.0.1:8790", activation)
 
     def test_refuses_the_sgg_page_ports_and_a_route_without_tailscale(self):
@@ -598,7 +634,7 @@ class Sampler(unittest.TestCase):
         self.assertTrue(any("sampler.port" in m for m in same_port), same_port)
         self.assertTrue(any("sampler.tailscaleHttpsPort" in m for m in same_route), same_route)
         # Without the SGG agent, its ports are not the sampler's concern.
-        self.assertEqual([], failures("{ enable = lib.mkForce false; modelProxy.enable = lib.mkForce false; githubProxy.enable = lib.mkForce false; replayProxy.enable = lib.mkForce false; sampler.port = lib.mkForce 8790; }")[0])
+        self.assertEqual([], failures(f"{{ enable = lib.mkForce false; modelProxy.enable = lib.mkForce false; githubProxy.enable = lib.mkForce false; replayProxy.enable = lib.mkForce false; {NO_PLANNING} sampler.port = lib.mkForce 8790; }}")[0])
         failed = json.loads(nix("eval", "--json", "--impure", "--expr", f"""
           let
             studio = (builtins.getFlake "path:{REPO}").darwinConfigurations.studio;
@@ -610,6 +646,338 @@ class Sampler(unittest.TestCase):
           in {FAILED}
         """))
         self.assertTrue(any("sampler.tailscaleHttpsPort requires services.tailscale" in m for m in failed), failed)
+
+
+DEPLOYMENT = f"{HOME}/.local/share/pi-durable/sgg-deployment"
+SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+AGENTS = "config.launchd.user.agents"
+
+
+def planning_network(value):
+    """A sandbox-network address case moved onto the planning service network's addresses."""
+    return value.replace("192.168.128", "192.168.129").replace("fd85:1c07:74fb:2dc7", "fdd2:4a0c:729f:fb6")
+
+
+def planning(listen='"192.168.129.1"', clients='[ "192.168.129.0/24" ]', ipv6='"fdd2:4a0c:729f:fb6::/64"'):
+    return (
+        f"{{ planning = {{ listenAddress = lib.mkForce {listen}; "
+        f"allowedClients = lib.mkForce {clients}; ipv6Subnet = lib.mkForce {ipv6}; }}; }}"
+    )
+
+
+class PlanningOff(unittest.TestCase):
+    """With the forge broker, the VM broker and planning disabled, everything is as before durable-pi-workspace#48."""
+
+    OFF = f"{{ {NO_PLANNING} }}"
+
+    def test_disabled_leaves_the_sandbox_anchor_byte_identical_and_declares_nothing_new(self):
+        s = studio(self.OFF, SUMMARY)
+        self.assertEqual([], s["failed"])
+        for agent in ("pi-durable-forge-broker", "pi-durable-vm-broker", "pi-durable-planning-service", "pi-durable-planning-relay"):
+            self.assertNotIn(agent, s["agents"])
+        self.assertEqual(["pi-durable-pf"], [name for name in s["system"] if "pi-durable" in name])
+        self.assertEqual(SANDBOX_PF_RULES_WITHOUT_PLANNING, studio(self.OFF, f"builtins.readFile {PF_RULES}"))
+        self.assertNotIn("8894", SANDBOX_PF_RULES_WITHOUT_PLANNING)
+        self.assertNotIn(PLANNING_PF_ANCHOR, s["activation"])
+        self.assertNotIn("planning", s["activation"])
+        self.assertNotIn("http://127.0.0.1:8792", s["activation"])
+        self.assertEqual(2, s["activation"].count("pi-durable-page-route.sh"))
+
+    def test_enabled_adds_exactly_the_forge_brokers_line_to_the_sandbox_anchor(self):
+        self.assertEqual(
+            SANDBOX_PF_RULES_WITHOUT_PLANNING.splitlines(True),
+            [line for line in STUDIO_PF_RULES.splitlines(True) if line != FORGE_BROKER_PF_RULE],
+        )
+        self.assertEqual(1, STUDIO_PF_RULES.count(FORGE_BROKER_PF_RULE))
+        self.assertNotIn("8895", STUDIO_PF_RULES)
+
+
+class ForgeBroker(unittest.TestCase):
+    """The forge broker (durable-pi-workspace#48): Nix's Node, Nix's git and openssh, 8894 on both gateways."""
+
+    AGENT = f"{AGENTS}.pi-durable-forge-broker.serviceConfig"
+
+    def test_agent_runs_the_contract_command_with_only_nix_git_and_openssh_on_path(self):
+        agent = studio("{ }", self.AGENT)
+        node = studio("{ }", "builtins.head config.launchd.user.agents.pi-durable-model-proxy.serviceConfig.ProgramArguments")
+        self.assertTrue(node.startswith("/nix/store/") and node.endswith("/bin/node"), node)
+        self.assertEqual(
+            [node, f"{DEPLOYMENT}/dist/workspaces/proxies/src/forge-main.js", "run", "--config", f"{HOME}/.config/pi-durable/forge-broker.json"],
+            agent["ProgramArguments"],
+        )
+        # HOME and PATH only, no secret; PATH exactly the write proxy's.
+        self.assertEqual({"HOME", "PATH"}, set(agent["EnvironmentVariables"]))
+        self.assertEqual(HOME, agent["EnvironmentVariables"]["HOME"])
+        self.assertEqual(
+            ":".join(studio("{ }", 'map (p: "${p}/bin") [ pkgs.git pkgs.openssh ]')),
+            agent["EnvironmentVariables"]["PATH"],
+        )
+        self.assertEqual(
+            studio("{ }", f"{AGENTS}.pi-durable-github-proxy.serviceConfig.EnvironmentVariables"),
+            agent["EnvironmentVariables"],
+        )
+        self.assertIs(True, agent["RunAtLoad"])
+        self.assertIs(True, agent["KeepAlive"])
+        self.assertIsNone(agent.get("ExitTimeOut"))
+        self.assertEqual("/tmp/pi-durable-forge-broker.log", agent["StandardOutPath"])
+        self.assertEqual("/tmp/pi-durable-forge-broker.error.log", agent["StandardErrorPath"])
+
+    def test_port_follows_the_option_into_both_anchors(self):
+        settings = "{ forgeBroker.port = lib.mkForce 9894; }"
+        self.assertEqual(STUDIO_PF_RULES.replace("port 8894 ", "port 9894 "), studio(settings, f"builtins.readFile {PF_RULES}"))
+        self.assertEqual(PLANNING_PF_RULES.replace("port 8894 ", "port 9894 "), studio(settings, f"builtins.readFile {PLANNING_PF_RULES_FILE}"))
+
+    def test_refuses_without_the_sandbox_proxy_or_on_a_clashing_port(self):
+        clashing = {8888: "proxy.port", 8892: "proxy.port", 8893: "proxy.port", 8889: "proxy.port",
+                    8790: "pages' ports", 8791: "pages' ports", 8792: "pages' ports"}
+        accepted, model_off_same_port, no_listen, disabled, *ports = failures(
+            "{ }",
+            "{ modelProxy.enable = lib.mkForce false; forgeBroker.port = lib.mkForce 8892; }",
+            "{ proxy.listenAddress = lib.mkForce null; }",
+            "{ enable = lib.mkForce false; }",
+            *[f"{{ forgeBroker.port = lib.mkForce {port}; }}" for port in clashing],
+        )
+        self.assertEqual([], accepted)
+        self.assertEqual([], model_off_same_port)
+        for failed in (no_listen, disabled):
+            self.assertTrue(any("forgeBroker requires services.pi-durable.enable and proxy.listenAddress" in m for m in failed), failed)
+        for (port, what), failed in zip(clashing.items(), ports):
+            with self.subTest(port=port):
+                self.assertTrue(any(m.startswith("services.pi-durable.forgeBroker.port must differ") and what in m for m in failed), failed)
+
+
+class VmBroker(unittest.TestCase):
+    """The VM broker (durable-pi-workspace#48): 8895 on the planning gateway alone, never in the sandbox anchor."""
+
+    AGENT = f"{AGENTS}.pi-durable-vm-broker.serviceConfig"
+
+    def test_agent_runs_the_contract_command_with_nix_git_then_the_container_cli(self):
+        agent = studio("{ }", self.AGENT)
+        node = studio("{ }", "builtins.head config.launchd.user.agents.pi-durable-model-proxy.serviceConfig.ProgramArguments")
+        self.assertEqual(
+            [node, f"{DEPLOYMENT}/dist/workspaces/proxies/src/vm-broker-main.js", "run", "--config", f"{HOME}/.config/pi-durable/vm-broker.json"],
+            agent["ProgramArguments"],
+        )
+        self.assertEqual({"HOME", "PATH"}, set(agent["EnvironmentVariables"]))
+        self.assertEqual(HOME, agent["EnvironmentVariables"]["HOME"])
+        [git] = studio("{ }", 'map (p: "${p}/bin") [ pkgs.git ]')
+        self.assertRegex(git, r"^/nix/store/[0-9a-z]{32}-git-[0-9.]+/bin$")
+        self.assertEqual(f"{git}:{SYSTEM_PATH}", agent["EnvironmentVariables"]["PATH"])
+        self.assertIs(True, agent["RunAtLoad"])
+        self.assertIs(True, agent["KeepAlive"])
+        self.assertEqual(30, agent["ExitTimeOut"])
+        self.assertEqual("/tmp/pi-durable-vm-broker.log", agent["StandardOutPath"])
+        self.assertEqual("/tmp/pi-durable-vm-broker.error.log", agent["StandardErrorPath"])
+
+    def test_port_follows_the_option_into_the_planning_anchor_alone(self):
+        settings = "{ vmBroker.port = lib.mkForce 9895; }"
+        self.assertEqual(STUDIO_PF_RULES, studio(settings, f"builtins.readFile {PF_RULES}"))
+        self.assertEqual(PLANNING_PF_RULES.replace("port 8895 ", "port 9895 "), studio(settings, f"builtins.readFile {PLANNING_PF_RULES_FILE}"))
+
+    def test_refuses_without_planning_on_a_page_port_or_in_the_sandbox_anchor(self):
+        in_sandbox = [
+            "{ vmBroker.port = lib.mkForce 8888; }",
+            "{ vmBroker.port = lib.mkForce 8892; }",
+            "{ vmBroker.port = lib.mkForce 8893; }",
+            "{ vmBroker.port = lib.mkForce 8889; }",
+            "{ vmBroker.port = lib.mkForce 8894; }",
+            # Another proxy moved onto the VM broker's port would put it in the sandbox anchor.
+            "{ modelProxy.port = lib.mkForce 8895; }",
+            "{ forgeBroker.port = lib.mkForce 8895; }",
+        ]
+        pages = [f"{{ vmBroker.port = lib.mkForce {port}; }}" for port in (8790, 8791, 8792)]
+        accepted, no_planning, *results = failures(
+            "{ }",
+            "{ planning.enable = lib.mkForce false; }",
+            *in_sandbox,
+            *pages,
+        )
+        self.assertEqual([], accepted)
+        self.assertTrue(any("vmBroker requires services.pi-durable.planning" in m for m in no_planning), no_planning)
+        for settings, failed in zip(in_sandbox, results):
+            with self.subTest(settings):
+                self.assertTrue(any("vmBroker.port must never be passed by the sandbox network's pf anchor" in m for m in failed), failed)
+        for settings, failed in zip(pages, results[len(in_sandbox):]):
+            with self.subTest(settings):
+                self.assertTrue(any("vmBroker.port must differ from the pages' ports" in m for m in failed), failed)
+
+
+class Planning(unittest.TestCase):
+    """The planning service (durable-pi-workspace#48): its launcher, its relay, its pf anchor and its route."""
+
+    LAUNCHER = f"{AGENTS}.pi-durable-planning-service.serviceConfig"
+    RELAY = f"{AGENTS}.pi-durable-planning-relay.serviceConfig"
+
+    def test_launcher_runs_the_contract_command_with_only_the_system_path(self):
+        agent = studio("{ }", self.LAUNCHER)
+        node = studio("{ }", "builtins.head config.launchd.user.agents.pi-durable-model-proxy.serviceConfig.ProgramArguments")
+        self.assertEqual(
+            [node, f"{DEPLOYMENT}/dist/workspaces/planning/src/service-vm.js", "run", "--config", f"{HOME}/.config/pi-durable/planning-service-vm.json"],
+            agent["ProgramArguments"],
+        )
+        # The container CLI (/usr/local/bin) and nothing of Homebrew's or Nix's; no secret.
+        self.assertEqual({"HOME": HOME, "PATH": SYSTEM_PATH}, agent["EnvironmentVariables"])
+        self.assertIs(True, agent["RunAtLoad"])
+        self.assertIs(True, agent["KeepAlive"])
+        self.assertEqual(60, agent["ExitTimeOut"])
+        self.assertEqual("/tmp/pi-durable-planning-service.log", agent["StandardOutPath"])
+        self.assertEqual("/tmp/pi-durable-planning-service.error.log", agent["StandardErrorPath"])
+
+    def test_relay_runs_the_contract_command_with_home_only(self):
+        agent = studio("{ }", self.RELAY)
+        node = studio("{ }", "builtins.head config.launchd.user.agents.pi-durable-model-proxy.serviceConfig.ProgramArguments")
+        self.assertEqual(
+            [node, f"{DEPLOYMENT}/dist/workspaces/proxies/src/relay-main.js", "run", "--config", f"{HOME}/.config/pi-durable/planning-relay.json"],
+            agent["ProgramArguments"],
+        )
+        self.assertEqual({"HOME": HOME}, agent["EnvironmentVariables"])
+        self.assertIs(True, agent["RunAtLoad"])
+        self.assertIs(True, agent["KeepAlive"])
+        self.assertIsNone(agent.get("ExitTimeOut"))
+        self.assertEqual("/tmp/pi-durable-planning-relay.log", agent["StandardOutPath"])
+        self.assertEqual("/tmp/pi-durable-planning-relay.error.log", agent["StandardErrorPath"])
+
+    def test_anchor_passes_the_two_brokers_and_refuses_everything_else(self):
+        self.assertEqual(PLANNING_PF_RULES, studio("{ }", f"builtins.readFile {PLANNING_PF_RULES_FILE}"))
+
+    def test_this_macs_pfctl_parses_the_planning_anchor_as_intended(self):
+        rules = nix(
+            "build", "--impure", "--no-link", "--print-out-paths", "--expr",
+            studio_expr("{ }", f'pkgs.writeText "pi-durable-planning.pf" (builtins.readFile {PLANNING_PF_RULES_FILE})'),
+        ).strip().splitlines()[-1]
+        parsed = subprocess.run(["/sbin/pfctl", "-nvf", rules], text=True, capture_output=True)
+        self.assertEqual(0, parsed.returncode, parsed.stderr)
+        lines = parsed.stdout.splitlines()
+        forge = "pass in quick inet proto tcp from 192.168.129.0/24 to 192.168.129.1 port = 8894 flags S/SA keep state"
+        vm = "pass in quick inet proto tcp from 192.168.129.0/24 to 192.168.129.1 port = 8895 flags S/SA keep state"
+        blocking = "block return in quick on ! lo0 inet from 192.168.129.0/24 to any"
+        link_local = {
+            f"block return in quick on {bridge} inet6 proto {proto} from fe80::/10 to any"
+            for bridge in BRIDGES for proto in ("tcp", "udp")
+        }
+        self.assertEqual(
+            {forge, vm, blocking, "block return in quick on ! lo0 inet6 from fdd2:4a0c:729f:fb6::/64 to any"} | link_local,
+            set(lines),
+        )
+        self.assertEqual(len(lines), len(set(lines)))
+        self.assertLess(lines.index(forge), lines.index(blocking))
+        self.assertLess(lines.index(vm), lines.index(blocking))
+
+    def test_activation_and_a_root_daemon_load_it_with_its_own_token(self):
+        daemon = studio("{ }", PLANNING_PF_DAEMON)
+        sandbox = studio("{ }", PF_DAEMON)
+        args = daemon["ProgramArguments"]
+        # Shaped exactly like the sandbox anchor's daemon: the same wrapper and loader.
+        self.assertEqual(sandbox["ProgramArguments"][:7], args[:7])
+        self.assertEqual(PLANNING_PF_ANCHOR, args[7])
+        self.assertTrue(args[8].endswith("-pi-durable-planning.pf"))
+        self.assertEqual("/var/run/pi-durable-planning-pf.token", args[9])
+        self.assertEqual(10, len(args))
+        unshared = {"Label": None, "ProgramArguments": None, "StandardOutPath": None, "StandardErrorPath": None}
+        self.assertEqual({**sandbox, **unshared}, {**daemon, **unshared})
+        self.assertEqual("org.nixos.pi-durable-planning-pf", daemon["Label"])
+        self.assertEqual("/var/log/pi-durable-planning-pf.log", daemon["StandardOutPath"])
+        self.assertEqual("/var/log/pi-durable-planning-pf.log", daemon["StandardErrorPath"])
+        self.assertIsNone(daemon["UserName"], "runs as root")
+        activation = studio("{ }", "config.system.activationScripts.extraActivation.text")
+        self.assertIn(f"/sbin/pfctl {PLANNING_PF_ANCHOR} ", activation)
+        self.assertIn("/var/run/pi-durable-planning-pf.token", activation)
+        self.assertEqual(1, activation.count("# === pi-durable planning service network isolation (pf) ==="))
+
+    def test_route_goes_through_the_guard_on_8792_only_when_set(self):
+        activation = studio("{ }", "config.system.activationScripts.extraActivation.text")
+        self.assertEqual(3, activation.count("pi-durable-page-route.sh"))
+        self.assertEqual(1, activation.count("# === pi-durable planning page via Tailscale Serve ==="))
+        self.assertIn(" 8792 http://127.0.0.1:8792;", activation)
+        # The planning network's pf anchor is loaded before its page is routed.
+        self.assertLess(
+            activation.index("# === pi-durable planning service network isolation (pf) ==="),
+            activation.index(" 8792 http://127.0.0.1:8792;"),
+        )
+        unrouted = studio("{ planning.tailscaleHttpsPort = lib.mkForce null; }", SUMMARY)
+        self.assertEqual([], unrouted["failed"])
+        self.assertEqual(2, unrouted["activation"].count("pi-durable-page-route.sh"))
+        self.assertNotIn("http://127.0.0.1:8792", unrouted["activation"])
+        self.assertIn("pi-durable-planning-relay", unrouted["agents"])
+        moved = studio("{ planning = { relayPort = lib.mkForce 8793; tailscaleHttpsPort = lib.mkForce 8445; }; }",
+                       "config.system.activationScripts.extraActivation.text")
+        self.assertIn(" 8445 http://127.0.0.1:8793;", moved)
+
+    def test_addresses_take_the_sandbox_proxys_cases(self):
+        for field, accepted, refused in (
+            ("planning.listenAddress", [planning()], [planning(listen=planning_network(v)) for v in LISTEN_REFUSED]),
+            ("planning.allowedClients", [planning(clients=planning_network(v)) for v in CLIENTS_ACCEPTED],
+             [planning(clients=planning_network(v)) for v in CLIENTS_REFUSED]),
+            ("planning.ipv6Subnet", [planning(ipv6=planning_network(v)) for v in IPV6_ACCEPTED],
+             [planning(ipv6=planning_network(v)) for v in IPV6_REFUSED]),
+        ):
+            results = failures(*accepted, *refused)
+            for settings, failed in zip(accepted, results):
+                with self.subTest(accepted=settings):
+                    self.assertEqual([], failed)
+            for settings, failed in zip(refused, results[len(accepted):]):
+                with self.subTest(refused=settings):
+                    self.assertTrue(any(f"services.pi-durable.{field} must" in m for m in failed), failed)
+        # Required: nothing set is refused as each field.
+        [failed] = failures("{ planning = { listenAddress = lib.mkForce null; allowedClients = lib.mkForce [ ]; ipv6Subnet = lib.mkForce null; }; }")
+        for field in ("planning.listenAddress", "planning.allowedClients", "planning.ipv6Subnet"):
+            self.assertTrue(any(f"services.pi-durable.{field} must" in m for m in failed), (field, failed))
+
+    def test_refuses_the_sandbox_networks_addresses(self):
+        cases = [
+            planning(listen='"192.168.128.1"'),
+            planning(clients='[ "192.168.129.0/24" "192.168.128.0/24" ]'),
+            planning(ipv6='"fd85:1c07:74fb:2dc7::/64"'),
+        ]
+        for settings, failed in zip(cases, failures(*cases)):
+            with self.subTest(settings):
+                self.assertTrue(any("must never equal the sandbox network's" in m for m in failed), failed)
+
+    def test_refuses_without_its_brokers_or_on_clashing_ports(self):
+        no_forge, no_vm, disabled, relay_page, relay_sampler, serve_page, serve_sampler = failures(
+            "{ forgeBroker.enable = lib.mkForce false; }",
+            "{ vmBroker.enable = lib.mkForce false; }",
+            "{ enable = lib.mkForce false; }",
+            "{ planning.relayPort = lib.mkForce 8790; }",
+            "{ planning.relayPort = lib.mkForce 8791; }",
+            "{ planning.tailscaleHttpsPort = lib.mkForce 8790; }",
+            "{ planning.tailscaleHttpsPort = lib.mkForce 8791; }",
+        )
+        for failed in (no_forge, no_vm, disabled):
+            self.assertTrue(any("planning requires services.pi-durable.enable, forgeBroker and vmBroker" in m for m in failed), failed)
+        for failed in (relay_page, relay_sampler):
+            self.assertTrue(any("planning.relayPort must differ from the pages' ports" in m for m in failed), failed)
+        for failed in (serve_page, serve_sampler):
+            self.assertTrue(any("planning.tailscaleHttpsPort must differ from the other pages' Serve ports" in m for m in failed), failed)
+        failed = json.loads(nix("eval", "--json", "--impure", "--expr", f"""
+          let
+            studio = (builtins.getFlake "path:{REPO}").darwinConfigurations.studio;
+            inherit (studio.pkgs) lib;
+            config = (studio.extendModules {{ modules = [ {{
+              services.pi-durable = {{ page.tailscaleHttpsPort = lib.mkForce null; sampler.tailscaleHttpsPort = lib.mkForce null; }};
+              services.tailscale.enable = lib.mkForce false;
+            }} ]; }}).config;
+          in {FAILED}
+        """))
+        self.assertIn("services.pi-durable.planning.tailscaleHttpsPort requires services.tailscale", failed)
+
+
+class PlanningNodeFirewall(unittest.TestCase):
+    """One application firewall exception for the proxies' Node, whichever of its listeners run."""
+
+    def test_one_exception_while_any_gateway_listener_runs(self):
+        node = studio("{ }", "builtins.head config.launchd.user.agents.pi-durable-forge-broker.serviceConfig.ProgramArguments")
+        for name, settings in {
+            "all": "{ }",
+            "the brokers only": "{ modelProxy.enable = lib.mkForce false; githubProxy.enable = lib.mkForce false; }",
+            "the proxies only": f"{{ {NO_PLANNING} }}",
+        }.items():
+            with self.subTest(name):
+                activation = studio(settings, "config.system.activationScripts.extraActivation.text")
+                self.assertEqual(1, activation.count(NODE_FIREWALL))
+                self.assertEqual(1, activation.count(f"socketfilterfw --add {node} "))
+                self.assertEqual(1, activation.count(f"socketfilterfw --unblock {node} "))
+                self.assertNotRegex(activation, r"socketfilterfw --add /opt/homebrew/\S*node")
 
 
 class PageRouteGuard(unittest.TestCase):
@@ -730,13 +1098,14 @@ class SandboxPf(unittest.TestCase):
         model = "pass in quick inet proto tcp from 192.168.128.0/24 to 192.168.128.1 port = 8892 flags S/SA keep state"
         github = "pass in quick inet proto tcp from 192.168.128.0/24 to 192.168.128.1 port = 8893 flags S/SA keep state"
         replay = "pass in quick inet proto tcp from 192.168.128.0/24 to 192.168.128.1 port = 8889 flags S/SA keep state"
+        forge = "pass in quick inet proto tcp from 192.168.128.0/24 to 192.168.128.1 port = 8894 flags S/SA keep state"
         blocking = "block return in quick on ! lo0 inet from 192.168.128.0/24 to any"
         link_local = {
             f"block return in quick on {bridge} inet6 proto {proto} from fe80::/10 to any"
             for bridge in BRIDGES for proto in ("tcp", "udp")
         }
         self.assertEqual(
-            {passing, model, github, replay, blocking, "block return in quick on ! lo0 inet6 from fd85:1c07:74fb:2dc7::/64 to any"} | link_local,
+            {passing, model, github, replay, forge, blocking, "block return in quick on ! lo0 inet6 from fd85:1c07:74fb:2dc7::/64 to any"} | link_local,
             set(lines),
         )
         self.assertEqual(len(lines), len(set(lines)))
@@ -745,6 +1114,7 @@ class SandboxPf(unittest.TestCase):
         self.assertLess(lines.index(model), lines.index(blocking))
         self.assertLess(lines.index(github), lines.index(blocking))
         self.assertLess(lines.index(replay), lines.index(blocking))
+        self.assertLess(lines.index(forge), lines.index(blocking))
 
     def test_a_root_daemon_reloads_it_at_every_boot(self):
         daemon = studio("{ }", PF_DAEMON)

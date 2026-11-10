@@ -181,6 +181,13 @@
             icon = "📈";
             statusName = "Claude usage";
           }
+          {
+            title = "Planning";
+            description = "Planning conversations and runs";
+            url = "${tailnetUrl config.services.pi-durable.planning.tailscaleHttpsPort}/";
+            icon = "🧭";
+            statusName = "Planning";
+          }
         ];
         dailyLinks = [
           {
@@ -244,6 +251,30 @@
       # port in ~/.config/pi-durable/replay.json. Its allowlist is the package
       # hosts only: GitHub is denied by design.
       replayProxy.enable = true;
+      # Forge broker (durable-pi-workspace#48; OPERATIONS.md §8) on both
+      # gateways at the default 8894, which must equal `listen.port` in
+      # ~/.config/pi-durable/forge-broker.json (its `listen.hosts` both
+      # gateways). It exits 1 until the file exists; launchd retries.
+      forgeBroker.enable = true;
+      # VM broker (durable-pi-workspace#48; OPERATIONS.md §9) on the planning
+      # gateway alone at the default 8895, which must equal `listen.port` in
+      # ~/.config/pi-durable/vm-broker.json. The sandbox anchor never passes it.
+      vmBroker.enable = true;
+      # Planning service in its VM (durable-pi-workspace#48; the planning
+      # runbook §4.1): `container network create --internal --subnet
+      # 192.168.129.0/24 pi-durable-planning`, its gateway and subnets. Like
+      # the sandbox's, the gateway exists only while a VM is attached. pf
+      # confines the network to the two brokers. The relay's loopback port is
+      # the default 8792 (planning-relay.json's default); free tailnet HTTPS
+      # port 8792 (2026-11-10 Serve held 443, 8088, 8092, 8790, 8791, 9090,
+      # 9120, 10443, 12345 and 33000; nothing listened on 8792).
+      planning = {
+        enable = true;
+        listenAddress = "192.168.129.1";
+        allowedClients = [ "192.168.129.0/24" ];
+        ipv6Subnet = "fdd2:4a0c:729f:fb6::/64";
+        tailscaleHttpsPort = 8792;
+      };
     };
 
     # Shared Claude usage sampler (#236; the application's

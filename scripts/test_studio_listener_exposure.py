@@ -158,6 +158,7 @@ class DashyListenerTests(unittest.TestCase):
             [
                 ("SGG pre-review", f"https://{TAILNET_HOST}:8790/", "SGG pre-review"),
                 ("Claude usage", f"https://{TAILNET_HOST}:8791/", "Claude usage"),
+                ("Planning", f"https://{TAILNET_HOST}:8792/", "Planning"),
             ],
             [(link["title"], link["url"], link["statusName"]) for link in links],
         )
