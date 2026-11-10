@@ -29,6 +29,7 @@
       open-webui
       monitoring
       fseventsd-watchdog
+      nas-storage-health
       smb-mount
       syncthing
       icloud-backup
@@ -388,6 +389,17 @@
     # restarts it after 15 minutes over a limit, at most hourly. Defaults: restart
     # above 2 GiB or 90% of a core, warn above 1 GiB or 80%.
     services.fseventsd-watchdog.enable = true;
+
+    # NAS storage health: alert on new btrfs device errors from the NAS's
+    # node_exporter (the unraid-node job above) and when the backup share stops
+    # taking writes, checked by writing a small file every 10 minutes.
+    services.nas-storage-health = {
+      enable = true;
+      shares.Bryan = {
+        mountPoint = "/Volumes/Bryan";
+        directory = "/Volumes/Bryan/Backups";
+      };
+    };
 
     # === Host-specific Homebrew Configuration ===
 

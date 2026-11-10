@@ -396,11 +396,13 @@ class Wiring(unittest.TestCase):
 
     def test_without_the_watchdog_monitoring_is_unchanged(self):
         off = "{ services.fseventsd-watchdog.enable = lib.mkForce false; }"
+        # Other modules (nas-storage-health) add their own; none of the watchdog's remain.
         args = studio("config.launchd.user.agents.node-exporter.serviceConfig.ProgramArguments", off)
-        self.assertFalse(any("textfile" in a for a in args))
+        self.assertFalse(any("fseventsd" in a for a in args))
         self.assertFalse(studio("config.launchd.daemons ? fseventsd-watchdog", off))
         self.assertEqual({}, studio("config.services.monitoring.extraDashboards", off))
-        self.assertEqual([], studio("config.services.monitoring.extraAlertRules", off))
+        rules = studio("map (r: r.alert) config.services.monitoring.extraAlertRules", off)
+        self.assertFalse(any(r.startswith("Fseventsd") for r in rules), rules)
 
     def test_a_host_without_monitoring_gets_just_the_watchdog(self):
         result = json.loads(nix("eval", "--json", "--impure", "--expr", f"""
