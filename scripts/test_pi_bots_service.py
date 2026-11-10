@@ -158,6 +158,98 @@ class Module(unittest.TestCase):
         self.assertEqual({"agent": False, "rules": False, "dir": False}, got)
 
 
+# A stand-in for the checkout's command line: prints what it was given (its
+# arguments, PI_BOTS_* settings, stdin and pid) and exits with the code in its
+# first argument when that is a number.
+STAND_IN_CLI = """\
+import { readFileSync } from "node:fs";
+const keys = Object.keys(process.env).filter((k) => k.startsWith("PI_BOTS_")).sort();
+const stdin = readFileSync(0, "utf8");
+console.log(JSON.stringify({ argv: process.argv.slice(2), env: Object.fromEntries(keys.map((k) => [k, process.env[k]])), stdin, pid: process.pid }));
+process.exit(/^[0-9]+$/.test(process.argv[2] ?? "") ? Number(process.argv[2]) : 0);
+"""
+
+
+@cache
+def command_with_checkout(checkout):
+    out = nix("build", "--no-link", "--print-out-paths", "--impure", "--expr", studio_expr(
+        "config.services.pi-bots.package", f'{{ services.pi-bots.checkout = lib.mkForce "{checkout}"; }}'))
+    return Path(out.strip().splitlines()[-1]) / "bin" / "pi-bots"
+
+
+class Command(unittest.TestCase):
+    """The `pi-bots` command Pi Durable's agents find on their PATH (N9.2)."""
+
+    def test_it_is_in_the_system_profile(self):
+        got = studio("""{
+          installed = lib.elem config.services.pi-bots.package config.environment.systemPackages;
+          name = config.services.pi-bots.package.name;
+        }""")
+        self.assertEqual({"installed": True, "name": "pi-bots"}, got)
+
+    def test_the_system_profile_links_it(self):
+        out = nix("build", "--no-link", "--print-out-paths", "--impure", "--expr",
+                  studio_expr("config.system.path"))
+        link = Path(out.strip().splitlines()[-1]) / "bin" / "pi-bots"
+        self.assertTrue(link.exists(), link)
+        text = link.resolve().read_text()
+        self.assertIn("/opt/homebrew/bin/node", text)
+        self.assertIn("/Users/bryan/code/pi-bots/src/cli.ts", text)
+
+    def test_pi_durable_agents_find_it(self):
+        # The SGG service and the sampler hand their own PATH to the command
+        # (packages/foundation/src/notify.ts passes PATH, HOME and PI_BOTS_*).
+        paths = studio("""map (a: a.serviceConfig.EnvironmentVariables.PATH)
+          [ config.launchd.user.agents.pi-durable-sgg config.launchd.user.agents.pi-durable-sampler ]""")
+        for path in paths:
+            self.assertIn("/run/current-system/sw/bin", path.split(":"))
+
+    def test_it_defaults_to_the_service_settings(self):
+        with tempfile.TemporaryDirectory() as checkout:
+            (Path(checkout) / "src").mkdir()
+            (Path(checkout) / "src" / "cli.ts").write_text(STAND_IN_CLI)
+            command = command_with_checkout(checkout)
+
+            def run(*args, stdin="", **env):
+                child = subprocess.Popen([str(command), *args], text=True, stdin=subprocess.PIPE,
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                         env={"PATH": "/usr/bin:/bin", "HOME": checkout, **env})
+                stdout, stderr = child.communicate(stdin)
+                out = json.loads(stdout) if stdout else None
+                # exec: the command line is the caller's child itself, so the
+                # notifier's SIGKILL on a timeout reaches it, not a shell.
+                if out is not None:
+                    self.assertEqual(child.pid, out["pid"])
+                return child.returncode, out, stderr
+
+            # Only PATH and HOME, as Pi Durable's notifier passes them.
+            # The notice's body arrives on stdin (`--file -`), byte for byte.
+            body = "**Review ready**\n\n- one `item`\n"
+            code, out, err = run("send", "sgg-bot", "a room", "--file", "-", stdin=body)
+            self.assertEqual((0, ""), (code, err))
+            self.assertEqual(["send", "sgg-bot", "a room", "--file", "-"], out["argv"])
+            self.assertEqual(body, out["stdin"])
+            self.assertEqual({"PI_BOTS_HOMESERVER": "https://matrix.snowboardtechie.com",
+                              "PI_BOTS_STATE_DIR": "/Users/bryan/.local/state/pi-bots"}, out["env"])
+            # The caller's own settings win, and nothing else is added.
+            code, out, _ = run("help", PI_BOTS_HOMESERVER="https://matrix.example.org",
+                               PI_BOTS_STATE_DIR="/tmp/elsewhere", PI_BOTS_OWNER="x")
+            self.assertEqual({"PI_BOTS_HOMESERVER": "https://matrix.example.org",
+                              "PI_BOTS_STATE_DIR": "/tmp/elsewhere", "PI_BOTS_OWNER": "x"}, out["env"])
+            # An empty setting counts as unset.
+            _, out, _ = run("help", PI_BOTS_HOMESERVER="", PI_BOTS_STATE_DIR="")
+            self.assertEqual({"PI_BOTS_HOMESERVER": "https://matrix.snowboardtechie.com",
+                              "PI_BOTS_STATE_DIR": "/Users/bryan/.local/state/pi-bots"}, out["env"])
+            # Exit 3 (the bot keeping silent) reaches the caller.
+            code, out, _ = run("3")
+            self.assertEqual(3, code)
+
+    def test_off_installs_nothing(self):
+        got = studio('lib.any (p: (p.name or "") == "pi-bots") config.environment.systemPackages',
+                     "{ services.pi-bots.enable = lib.mkForce false; }")
+        self.assertFalse(got)
+
+
 class Rules(unittest.TestCase):
     def promtool_test(self, inputs, alertname, *expectations):
         rule_file, _ = rules()

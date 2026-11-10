@@ -16,11 +16,24 @@
 # more as it stops. With the monitoring module on the host, node_exporter reads
 # it and the rules below alert on the service, its bots, their accounts and
 # unanswered messages.
+#
+# The command: `pi-bots` in the system profile (/run/current-system/sw/bin, on
+# the PATH of Pi Durable's agents, this one and interactive shells) runs the
+# checkout's command line on Homebrew's node. It sets PI_BOTS_HOMESERVER and
+# PI_BOTS_STATE_DIR to this service's unless the caller has, so a caller that
+# passes only PATH and HOME (Pi Durable's notifier) reaches the running
+# service's socket and needs no --homeserver.
 { inputs, ... }:
 {
-  flake.modules.darwin.pi-bots = { config, lib, options, ... }:
+  flake.modules.darwin.pi-bots = { config, lib, options, pkgs, ... }:
     let
       cfg = config.services.pi-bots;
+      command = pkgs.writeShellScriptBin "pi-bots" ''
+        if [ -z "''${PI_BOTS_HOMESERVER:-}" ]; then PI_BOTS_HOMESERVER=${lib.escapeShellArg cfg.homeserver}; fi
+        if [ -z "''${PI_BOTS_STATE_DIR:-}" ]; then PI_BOTS_STATE_DIR=${lib.escapeShellArg cfg.stateDir}; fi
+        export PI_BOTS_HOMESERVER PI_BOTS_STATE_DIR
+        exec ${lib.escapeShellArg "${config.homebrew.prefix}/bin/node"} ${lib.escapeShellArg "${cfg.checkout}/src/cli.ts"} "$@"
+      '';
       homeDir = "/Users/${config.system.primaryUser}";
       logFile = "/tmp/pi-bots.log";
       errorLog = "/tmp/pi-bots.error.log";
@@ -126,6 +139,19 @@
           defaultText = lib.literalExpression ''"''${stateDir}/metrics"'';
           description = "Directory the service writes pi-bots.prom into for node_exporter's textfile collector.";
         };
+
+        package = lib.mkOption {
+          type = lib.types.package;
+          readOnly = true;
+          default = command;
+          defaultText = lib.literalMD "a `pi-bots` wrapper running the checkout's `src/cli.ts` on Homebrew's node";
+          description = ''
+            The `pi-bots` command, installed in the system profile
+            (/run/current-system/sw/bin/pi-bots: the absolute path for callers
+            under launchd). It defaults PI_BOTS_HOMESERVER and PI_BOTS_STATE_DIR
+            to this service's, so it reaches the running service.
+          '';
+        };
       };
 
       config = lib.mkIf cfg.enable (lib.mkMerge [
@@ -137,6 +163,8 @@
               message = "services.pi-bots.stateDir must be the directory services.pi-bots-backup backs up.";
             }
           ];
+
+          environment.systemPackages = [ cfg.package ];
 
           launchd.user.agents.pi-bots.serviceConfig = {
             ProgramArguments = [

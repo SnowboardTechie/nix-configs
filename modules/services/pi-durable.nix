@@ -188,7 +188,9 @@
         ++ lib.optional cfg.sampler.enable cfg.sampler.port
         ++ lib.optional cfg.planning.enable cfg.planning.relayPort;
 
-      # No secret: only what finds node, git, claude, hermes and container
+      # No secret: only what finds node, git, claude, hermes, pi-bots (the
+      # system profile's, installed only while services.pi-bots is enabled;
+      # notify.pi_bots in sgg.json and sampler.json names it) and container
       # (Apple's installer puts it in /usr/local/bin).
       agentEnvironment = {
         HOME = home;
