@@ -37,6 +37,11 @@
     # an HTTPS port equal to its local port.
     tailscaleServeEnabled = cfg.tailscaleServe.enable;
     tailnetUrl = port: "https://${cfg.tailscaleServe.hostName}:${toString port}";
+    # Content probes: one blackbox module per probe, so each carries its own
+    # body match; the scrape picks it through the target's __param_module.
+    contentProbeModule = name: "http_content_" + lib.toLower (lib.replaceStrings [ " " "-" ] [ "_" "_" ] name);
+    contentProbeNames = lib.attrNames cfg.blackbox.contentProbes;
+    contentProbeUrls = lib.mapAttrsToList (_: probe: probe.url) cfg.blackbox.contentProbes;
     servedWebUis = [
       { name = "Grafana"; port = cfg.grafana.port; }
       { name = "Prometheus"; port = cfg.prometheus.port; }
@@ -184,7 +189,16 @@
           job_name = "blackbox";
           metrics_path = "/probe";
           params = { module = ["http_2xx"]; };
-          static_configs = [{ targets = cfg.blackbox.targets; }];
+          static_configs = [{ targets = cfg.blackbox.targets; }]
+            ++ lib.mapAttrsToList
+              (name: probe: {
+                targets = [ probe.url ];
+                labels = {
+                  __param_module = contentProbeModule name;
+                  probe = name;
+                };
+              })
+              cfg.blackbox.contentProbes;
           relabel_configs = [
             {
               source_labels = ["__address__"];
@@ -449,7 +463,17 @@
             valid_status_codes = [];
           };
         };
-      };
+      } // lib.mapAttrs'
+        (name: probe: lib.nameValuePair (contentProbeModule name) {
+          prober = "http";
+          timeout = "5s";
+          http = {
+            preferred_ip_protocol = "ip4";
+            valid_status_codes = [];
+            fail_if_body_not_matches_regexp = [ probe.bodyMatches ];
+          };
+        })
+        cfg.blackbox.contentProbes;
     });
 
     # Grafana provisioning directory (datasources + dashboards only).
@@ -628,6 +652,36 @@
           ];
           description = "HTTP endpoints to probe for service health";
         };
+        contentProbes = lib.mkOption {
+          type = lib.types.attrsOf (lib.types.submodule {
+            options = {
+              url = lib.mkOption {
+                type = lib.types.strMatching "https?://[^[:space:]]+";
+                example = "http://127.0.0.1:8096/health";
+                description = "Endpoint to fetch.";
+              };
+              bodyMatches = lib.mkOption {
+                type = lib.types.str;
+                example = "^Healthy\\s*$";
+                description = ''
+                  Go regular expression the response body must match (RE2;
+                  `^` is the start of the body unless the pattern sets `(?m)`).
+                '';
+              };
+            };
+          });
+          default = { };
+          example = lib.literalExpression ''{ Jellyfin = { url = "http://127.0.0.1:8096/health"; bodyMatches = "^Healthy\\s*$"; }; }'';
+          description = ''
+            Endpoints probed like `targets`, but healthy only when the answer
+            is 2xx and its body matches `bodyMatches`, so a page that answers
+            with the wrong content counts as down. Keyed by the name the
+            series carries in its `probe` label (letters, digits, spaces and
+            dashes). They are in the `blackbox` job, so ServiceDown and the
+            Service Health dashboard cover them. Feature modules add their
+            own (dashy, artifact-shelf, pi-durable do).
+          '';
+        };
       };
 
       alertmanager = {
@@ -685,7 +739,23 @@
             (lib.attrNames cfg.extraDashboards);
           message = "services.monitoring.extraDashboards names must look like `name.json` (lowercase letters, digits, dashes) and must not replace a built-in dashboard.";
         }
+        {
+          assertion = lib.all (name: builtins.match "[A-Za-z0-9][A-Za-z0-9 -]*" name != null) contentProbeNames
+            && lib.length (lib.unique (map contentProbeModule contentProbeNames)) == lib.length contentProbeNames;
+          message = "services.monitoring.blackbox.contentProbes names must be letters, digits, spaces and dashes, and stay distinct with spaces and dashes treated alike.";
+        }
+        {
+          assertion = lib.length (lib.unique (contentProbeUrls ++ cfg.blackbox.targets))
+            == lib.length contentProbeUrls + lib.length cfg.blackbox.targets;
+          message = "services.monitoring.blackbox: each URL is probed once, in contentProbes or targets, not both.";
+        }
       ];
+
+      # Alloy is part of this stack, so its own probe is here.
+      services.monitoring.blackbox.contentProbes."Grafana Alloy" = {
+        url = "http://127.0.0.1:${toString cfg.alloy.port}/-/ready";
+        bodyMatches = "Alloy is ready";
+      };
 
       # Ensure storage directories exist + run firewall rules, via the only
       # nix-darwin activation extension point that actually executes:

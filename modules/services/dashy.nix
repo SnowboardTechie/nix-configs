@@ -4,6 +4,7 @@
   flake.modules.darwin.dashy =
     { config
     , lib
+    , options
     , pkgs
     , ...
     }:
@@ -287,7 +288,7 @@
         };
       };
 
-      config = lib.mkIf cfg.enable {
+      config = lib.mkIf cfg.enable (lib.mkMerge [{
         assertions = [
           {
             assertion = cfg.port != cfg.statusPort;
@@ -351,7 +352,15 @@
             exit 1
           fi
         '');
-      };
+      }
+
+        # Only hosts that import the monitoring module have this option.
+        (lib.optionalAttrs (options.services ? monitoring) {
+          services.monitoring.blackbox.contentProbes.Dashy = {
+            url = "http://${cfg.host}:${toString cfg.port}/";
+            bodyMatches = "<title>Dashy</title>";
+          };
+        })]);
     };
 
   flake.modules.nixos.dashy = { };

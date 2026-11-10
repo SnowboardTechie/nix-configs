@@ -40,6 +40,7 @@
   flake.modules.darwin.pi-durable =
     { config
     , lib
+    , options
     , pkgs
     , ...
     }:
@@ -562,6 +563,15 @@
             system.activationScripts.extraActivation.text =
               lib.mkAfter (pageRoute "standing page" cfg.page.tailscaleHttpsPort cfg.page.port);
           })
+
+          # The page's /metrics answers on loopback without its Tailscale
+          # login; a live service exports its intake cycle counter.
+          (lib.optionalAttrs (options.services ? monitoring) {
+            services.monitoring.blackbox.contentProbes."SGG pre-review" = {
+              url = "http://127.0.0.1:${toString cfg.page.port}/metrics";
+              bodyMatches = "(?m)^sgg_intake_cycles_total";
+            };
+          })
         ]))
 
         # The model proxy rides on the sandbox proxy: its gateway address and the
@@ -955,6 +965,15 @@
           (lib.mkIf (cfg.sampler.tailscaleHttpsPort != null) {
             system.activationScripts.extraActivation.text =
               lib.mkAfter (pageRoute "usage sampler's page" cfg.sampler.tailscaleHttpsPort cfg.sampler.port);
+          })
+
+          # The sampler's /metrics answers on loopback without the page's
+          # Tailscale login; a live sampler exports its readings counter.
+          (lib.optionalAttrs (options.services ? monitoring) {
+            services.monitoring.blackbox.contentProbes."Claude usage" = {
+              url = "http://127.0.0.1:${toString cfg.sampler.port}/metrics";
+              bodyMatches = "(?m)^pi_durable_sampler_readings_total";
+            };
           })
         ]))
       ];
