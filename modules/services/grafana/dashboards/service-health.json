@@ -86,9 +86,9 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "probe_success{job=\"blackbox\"}",
+          "expr": "probe_success{job=\"blackbox\",probe!=\"\"} or label_replace(probe_success{job=\"blackbox\",probe=\"\"}, \"probe\", \"$1\", \"instance\", \"(.*)\")",
           "refId": "A",
-          "legendFormat": "{{instance}}"
+          "legendFormat": "{{probe}}"
         }
       ]
     },
@@ -159,9 +159,9 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "probe_duration_seconds{job=\"blackbox\"}",
+          "expr": "probe_duration_seconds{job=\"blackbox\",probe!=\"\"} or label_replace(probe_duration_seconds{job=\"blackbox\",probe=\"\"}, \"probe\", \"$1\", \"instance\", \"(.*)\")",
           "refId": "A",
-          "legendFormat": "{{instance}}"
+          "legendFormat": "{{probe}}"
         }
       ]
     },
@@ -244,9 +244,9 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "probe_http_status_code{job=\"blackbox\"}",
+          "expr": "probe_http_status_code{job=\"blackbox\",probe!=\"\"} or label_replace(probe_http_status_code{job=\"blackbox\",probe=\"\"}, \"probe\", \"$1\", \"instance\", \"(.*)\")",
           "refId": "A",
-          "legendFormat": "{{instance}}"
+          "legendFormat": "{{probe}}"
         }
       ]
     },

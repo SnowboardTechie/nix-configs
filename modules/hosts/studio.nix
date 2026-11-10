@@ -71,7 +71,11 @@
       numParallel = 1;
       tailscaleServe = true;
     };
-    services.open-webui.enable = true;
+    services.open-webui = {
+      enable = true;
+      # Through the Cloudflare Tunnel, as people reach it.
+      publicUrl = "https://ai.thompson.codes";
+    };
     services.monitoring.enable = true;
     services.smb-mount.enable = true;
     services.syncthing.enable = true;
@@ -190,8 +194,8 @@
         grafanaBaseUrl = tailnetUrl monitoring.grafana.port;
         prometheusUrl = tailnetUrl monitoring.prometheus.port;
         alloyUrl = tailnetUrl monitoring.alloy.port;
-        # Each Pi Durable workspace page, from its own Serve port. The status
-        # names are the Hermes watchdog's probes (check-studio-services.py).
+        # Each Pi Durable workspace page, from its own Serve port. Each status
+        # name is the page's content probe (services.monitoring.blackbox).
         piDurableLinks = [
           {
             title = "SGG pre-review";
@@ -374,20 +378,27 @@
       hostName = "bryans-mac-studio.tail5ba690.ts.net";
     };
 
+    # Status-only probes. Every service with a Studio Home tile has a content
+    # probe instead, which its dot reads.
     services.monitoring.blackbox.targets = [
-      "http://localhost:11434/api/tags" # Ollama
-      "http://localhost:8080/health" # Open-WebUI
-      "http://localhost:32400/web/index.html" # Plex (avoids /web → /web/index.html redirect)
-      "http://localhost:8384/rest/noauth/health" # Syncthing
       "http://192.168.1.3/login" # UNRAID Web UI (avoids / → /Main → /login redirects)
     ];
 
-    # Probes that must also see the right content. Dashy, Artifact Shelf, the
-    # Pi Durable pages and Alloy add theirs from their own modules; Jellyfin
-    # is a Studio-only cask, so its probe is here.
-    services.monitoring.blackbox.contentProbes.Jellyfin = {
-      url = "http://127.0.0.1:8096/health";
-      bodyMatches = "^Healthy\\s*$";
+    # Probes that must also see the right content. Each service's module adds
+    # its own (Dashy, Artifact Shelf, the Pi Durable pages, Hermes, Ollama,
+    # Open WebUI, Syncthing and the monitoring stack); Jellyfin and Plex are
+    # Studio-only casks, so theirs are here.
+    services.monitoring.blackbox.contentProbes = {
+      Jellyfin = {
+        url = "http://127.0.0.1:8096/health";
+        bodyMatches = "^Healthy\\s*$";
+      };
+      # On the tailnet address Studio Home links to; /web/index.html avoids
+      # the /web redirect.
+      Plex = {
+        url = "http://100.121.238.48:32400/web/index.html";
+        bodyMatches = "[Pp]lex";
+      };
     };
 
     services.monitoring.extraScrapeConfigs = [

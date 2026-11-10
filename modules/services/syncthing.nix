@@ -6,7 +6,7 @@
 { inputs, ... }:
 {
   # Darwin aspect - launchd user agent
-  flake.modules.darwin.syncthing = { config, lib, ... }: {
+  flake.modules.darwin.syncthing = { config, lib, options, ... }: {
     options.services.syncthing = {
       enable = lib.mkEnableOption "Syncthing file synchronization";
 
@@ -31,7 +31,7 @@
 
     config = let
       cfg = config.services.syncthing;
-    in lib.mkIf cfg.enable {
+    in lib.mkIf cfg.enable (lib.mkMerge [{
       # Syncthing launchd service
       launchd.user.agents.syncthing = {
         serviceConfig = {
@@ -68,7 +68,14 @@
         echo "Log file: ${cfg.logFile}"
         echo ""
       '';
-    };
+    }
+      # Only hosts that import the monitoring module have this option.
+      (lib.optionalAttrs (options.services ? monitoring) {
+        services.monitoring.blackbox.contentProbes.Syncthing = {
+          url = "http://${cfg.guiAddress}/rest/noauth/health";
+          bodyMatches = "\"status\":\\s*\"OK\"";
+        };
+      })]);
   };
 
   # NixOS aspect - not needed, NixOS has native services.syncthing

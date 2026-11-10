@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
-"""Tests for Dashy's read-only view of the Studio watchdog state."""
+"""Tests for Dashy's read-only view of Prometheus's probe results.
+
+A stand-in Prometheus answers /api/v1/query with what each test sets, and
+records every query, so the tests see exactly what the adapter asks.
+"""
 
 from __future__ import annotations
 
 import http.client
 import importlib.util
 import json
-import os
-import tempfile
+import subprocess
 import threading
 import time
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, quote, urlparse
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "modules" / "services" / "dashy-status-api.py"
+PROBES = ["Grafana", "Hermes Dashboard", "SGG pre-review"]
 
 
 def load_module():
@@ -25,135 +31,182 @@ def load_module():
     return module
 
 
-class ServiceStatusTest(unittest.TestCase):
+def vector(*values: str) -> dict:
+    return {
+        "status": "success",
+        "data": {
+            "resultType": "vector",
+            "result": [{"metric": {}, "value": [time.time(), v]} for v in values],
+        },
+    }
+
+
+class StandInPrometheus(ThreadingHTTPServer):
+    """Answers each query with `answers[kind]`, kind "latest" or "recent"."""
+
+    daemon_threads = True
+    # Prometheus (Go) listens with the kernel's full backlog; Python's
+    # default of 5 before 3.15 would drop a burst before the adapter's turn.
+    request_queue_size = 128
+
+    def __init__(self) -> None:
+        self.answers: dict[str, object] = {"latest": vector("1"), "recent": vector("1")}
+        self.status = 200
+        self.queries: list[str] = []
+        super().__init__(("127.0.0.1", 0), StandInHandler)
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.server_port}"
+
+
+class StandInHandler(BaseHTTPRequestHandler):
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+    def do_GET(self) -> None:
+        server = self.server
+        assert isinstance(server, StandInPrometheus)
+        parsed = urlparse(self.path)
+        assert parsed.path == "/api/v1/query", parsed.path
+        expression = parse_qs(parsed.query)["query"][0]
+        server.queries.append(expression)
+        answer = server.answers["recent" if expression.startswith("max_over_time(") else "latest"]
+        body = answer if isinstance(answer, bytes) else json.dumps(answer).encode()
+        self.send_response(server.status)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class PrometheusTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.module = load_module()
 
-    def write_state(self, root: Path, services: dict) -> Path:
-        path = root / "watchdog.json"
-        path.write_text(json.dumps({"services": services}), encoding="utf-8")
-        return path
+    def setUp(self) -> None:
+        self.prometheus = StandInPrometheus()
+        thread = threading.Thread(target=self.prometheus.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(self.prometheus.server_close)
+        self.addCleanup(self.prometheus.shutdown)
 
-    def test_healthy_service_returns_dashy_success_shape(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            path = self.write_state(
-                Path(temporary),
-                {"Grafana": {"failures": 0, "alerted": False, "last_error": None}},
-            )
-            status, payload = self.module.service_status(path, "Grafana", now=time.time())
+    def status(self, name: str = "Grafana") -> tuple[int, dict]:
+        return self.module.probe_status(self.prometheus.url, frozenset(PROBES), name)
 
+
+class ProbeStatusTest(PrometheusTestCase):
+    def test_passing_probe_is_green(self) -> None:
+        status, payload = self.status()
         self.assertEqual(status, 200)
         self.assertIs(payload["successStatus"], True)
         self.assertEqual(payload["statusCode"], 200)
-        self.assertNotIn("last_error", payload)
+        self.assertEqual(payload["statusText"], "Healthy")
 
-    def status_for(self, record: dict) -> tuple[int, dict]:
-        with tempfile.TemporaryDirectory() as temporary:
-            path = self.write_state(Path(temporary), {"Grafana": record})
-            return self.module.service_status(path, "Grafana", now=time.time())
+    def test_queries_the_named_blackbox_probe_over_servicedowns_window(self) -> None:
+        self.status("Hermes Dashboard")
+        selector = 'probe_success{job="blackbox",probe="Hermes Dashboard"}'
+        self.assertEqual(self.prometheus.queries, [selector, f"max_over_time({selector}[5m])"])
 
-    def test_failures_below_alert_threshold_stay_green_with_count(self) -> None:
-        for failures in (1, 2):
-            with self.subTest(failures=failures):
-                status, payload = self.status_for(
-                    {"failures": failures, "alerted": False, "last_error": "HTTP 500"}
-                )
-                self.assertEqual(status, 200)
-                self.assertIs(payload["successStatus"], True)
-                self.assertEqual(payload["statusCode"], 200)
-                self.assertIn(str(failures), payload["message"])
-                self.assertIn("failed", payload["message"])
-                self.assertNotIn("HTTP 500", json.dumps(payload))
+    def test_failure_inside_the_window_stays_green_and_says_so(self) -> None:
+        self.prometheus.answers = {"latest": vector("0"), "recent": vector("1")}
+        status, payload = self.status()
+        self.assertEqual(status, 200)
+        self.assertIs(payload["successStatus"], True)
+        self.assertEqual(payload["statusText"], "Probe failed")
+        self.assertIn("failed", payload["message"])
 
-    def test_alerted_service_is_red_without_error_text(self) -> None:
-        status, payload = self.status_for(
-            {"failures": 3, "alerted": True, "last_error": "HTTP 500"}
-        )
+    def test_failing_for_the_whole_window_is_red(self) -> None:
+        self.prometheus.answers = {"latest": vector("0"), "recent": vector("0")}
+        status, payload = self.status()
         self.assertEqual(status, 200)
         self.assertIs(payload["successStatus"], False)
         self.assertEqual(payload["statusCode"], 503)
         self.assertEqual(payload["statusText"], "Unhealthy")
-        self.assertNotIn("HTTP 500", json.dumps(payload))
 
-    def test_only_json_true_counts_as_alerted(self) -> None:
-        for alerted in ("yes", 1, "true", [True]):
-            with self.subTest(alerted=alerted):
-                status, payload = self.status_for(
-                    {"failures": 3, "alerted": alerted, "last_error": "HTTP 500"}
-                )
-                self.assertEqual(status, 200)
-                self.assertIs(payload["successStatus"], True)
-                self.assertEqual(payload["statusCode"], 200)
-                self.assertNotIn("HTTP 500", json.dumps(payload))
+    def test_any_failing_series_counts(self) -> None:
+        # Two series under one name (say, mid-relabel): one failing is enough.
+        self.prometheus.answers = {"latest": vector("1", "0"), "recent": vector("0", "0")}
+        _, payload = self.status()
+        self.assertIs(payload["successStatus"], False)
 
-    def test_malformed_failure_count_stays_green_with_generic_message(self) -> None:
-        for record in (
-            {"alerted": False, "last_error": "HTTP 500"},
-            {"failures": "two", "alerted": False, "last_error": "HTTP 500"},
-            {"failures": None, "alerted": False, "last_error": "HTTP 500"},
-            {"failures": 2.5, "alerted": False, "last_error": "HTTP 500"},
-            {"failures": True, "alerted": False, "last_error": "HTTP 500"},
-        ):
-            with self.subTest(record=record):
-                status, payload = self.status_for(record)
-                self.assertEqual(status, 200)
-                self.assertIs(payload["successStatus"], True)
-                self.assertEqual(payload["statusCode"], 200)
-                self.assertEqual(payload["message"], "Latest check failed")
-                self.assertNotIn("HTTP 500", json.dumps(payload))
-
-    def test_non_dict_record_is_invalid(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            path = self.write_state(Path(temporary), {"Grafana": "broken"})
-            status, payload = self.module.service_status(path, "Grafana", now=time.time())
+    def test_no_series_is_red_as_no_data(self) -> None:
+        self.prometheus.answers = {"latest": vector(), "recent": vector()}
+        status, payload = self.status()
         self.assertEqual(status, 200)
         self.assertIs(payload["successStatus"], False)
-        self.assertEqual(payload["statusText"], "Unknown")
+        self.assertEqual(payload["statusText"], "No data")
 
-    def test_unreadable_state_is_watchdog_unavailable(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "missing.json"
-            status, payload = self.module.service_status(path, "Grafana", now=time.time())
+    def test_prometheus_failures_are_unavailable_without_detail(self) -> None:
+        cases = {
+            "server error": (500, vector("1")),
+            "query error": (200, {"status": "error", "error": "secret detail"}),
+            "not JSON": (200, b"<html>secret detail</html>"),
+            "matrix": (200, {"status": "success", "data": {"resultType": "matrix", "result": []}}),
+            "bad value": (200, {"status": "success", "data": {"resultType": "vector",
+                                                              "result": [{"value": [0, "x"]}]}}),
+        }
+        for case, (code, answer) in cases.items():
+            with self.subTest(case=case):
+                self.prometheus.status = code
+                self.prometheus.answers = {"latest": answer, "recent": answer}
+                status, payload = self.status()
+                self.assertEqual(status, 503)
+                self.assertIs(payload["successStatus"], False)
+                self.assertEqual(payload["statusText"], "Prometheus unavailable")
+                self.assertNotIn("secret", json.dumps(payload))
+
+    def test_prometheus_down_is_unavailable(self) -> None:
+        status, payload = self.module.probe_status("http://127.0.0.1:9", frozenset(PROBES), "Grafana")
         self.assertEqual(status, 503)
-        self.assertEqual(payload["statusText"], "Watchdog unavailable")
+        self.assertEqual(payload["statusText"], "Prometheus unavailable")
 
-    def test_unknown_service_is_rejected_without_network_access(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            path = self.write_state(Path(temporary), {})
-            status, payload = self.module.service_status(
-                path, "http://169.254.169.254/latest/meta-data", now=time.time()
-            )
+    def test_oversized_answer_is_refused(self) -> None:
+        # Valid JSON one byte over the cap: only the size check refuses it.
+        big = vector("1")
+        big["padding"] = ""
+        big["padding"] = "x" * (self.module.MAX_QUERY_BYTES + 1 - len(json.dumps(big).encode()))
+        self.assertEqual(len(json.dumps(big).encode()), self.module.MAX_QUERY_BYTES + 1)
+        self.prometheus.answers = {"latest": big, "recent": big}
+        status, _ = self.status()
+        self.assertEqual(status, 503)
+        # The same answer at the cap is read.
+        big["padding"] = big["padding"][1:]
+        self.prometheus.answers = {"latest": big, "recent": big}
+        self.assertEqual(self.status()[0], 200)
 
-        self.assertEqual(status, 404)
-        self.assertIs(payload["successStatus"], False)
+    def test_unlisted_name_is_refused_without_a_query(self) -> None:
+        for name in ("Plex", 'Grafana"} or vector(1) or {x="', "Grafana\n"):
+            with self.subTest(name=name):
+                status, payload = self.status(name)
+                self.assertEqual(status, 404)
+                self.assertIs(payload["successStatus"], False)
+        self.assertEqual(self.prometheus.queries, [])
 
-    def test_stale_watchdog_state_is_unhealthy(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            path = self.write_state(
-                Path(temporary),
-                {"Grafana": {"failures": 0, "alerted": False, "last_error": None}},
-            )
-            old = time.time() - self.module.MAX_STATE_AGE_SECONDS - 1
-            os.utime(path, (old, old))
-            status, payload = self.module.service_status(path, "Grafana", now=time.time())
 
-        self.assertEqual(status, 200)
-        self.assertIs(payload["successStatus"], False)
-        self.assertEqual(payload["statusText"], "Watchdog stale")
+class TargetParsingTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.module = load_module()
 
-    def test_watchdog_url_parser_accepts_only_private_service_names(self) -> None:
-        self.assertEqual(
-            self.module.service_name_from_target("watchdog:///Hindsight%20API"),
-            "Hindsight API",
-        )
+    def test_probe_url_parser_accepts_only_probe_names(self) -> None:
+        self.assertEqual(self.module.probe_name_from_target("probe:///Hermes%20Dashboard"), "Hermes Dashboard")
+        self.assertEqual(self.module.probe_name_from_target("probe:///SGG pre-review"), "SGG pre-review")
         for target in (
             "http://127.0.0.1:8888/health",
             "https://example.com",
-            "watchdog://",
+            "watchdog:///Grafana",
+            "probe://",
+            "probe:///",
+            "probe://host/Grafana",
+            "probe:///Grafana?x=1",
+            'probe:///Grafana%22%7D',
+            "probe:///a%0Ab",
+            "probe:///-leading",
         ):
             with self.subTest(target=target):
-                self.assertIsNone(self.module.service_name_from_target(target))
+                self.assertIsNone(self.module.probe_name_from_target(target))
 
     def test_status_route_accepts_dashy_trailing_slash(self) -> None:
         self.assertTrue(self.module.is_status_path("/status-check"))
@@ -161,26 +214,15 @@ class ServiceStatusTest(unittest.TestCase):
         self.assertFalse(self.module.is_status_path("/status-check/other"))
 
 
-class StatusServerBurstTest(unittest.TestCase):
-    """Dashy checks every tile at once on page load; none may be dropped."""
+class ServerTest(PrometheusTestCase):
+    """The adapter served over HTTP, as Caddy reaches it."""
 
     BURST = 64
-    PATH = "/status-check/?&url=watchdog:///Grafana"
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.module = load_module()
 
     def setUp(self) -> None:
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        state = Path(temporary.name) / "watchdog.json"
-        state.write_text(
-            json.dumps({"services": {"Grafana": {"failures": 0, "alerted": False, "last_error": None}}}),
-            encoding="utf-8",
-        )
+        super().setUp()
         self.threads_before = set(threading.enumerate())
-        self.server = self.module.build_server("127.0.0.1", 0, state)
+        self.server = self.module.build_server("127.0.0.1", 0, self.prometheus.url, PROBES)
         self.serve_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.serve_thread.start()
         self.addCleanup(self.stop_server)
@@ -189,42 +231,63 @@ class StatusServerBurstTest(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.serve_thread.join(timeout=5)
-        deadline = time.monotonic() + 5
-        while set(threading.enumerate()) - self.threads_before and time.monotonic() < deadline:
-            time.sleep(0.01)
-        self.assertEqual(set(threading.enumerate()) - self.threads_before, set())
         self.assertEqual(self.server.socket.fileno(), -1)
 
-    def fetch(self, port: int, start: threading.Barrier) -> tuple[int, dict] | BaseException:
-        start.wait(timeout=5)
-        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    def get(self, path: str) -> tuple[int, dict]:
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=10)
         try:
-            connection.request("GET", self.PATH, headers={"Connection": "close"})
+            connection.request("GET", path, headers={"Connection": "close"})
             response = connection.getresponse()
             return response.status, json.loads(response.read())
-        except (OSError, http.client.HTTPException, ValueError) as error:
-            return error
         finally:
             connection.close()
 
+    def test_dashy_request_reaches_the_named_probe(self) -> None:
+        # Dashy sends its statusCheckUrl URL-encoded in `url`.
+        status, payload = self.get("/status-check/?&url=" + quote("probe:///Hermes%20Dashboard", safe=""))
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["statusText"], "Healthy")
+        self.assertIn('probe="Hermes Dashboard"', self.prometheus.queries[0])
+
+    def test_other_targets_are_refused(self) -> None:
+        for target in ("watchdog:///Grafana", "http://127.0.0.1:9090/api/v1/query"):
+            with self.subTest(target=target):
+                status, payload = self.get("/status-check/?url=" + quote(target, safe=""))
+                self.assertEqual(status, 400)
+                self.assertIs(payload["successStatus"], False)
+        self.assertEqual(self.prometheus.queries, [])
+
+    def test_health_and_unknown_paths(self) -> None:
+        self.assertEqual(self.get("/health"), (200, {"status": "healthy"}))
+        self.assertEqual(self.get("/api/v1/query?query=up")[0], 404)
+
     def test_burst_of_fresh_connections_all_get_answers(self) -> None:
+        """Dashy checks every tile at once on page load; none may be dropped."""
         port = self.server.server_address[1]
         start = threading.Barrier(self.BURST)
         results: list[object] = [None] * self.BURST
 
         def run(index: int) -> None:
-            results[index] = self.fetch(port, start)
+            start.wait(timeout=5)
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            try:
+                connection.request("GET", "/status-check/?&url=probe:///Grafana", headers={"Connection": "close"})
+                response = connection.getresponse()
+                results[index] = (response.status, json.loads(response.read()))
+            except (OSError, http.client.HTTPException, ValueError) as error:
+                results[index] = error
+            finally:
+                connection.close()
 
         clients = [threading.Thread(target=run, args=(i,)) for i in range(self.BURST)]
         for client in clients:
             client.start()
         for client in clients:
-            client.join(timeout=10)
+            client.join(timeout=15)
 
         failures = [r for r in results if not (isinstance(r, tuple) and r[0] == 200)]
         self.assertEqual(failures, [], f"{len(failures)} of {self.BURST} requests failed")
         for _, payload in results:  # type: ignore[misc]
-            self.assertIs(payload["successStatus"], True)
             self.assertEqual(payload["statusText"], "Healthy")
 
     def test_listen_backlog_holds_a_dashy_burst(self) -> None:
@@ -232,6 +295,117 @@ class StatusServerBurstTest(unittest.TestCase):
         # so pin it: the burst test alone passes on 3.15 whatever the adapter sets.
         self.assertGreaterEqual(self.server.request_queue_size, self.BURST)
         self.assertIs(self.server.daemon_threads, True)
+
+
+def nix_eval(expr: str):
+    result = subprocess.run(["nix", "eval", "--json", "--impure", "--expr", expr],
+                            cwd=REPO, text=True, capture_output=True)
+    if result.returncode != 0:
+        raise AssertionError(result.stderr[-4000:])
+    return json.loads(result.stdout)
+
+
+def studio_dashy(extra: str = "{ }") -> str:
+    """A Nix expression for Studio's Dashy wiring, built through a `path:` flake reference."""
+    return f"""
+      let
+        studio = (builtins.getFlake "path:{REPO}").darwinConfigurations.studio
+          .extendModules {{ modules = [ ({extra}) ]; }};
+        inherit (studio) config pkgs;
+        inherit (pkgs) lib;
+        caddyArgs = config.launchd.user.agents.dashy.serviceConfig.ProgramArguments;
+        caddy = builtins.fromJSON (builtins.unsafeDiscardStringContext (builtins.readFile (builtins.elemAt caddyArgs 3)));
+        routes = caddy.apps.http.servers.dashy.routes;
+        root = (lib.last routes).handle;
+        status = config.launchd.user.agents.dashy-status or {{ }};
+        args = status.serviceConfig.ProgramArguments or [ ];
+        flagValues = flag: lib.concatLists (lib.imap0 (i: a: lib.optional (a == flag) (builtins.elemAt args (i + 1))) args);
+      in {{
+        root = (builtins.head root).root;
+        statusRoute = builtins.length routes == 2;
+        statusAgent = config.launchd.user.agents ? dashy-status;
+        probes = flagValues "--probe";
+        prometheus = flagValues "--prometheus";
+        contentProbes = builtins.attrNames config.services.monitoring.blackbox.contentProbes;
+        failed = map (a: a.message) (builtins.filter (a: !a.assertion) config.assertions);
+      }}
+    """
+
+
+def dashy_conf(root: str) -> dict:
+    """appConfig's statusCheck and each tile's statusCheck and statusCheckUrl, by title, from the built conf.yml.
+
+    The build writes sorted YAML: a section's items are `  - key: value` blocks
+    whose further keys sit at four spaces.
+    """
+    app_check, tiles, item = None, {}, None
+    for line in Path(root, "conf.yml").read_text().splitlines():
+        if line.startswith("  statusCheck: "):
+            app_check = line.split(": ", 1)[1]
+        if line.startswith("  - ") and not line.startswith("  - path:"):
+            item = {}
+            tiles.setdefault("", []).append(item)
+            line = "    " + line[4:]
+        if item is not None and line.startswith("    ") and not line.startswith("     ") and ": " in line:
+            key, value = line.split(": ", 1)
+            item[key.strip()] = value.strip()
+    by_title = {}
+    for item in tiles.get("", []):
+        if "title" in item and "url" in item:
+            by_title[item["title"]] = {k: v for k, v in item.items() if k.startswith("statusCheck")}
+    return {"app": app_check, "tiles": by_title}
+
+
+@unittest.skipUnless(subprocess.run(["which", "nix"], capture_output=True).returncode == 0, "needs nix")
+class StudioWiringTest(unittest.TestCase):
+    """Studio's Dashy, evaluated and built: every dot asks for a probe the adapter answers."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.studio = nix_eval(studio_dashy())
+        cls.conf = dashy_conf(cls.studio["root"])
+
+    def test_every_dot_names_a_probe_the_adapter_answers(self) -> None:
+        self.assertEqual(self.studio["failed"], [])
+        self.assertEqual(sorted(self.studio["probes"]), sorted(self.studio["contentProbes"]))
+        self.assertEqual(self.studio["prometheus"], ["http://127.0.0.1:9090"])
+        self.assertEqual(self.conf["app"], "true")
+        dotted = {}
+        for title, tile in self.conf["tiles"].items():
+            if tile.get("statusCheck") == "true":
+                url = tile["statusCheckUrl"]
+                dotted[title] = load_module().probe_name_from_target(url)
+        self.assertTrue(all(name in self.studio["probes"] for name in dotted.values()), dotted)
+        # Every service the Hermes watchdog checks keeps its dot.
+        self.assertEqual(
+            {"Hermes Dashboard", "Open WebUI", "Grafana", "Artifact Shelf", "SGG pre-review", "Claude usage",
+             "Planning", "Plex", "Jellyfin", "Prometheus", "Grafana Alloy", "Alertmanager", "Loki", "Ollama",
+             "Syncthing"},
+            set(dotted.values()),
+        )
+        self.assertEqual(self.conf["tiles"]["Tailscale"], {"statusCheck": "false"})
+
+    def test_a_tile_without_a_probe_has_no_dot(self) -> None:
+        # Alertmanager is probed only with alerting on.
+        result = nix_eval(studio_dashy(
+            "{ lib, ... }: { services.monitoring.alertEmail = lib.mkForce null;"
+            " services.monitoring.alertWebhook = lib.mkForce null; }"))
+        self.assertEqual(result["failed"], [])
+        self.assertNotIn("Alertmanager", result["probes"])
+        self.assertEqual(dashy_conf(result["root"])["tiles"]["Alertmanager"], {"statusCheck": "false"})
+
+    def test_a_link_naming_no_probe_is_refused(self) -> None:
+        result = nix_eval(studio_dashy(
+            '{ lib, ... }: { services.dashy.dailyLinks = lib.mkAfter [ { title = "X"; description = "x";'
+            ' url = "https://x"; icon = "x"; statusName = "Nowhere"; } ]; }'))
+        self.assertTrue(any("statusName" in m and "Nowhere" in m for m in result["failed"]), result["failed"])
+
+    def test_without_monitoring_there_are_no_dots_or_adapter(self) -> None:
+        result = nix_eval(studio_dashy("{ lib, ... }: { services.monitoring.enable = lib.mkForce false; }"))
+        self.assertFalse(result["statusAgent"])
+        self.assertFalse(result["statusRoute"])
+        conf = dashy_conf(result["root"])
+        self.assertEqual(conf["app"], "false")
 
 
 if __name__ == "__main__":

@@ -82,8 +82,9 @@
             "for" = "5m";
             labels = { severity = "critical"; };
             annotations = {
-              summary = "Service {{ $labels.instance }} is down";
-              description = "{{ $labels.instance }} has been unreachable for more than 5 minutes.";
+              # A content probe is named by its `probe` label, others by URL.
+              summary = "Service {{ if $labels.probe }}{{ $labels.probe }}{{ else }}{{ $labels.instance }}{{ end }} is down";
+              description = "{{ if $labels.probe }}{{ $labels.probe }} ({{ $labels.instance }}){{ else }}{{ $labels.instance }}{{ end }} has failed its probe for more than 5 minutes.";
             };
           }
           # NOTE: node_* rules target the single macOS host (studio's own
@@ -645,12 +646,11 @@
         };
         targets = lib.mkOption {
           type = lib.types.listOf lib.types.str;
-          default = [
-            "http://localhost:11434/api/tags"   # Ollama
-            "http://localhost:8080/health"       # Open-WebUI
-            "http://localhost:32400/web/index.html"  # Plex
-          ];
-          description = "HTTP endpoints to probe for service health";
+          default = [ ];
+          description = ''
+            HTTP endpoints probed for a 2xx only. Services with a module add a
+            content probe of their own (contentProbes) instead.
+          '';
         };
         contentProbes = lib.mkOption {
           type = lib.types.attrsOf (lib.types.submodule {
@@ -679,7 +679,7 @@
             series carries in its `probe` label (letters, digits, spaces and
             dashes). They are in the `blackbox` job, so ServiceDown and the
             Service Health dashboard cover them. Feature modules add their
-            own (dashy, artifact-shelf, pi-durable do).
+            own; Studio Home's status dots read them by name.
           '';
         };
       };
@@ -751,10 +751,30 @@
         }
       ];
 
-      # Alloy is part of this stack, so its own probe is here.
-      services.monitoring.blackbox.contentProbes."Grafana Alloy" = {
-        url = "http://127.0.0.1:${toString cfg.alloy.port}/-/ready";
-        bodyMatches = "Alloy is ready";
+      # This stack's own listeners are probed here. The names are the tiles'
+      # on Studio Home, whose dots read these probes.
+      services.monitoring.blackbox.contentProbes = {
+        "Grafana Alloy" = {
+          url = "http://127.0.0.1:${toString cfg.alloy.port}/-/ready";
+          bodyMatches = "Alloy is ready";
+        };
+        Grafana = {
+          url = "http://127.0.0.1:${toString cfg.grafana.port}/api/health";
+          bodyMatches = "\"database\":\\s*\"ok\"";
+        };
+        Prometheus = {
+          url = "http://127.0.0.1:${toString cfg.prometheus.port}/-/ready";
+          bodyMatches = "Prometheus Server is Ready";
+        };
+        Loki = {
+          url = "http://127.0.0.1:${toString cfg.loki.port}/ready";
+          bodyMatches = "^ready\\s*$";
+        };
+      } // lib.optionalAttrs alertingEnabled {
+        Alertmanager = {
+          url = "http://127.0.0.1:${toString cfg.alertmanager.port}/-/ready";
+          bodyMatches = "^OK\\s*$";
+        };
       };
 
       # Ensure storage directories exist + run firewall rules, via the only

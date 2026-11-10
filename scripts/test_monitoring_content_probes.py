@@ -35,6 +35,22 @@ STUDIO_PROBES = {
     "Claude usage": ("http://127.0.0.1:8791/metrics",
                      "# HELP pi_durable_claude_window_utilization x\n"
                      "pi_durable_sampler_readings_total{workspace=\"sgg\"} 7\n"),
+    # Added for Studio Home's dots (N10.3), with the Hermes watchdog's checks.
+    # Through Tailscale Serve and the tunnel, the addresses people open.
+    "Hermes Dashboard": ("https://bryans-mac-studio.tail5ba690.ts.net/api/status",
+                         '{"version":"0.23.1","auth_required":true,"gateway_running":true}'),
+    "Open WebUI": ("https://ai.thompson.codes/health", '{"status":true}'),
+    "Grafana": ("http://127.0.0.1:33000/api/health",
+                '{\n  "database": "ok",\n  "version": "13.3.0"\n}'),
+    "Prometheus": ("http://127.0.0.1:9090/-/ready", "Prometheus Server is Ready.\n"),
+    "Alertmanager": ("http://127.0.0.1:9093/-/ready", "OK"),
+    "Loki": ("http://127.0.0.1:3100/ready", "ready\n"),
+    "Ollama": ("http://127.0.0.1:11434/api/tags", '{"models":[{"name":"qwen3.8:27b-mlx"}]}'),
+    "Syncthing": ("http://127.0.0.1:8384/rest/noauth/health", '{\n  "status": "OK"\n}'),
+    "Plex": ("http://100.121.238.48:32400/web/index.html", "<!DOCTYPE html><title>Plex</title>"),
+    "Planning": ("http://127.0.0.1:8792/metrics",
+                 "# HELP pi_planning_up x\n# TYPE pi_planning_up gauge\npi_planning_up 1\n"
+                 "pi_planning_streams 0\n"),
 }
 
 # A 200 with the wrong content: what the Hermes watchdog's content checks caught.
@@ -49,6 +65,17 @@ WRONG_BODIES = {
     # Only HELP text naming the counter, not the sample itself.
     "SGG pre-review": "# HELP sgg_intake_cycles_total x\nother_metric 1\n",
     "Claude usage": "# HELP pi_durable_sampler_readings_total x\n",
+    "Hermes Dashboard": '{"auth_required":false}',
+    "Open WebUI": '{"status":false}',
+    "Grafana": '{"database": "failing"}',
+    "Prometheus": "Service Unavailable",
+    "Alertmanager": "not ready",
+    "Loki": "Ingester not ready: waiting for 15s after being ready",
+    "Ollama": '{"error":"x"}',
+    "Syncthing": '{"status": "starting"}',
+    "Plex": "<html><title>502 Bad Gateway</title></html>",
+    "Planning": "# HELP pi_planning_up x\npi_planning_up 0\n",
+    "Planning, other gauge": "pi_planning_up 10\n",
 }
 
 
@@ -105,7 +132,7 @@ def blackbox_job():
 
 
 class Wiring(unittest.TestCase):
-    def test_studio_probes_the_six_services_with_their_content(self):
+    def test_studio_probes_each_service_with_its_content(self):
         probes = studio("config.services.monitoring.blackbox.contentProbes")
         self.assertEqual({name: url for name, (url, _) in STUDIO_PROBES.items()},
                          {name: p["url"] for name, p in probes.items()})
@@ -126,7 +153,7 @@ class Wiring(unittest.TestCase):
         job = blackbox_job()
         self.assertEqual({"module": ["http_2xx"]}, job["params"])
         [plain] = [g for g in job["static_configs"] if "labels" not in g]
-        self.assertIn("http://localhost:11434/api/tags", plain["targets"])
+        self.assertEqual(["http://192.168.1.3/login"], plain["targets"])
         self.assertNotIn("__param_module", json.dumps(plain))
 
     def test_each_probe_follows_its_service(self):
@@ -136,39 +163,71 @@ class Wiring(unittest.TestCase):
             ("{ services.pi-durable.enable = lib.mkForce false; }", "SGG pre-review"),
             ("{ services.dashy.enable = lib.mkForce false; }", "Dashy"),
             ("{ services.artifact-shelf.enable = lib.mkForce false; }", "Artifact Shelf"),
+            ("{ services.ollama.enable = lib.mkForce false; }", "Ollama"),
+            ("{ services.open-webui.enable = lib.mkForce false; }", "Open WebUI"),
+            ("{ services.syncthing.enable = lib.mkForce false; }", "Syncthing"),
+            ("{ services.hermes.dashboard.enable = lib.mkForce false; }", "Hermes Dashboard"),
+            ("{ services.monitoring.alertEmail = lib.mkForce null; services.monitoring.alertWebhook = lib.mkForce null; }",
+             "Alertmanager"),
         ):
             with self.subTest(disabled=gone):
                 self.assertEqual(sorted(set(STUDIO_PROBES) - {gone}), studio(names, extra))
 
+    def test_published_services_fall_back_to_their_listeners(self):
+        urls = "builtins.mapAttrs (_: p: p.url) config.services.monitoring.blackbox.contentProbes"
+        cases = (
+            ("{ services.hermes.dashboard.tailscale.enable = lib.mkForce false; }",
+             "Hermes Dashboard", "http://100.121.238.48:9119/api/status"),
+            ("{ services.hermes.dashboard.tailscale.httpsPort = lib.mkForce 8443; }",
+             "Hermes Dashboard", "https://bryans-mac-studio.tail5ba690.ts.net:8443/api/status"),
+            ("{ services.open-webui.publicUrl = lib.mkForce null; }",
+             "Open WebUI", "http://127.0.0.1:8080/health"),
+        )
+        for extra, name, url in cases:
+            with self.subTest(extra=extra):
+                self.assertEqual(url, studio(urls, extra)[name])
+
     def test_modules_evaluate_on_a_host_without_monitoring(self):
-        """dashy, artifact-shelf and pi-durable add probes only where the monitoring module is imported."""
+        """Modules that add probes do so only where the monitoring module is imported."""
         expr = f"""
           let
             flake = builtins.getFlake "path:{REPO}";
             mbp = flake.darwinConfigurations.mbp.extendModules {{ modules = with flake.modules.darwin; [
-              dashy artifact-shelf pi-durable
+              # mbp already imports hermes and syncthing.
+              dashy artifact-shelf pi-durable ollama open-webui
               ({{ lib, ... }}: {{
                 services.dashy.enable = true;
                 services.artifact-shelf.enable = true;
                 services.pi-durable.sampler.enable = true;
+                services.ollama.enable = true;
+                services.open-webui.enable = true;
+                services.syncthing.enable = true;
+                services.hermes.enable = true;
+                services.hermes.clientOnly = lib.mkForce false;
+                services.hermes.dashboard.enable = true;
               }})
             ]; }};
+            agents = mbp.config.launchd.user.agents;
           in {{
             hasMonitoring = mbp.options.services ? monitoring;
             failed = map (a: a.message) (builtins.filter (a: !a.assertion) mbp.config.assertions);
-            agents = builtins.filter (n: builtins.elem n [ "dashy" "artifact-shelf" "pi-durable-sampler" ])
-              (builtins.attrNames mbp.config.launchd.user.agents);
+            agents = builtins.filter (n: builtins.elem n [ "dashy" "dashy-status" "artifact-shelf" "pi-durable-sampler"
+                                                           "ollama" "open-webui" "syncthing" "hermes-dashboard" ])
+              (builtins.attrNames agents);
           }}
         """
         result = json.loads(nix("eval", "--json", "--impure", "--expr", expr))
+        # No monitoring, so no probes and no status adapter.
         self.assertEqual({"hasMonitoring": False, "failed": [],
-                          "agents": ["artifact-shelf", "dashy", "pi-durable-sampler"]}, result)
+                          "agents": ["artifact-shelf", "dashy", "hermes-dashboard", "ollama", "open-webui",
+                                     "pi-durable-sampler", "syncthing"]}, result)
 
     def test_service_down_covers_content_probes(self):
         rules = json.loads(Path(json.loads(Path(realised()["prometheusConfig"]).read_text())["rule_files"][0])
                            .read_text())
         [down] = [r for g in rules["groups"] for r in g["rules"] if r["alert"] == "ServiceDown"]
         self.assertEqual("probe_success == 0", down["expr"])
+        self.assertIn("$labels.probe", down["annotations"]["summary"])
 
 
 class Refusals(unittest.TestCase):

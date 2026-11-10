@@ -15,7 +15,7 @@
 { inputs, ... }:
 {
   # Darwin aspect - full configuration from modules/darwin/services/open-webui.nix
-  flake.modules.darwin.open-webui = { pkgs, config, lib, ... }:
+  flake.modules.darwin.open-webui = { pkgs, config, lib, options, ... }:
   let
     cfg = config.services.open-webui;
     homeDir = "/Users/${config.system.primaryUser}";
@@ -240,6 +240,17 @@
         description = "Port for Open WebUI to listen on";
       };
 
+      publicUrl = lib.mkOption {
+        type = lib.types.nullOr (lib.types.strMatching "https?://[^/[:space:]]+");
+        default = null;
+        example = "https://chat.example.com";
+        description = ''
+          Base URL people open Open WebUI at, when it differs from the
+          listener (for example behind a tunnel). Its content probe checks
+          this address, so the path in front of the listener is covered too.
+        '';
+      };
+
       ollamaUrl = lib.mkOption {
         type = lib.types.str;
         default = "http://127.0.0.1:11434";
@@ -265,7 +276,7 @@
       };
     };
 
-    config = lib.mkIf cfg.enable {
+    config = lib.mkIf cfg.enable (lib.mkMerge [{
       # Add upgrade script to system packages
       environment.systemPackages = [ upgrade-open-webui ];
 
@@ -318,7 +329,15 @@
           /usr/libexec/ApplicationFirewall/socketfilterfw --unblock "${toolVenvPython}" >/dev/null 2>&1 || true
         fi
       '');
-    };
+    }
+      # Only hosts that import the monitoring module have this option. Probed
+      # at publicUrl when set, the address people open, else on its listener.
+      (lib.optionalAttrs (options.services ? monitoring) {
+        services.monitoring.blackbox.contentProbes."Open WebUI" = {
+          url = "${if cfg.publicUrl != null then cfg.publicUrl else "http://${cfg.host}:${toString cfg.port}"}/health";
+          bodyMatches = "\"status\":\\s*true";
+        };
+      })]);
   };
 
   # NixOS aspect - stub for future implementation

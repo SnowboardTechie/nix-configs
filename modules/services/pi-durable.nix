@@ -917,6 +917,15 @@
               pfBootDaemon planningPfLoader "/var/log/pi-durable-planning-pf.log";
           }
 
+          # The relay's /metrics needs no login; a serving planning service
+          # reports itself up.
+          (lib.optionalAttrs (options.services ? monitoring) {
+            services.monitoring.blackbox.contentProbes.Planning = {
+              url = "http://127.0.0.1:${toString cfg.planning.relayPort}/metrics";
+              bodyMatches = "(?m)^pi_planning_up 1$";
+            };
+          })
+
           # After every mkAfter block (1500), so the planning network's pf
           # anchor is loaded before its page is routed.
           (lib.mkIf (cfg.planning.tailscaleHttpsPort != null) {

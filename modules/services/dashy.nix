@@ -10,11 +10,19 @@
     }:
     let
       cfg = config.services.dashy;
-      statusState = "/Users/${config.system.primaryUser}/.local/state/hermes/studio-service-watchdog.json";
+      # Dots come from Prometheus's blackbox probes, so they need the
+      # monitoring module, enabled. Without it the portal shows no dots.
+      monitoring = if options.services ? monitoring then config.services.monitoring else { enable = false; };
+      statusEnabled = monitoring.enable;
+      probeNames = lib.optionals statusEnabled (lib.attrNames monitoring.blackbox.contentProbes);
+      # Every probe name a tile asks for; the adapter answers only these.
+      linkStatusNames = lib.filter (name: name != null) (map (link: link.statusName) (cfg.dailyLinks ++ cfg.piDurableLinks));
       grafanaBase = cfg.grafanaBaseUrl;
       grafanaHealth = "${grafanaBase}/d/service-health/service-health";
       grafanaLogs = "${grafanaBase}/d/studio-logs/studio-service-logs";
-      statusTarget = name: "watchdog:///${lib.replaceStrings [ " " ] [ "%20" ] name}";
+      statusTarget = name: "probe:///${lib.replaceStrings [ " " ] [ "%20" ] name}";
+      # A built-in tile gets a dot when this host probes its service
+      # (services.monitoring.blackbox.contentProbes.<statusName>).
       item =
         { title
         , description
@@ -23,17 +31,15 @@
         , statusName ? title
         ,
         }:
-        {
-          inherit
-            title
-            description
-            url
-            icon
-            ;
+        { inherit title description url icon; }
+        // (if lib.elem statusName probeNames then {
           statusCheck = true;
           statusCheckUrl = statusTarget statusName;
-        };
-      # A link without a watchdog name gets no status dot.
+        } else {
+          statusCheck = false;
+        });
+      # A link without a probe name gets no status dot. One with a name must
+      # name a probe (asserted below).
       piDurableItem = link:
         if link.statusName == null then
           { inherit (link) title description url icon; statusCheck = false; }
@@ -51,8 +57,10 @@
             type = lib.types.nullOr lib.types.str;
             default = null;
             description = ''
-              The Hermes watchdog's name for this service, which drives the
-              status dot. Null shows the link without one.
+              The name of this service's content probe
+              (services.monitoring.blackbox.contentProbes), whose
+              probe_success in Prometheus drives the status dot. Null shows
+              the link without one.
             '';
           };
         };
@@ -76,7 +84,7 @@
           appConfig = {
             theme = "nord-frost";
             defaultOpeningMethod = "newtab";
-            statusCheck = true;
+            statusCheck = statusEnabled;
             statusCheckInterval = 300;
             statusCheckAccessibility = true;
             disableConfiguration = true;
@@ -202,7 +210,7 @@
         apps.http.servers.dashy = {
           listen = [ "${cfg.host}:${toString cfg.port}" ];
           automatic_https.disable = true;
-          routes = [
+          routes = lib.optional statusEnabled
             {
               match = [{ path = [ "/status-check" "/status-check/" ]; }];
               handle = [
@@ -211,7 +219,7 @@
                   upstreams = [{ dial = "127.0.0.1:${toString cfg.statusPort}"; }];
                 }
               ];
-            }
+            } ++ [
             {
               handle = [
                 {
@@ -259,7 +267,7 @@
         statusPort = lib.mkOption {
           type = lib.types.port;
           default = 8089;
-          description = "Loopback port for the read-only watchdog status adapter.";
+          description = "Loopback port for the read-only status adapter, which answers Dashy's status checks from Prometheus.";
         };
         tailscaleHttpsPort = lib.mkOption {
           type = lib.types.nullOr lib.types.port;
@@ -298,9 +306,13 @@
             assertion = cfg.tailscaleHttpsPort == null || (config.services.tailscale.enable && loopback);
             message = "services.dashy.tailscaleHttpsPort requires services.tailscale and services.dashy.host = \"127.0.0.1\"";
           }
+          {
+            assertion = !statusEnabled || lib.all (name: lib.elem name probeNames) linkStatusNames;
+            message = "services.dashy: each link's statusName must name a services.monitoring.blackbox.contentProbes entry; missing: ${lib.concatStringsSep ", " (lib.filter (name: !(lib.elem name probeNames)) linkStatusNames)}";
+          }
         ];
 
-        launchd.user.agents.dashy-status = {
+        launchd.user.agents.dashy-status = lib.mkIf statusEnabled {
           serviceConfig = {
             ProgramArguments = [
               "${pkgs.python3Minimal}/bin/python3"
@@ -309,9 +321,9 @@
               "127.0.0.1"
               "--port"
               (toString cfg.statusPort)
-              "--state"
-              statusState
-            ];
+              "--prometheus"
+              "http://127.0.0.1:${toString monitoring.prometheus.port}"
+            ] ++ lib.concatMap (name: [ "--probe" name ]) probeNames;
             RunAtLoad = true;
             KeepAlive = true;
             StandardOutPath = "/tmp/dashy-status.log";

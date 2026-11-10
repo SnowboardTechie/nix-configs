@@ -14,6 +14,7 @@
   flake.modules.darwin.hermes =
     { config
     , lib
+    , options
     , pkgs
     , ...
     }:
@@ -1083,6 +1084,25 @@
             };
           };
         })
+
+        # The dashboard's status endpoint answers without a login and says
+        # one is required. Published through Tailscale Serve, it is probed
+        # there, the way people reach it (Serve, the proxy and the listener
+        # together). Only hosts that import monitoring have the option.
+        (lib.mkIf cfg.dashboard.enable (lib.optionalAttrs (options.services ? monitoring) {
+          services.monitoring.blackbox.contentProbes."Hermes Dashboard" = {
+            url =
+              let
+                hostName = config.services.monitoring.tailscaleServe.hostName;
+                httpsPort = cfg.dashboard.tailscale.httpsPort;
+              in
+              if primaryTailscaleServeEnabled && hostName != null then
+                "https://${hostName}${lib.optionalString (httpsPort != 443) ":${toString httpsPort}"}/api/status"
+              else
+                "http://${cfg.dashboard.host}:${toString cfg.dashboard.port}/api/status";
+            bodyMatches = "\"auth_required\":\\s*true";
+          };
+        }))
 
         (lib.mkIf cfg.dashboard.enable {
           launchd.user.agents.hermes-dashboard = {

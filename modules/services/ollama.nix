@@ -5,7 +5,7 @@
 { inputs, ... }:
 {
   # Darwin aspect - full configuration from modules/darwin/services/ollama.nix
-  flake.modules.darwin.ollama = { config, lib, pkgs, ... }: {
+  flake.modules.darwin.ollama = { config, lib, options, pkgs, ... }: {
     options.services.ollama = {
       enable = lib.mkEnableOption "Ollama LLM server";
 
@@ -62,7 +62,7 @@
 
     config = let
       cfg = config.services.ollama;
-    in lib.mkIf cfg.enable {
+    in lib.mkIf cfg.enable (lib.mkMerge [{
       assertions = lib.optional cfg.tailscaleServe {
         assertion = config.services.tailscale.enable;
         message = "services.ollama.tailscaleServe requires services.tailscale.enable";
@@ -117,7 +117,15 @@
           fi
         ''}
       '';
-    };
+    }
+      # Only hosts that import the monitoring module have this option. A live
+      # server lists its models.
+      (lib.optionalAttrs (options.services ? monitoring) {
+        services.monitoring.blackbox.contentProbes.Ollama = {
+          url = "http://${cfg.host}:${toString cfg.port}/api/tags";
+          bodyMatches = "\"models\":\\s*\\[";
+        };
+      })]);
   };
 
   # NixOS aspect - stub for future implementation

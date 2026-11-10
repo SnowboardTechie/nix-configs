@@ -1,32 +1,48 @@
 #!/usr/bin/env python3
-"""Expose allowlisted Studio watchdog state in Dashy's status-check format.
+"""Expose allowlisted Prometheus probe results in Dashy's status-check format.
 
-A service turns red only when the watchdog has alerted on it (``alerted`` is
-JSON ``true``, after 3 failed checks in a row). A latest check that failed
-below that threshold stays green, with a message giving the failure count.
-Watchdog error text is never exposed.
+Dashy asks for ``probe:///<name>``; the answer comes from blackbox_exporter's
+``probe_success{job="blackbox",probe="<name>"}`` in Prometheus. A service turns
+red only when its probe has failed for the whole of the last five minutes (as
+long as ServiceDown waits). A latest probe that failed inside that window stays
+green, with a message saying so. A probe with no series is red at once: that
+is how Prometheus shows a probe it could not scrape (blackbox_exporter down,
+say), and ServiceDown does not cover it. Only the names given with ``--probe`` are
+answered, so the query is always one of a fixed set; nothing else of
+Prometheus's is exposed.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import time
+import re
+import urllib.error
+import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlencode, urlparse
 
-MAX_STATE_AGE_SECONDS = 15 * 60
 MAX_RESPONSE_BYTES = 16 * 1024
+QUERY_TIMEOUT_SECONDS = 5
+MAX_QUERY_BYTES = 256 * 1024
+# The names services.monitoring.blackbox.contentProbes accepts, so a name can
+# sit inside a PromQL string without escaping.
+PROBE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 -]*")
+# ServiceDown's `for`.
+RED_AFTER = "5m"
 
 
-def service_name_from_target(target: str) -> str | None:
+class PrometheusUnavailable(Exception):
+    """Prometheus did not answer a query with a usable result."""
+
+
+def probe_name_from_target(target: str) -> str | None:
     parsed = urlparse(target)
-    if parsed.scheme != "watchdog" or parsed.netloc:
+    if parsed.scheme != "probe" or parsed.netloc or parsed.query or parsed.fragment:
         return None
-    name = unquote(parsed.path.lstrip("/")).strip()
-    return name or None
+    name = unquote(parsed.path.lstrip("/"))
+    return name if PROBE_NAME.fullmatch(name) else None
 
 
 def is_status_path(path: str) -> bool:
@@ -43,44 +59,51 @@ def _payload(success: bool, status_code: int, status_text: str, message: str) ->
     }
 
 
-def _failure_message(failures: object) -> str:
-    if type(failures) is int and failures > 0:
-        return f"Latest check failed ({failures} in a row)"
-    return "Latest check failed"
-
-
-def service_status(state_path: Path, service_name: str, *, now: float | None = None) -> tuple[int, dict]:
-    current_time = time.time() if now is None else now
+def query(prometheus_url: str, expression: str) -> list[float]:
+    """Each sample's value of an instant query; [] when it has no series."""
+    url = f"{prometheus_url.rstrip('/')}/api/v1/query?{urlencode({'query': expression})}"
     try:
-        age = current_time - state_path.stat().st_mtime
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        with urllib.request.urlopen(url, timeout=QUERY_TIMEOUT_SECONDS) as response:
+            body = response.read(MAX_QUERY_BYTES + 1)
+        if len(body) > MAX_QUERY_BYTES:
+            raise PrometheusUnavailable("answer too large")
+        answer = json.loads(body)
+        if answer.get("status") != "success" or answer["data"]["resultType"] != "vector":
+            raise PrometheusUnavailable("query failed")
+        return [float(sample["value"][1]) for sample in answer["data"]["result"]]
+    except PrometheusUnavailable:
+        raise
+    except urllib.error.HTTPError as error:
+        error.close()
+        raise PrometheusUnavailable(f"HTTP {error.code}") from None
+    except Exception as error:  # noqa: BLE001 - any failure reads as Prometheus being unavailable
+        raise PrometheusUnavailable(type(error).__name__) from error
+
+
+def probe_status(prometheus_url: str, allowed: frozenset[str], name: str) -> tuple[int, dict]:
+    if name not in allowed or not PROBE_NAME.fullmatch(name):
+        return HTTPStatus.NOT_FOUND, _payload(False, 404, "Unknown service", "Service is not monitored")
+    selector = f'probe_success{{job="blackbox",probe="{name}"}}'
+    try:
+        latest = query(prometheus_url, selector)
+        recent = query(prometheus_url, f"max_over_time({selector}[{RED_AFTER}])")
+    except PrometheusUnavailable:
         return HTTPStatus.SERVICE_UNAVAILABLE, _payload(
-            False, 503, "Watchdog unavailable", "Watchdog state is unavailable"
+            False, 503, "Prometheus unavailable", "Probe results are unavailable"
         )
-
-    services = state.get("services") if isinstance(state, dict) else None
-    if not isinstance(services, dict) or service_name not in services:
-        return HTTPStatus.NOT_FOUND, _payload(
-            False, 404, "Unknown service", "Service is not monitored"
-        )
-    if age > MAX_STATE_AGE_SECONDS:
-        return HTTPStatus.OK, _payload(
-            False, 503, "Watchdog stale", "Watchdog state is older than 15 minutes"
-        )
-
-    record = services.get(service_name)
-    if not isinstance(record, dict):
-        return HTTPStatus.OK, _payload(False, 503, "Unknown", "Service state is invalid")
-    if record.get("alerted") is True:
-        return HTTPStatus.OK, _payload(False, 503, "Unhealthy", "Latest check failed")
-    if record.get("last_error") is not None:
-        return HTTPStatus.OK, _payload(True, 200, "Check failed", _failure_message(record.get("failures")))
-    return HTTPStatus.OK, _payload(True, 200, "Healthy", "Latest check passed")
+    if not latest:
+        # A probe that is no longer scraped goes stale in Prometheus.
+        return HTTPStatus.OK, _payload(False, 503, "No data", "No recent probe result")
+    if min(latest) >= 1:
+        return HTTPStatus.OK, _payload(True, 200, "Healthy", "Latest probe passed")
+    if recent and max(recent) >= 1:
+        return HTTPStatus.OK, _payload(True, 200, "Probe failed", "Latest probe failed")
+    return HTTPStatus.OK, _payload(False, 503, "Unhealthy", "Probe has failed for 5 minutes")
 
 
 class StatusHandler(BaseHTTPRequestHandler):
-    state_path: Path
+    prometheus_url: str
+    allowed: frozenset[str]
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -107,14 +130,14 @@ class StatusHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         target = (parse_qs(parsed.query, keep_blank_values=True).get("url") or [""])[0]
-        service_name = service_name_from_target(target)
-        if service_name is None:
+        name = probe_name_from_target(target)
+        if name is None:
             self._send_json(
                 HTTPStatus.BAD_REQUEST,
-                _payload(False, 400, "Invalid target", "Only watchdog service names are accepted"),
+                _payload(False, 400, "Invalid target", "Only probe names are accepted"),
             )
             return
-        status, payload = service_status(self.state_path, service_name)
+        status, payload = probe_status(self.prometheus_url, self.allowed, name)
         self._send_json(status, payload)
 
 
@@ -122,8 +145,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, required=True)
-    parser.add_argument("--state", type=Path, required=True)
-    return parser.parse_args()
+    parser.add_argument("--prometheus", required=True, help="Prometheus base URL")
+    parser.add_argument("--probe", action="append", default=[], help="a probe name Dashy may ask for")
+    args = parser.parse_args()
+    for name in args.probe:
+        if not PROBE_NAME.fullmatch(name):
+            parser.error(f"invalid probe name: {name!r}")
+    return args
 
 
 class StatusServer(ThreadingHTTPServer):
@@ -134,14 +162,18 @@ class StatusServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
-def build_server(host: str, port: int, state_path: Path) -> StatusServer:
-    handler = type("ConfiguredStatusHandler", (StatusHandler,), {"state_path": state_path})
+def build_server(host: str, port: int, prometheus_url: str, probes: list[str]) -> StatusServer:
+    handler = type(
+        "ConfiguredStatusHandler",
+        (StatusHandler,),
+        {"prometheus_url": prometheus_url, "allowed": frozenset(probes)},
+    )
     return StatusServer((host, port), handler)
 
 
 def main() -> int:
     args = parse_args()
-    server = build_server(args.host, args.port, args.state)
+    server = build_server(args.host, args.port, args.prometheus, args.probe)
     server.serve_forever()
     return 0
 
