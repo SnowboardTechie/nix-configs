@@ -16,6 +16,13 @@
 # through the same Serve guard; and a second pf anchor that confines the
 # planning service network to those two brokers. The VM broker's port never
 # enters the sandbox's anchor, so an agent VM cannot reach it.
+# And the VM networks' anchors (durable-pi-workspace#418): one agent per
+# network that keeps an idle, detached VM attached to it, so Apple `container`
+# never takes the network's bridge down and gives its unit to another network.
+# The VM outlives its agent: a restart of the agent adopts the running VM, and
+# disabling it here leaves the VM running. Each agent records the VMs it starts
+# for Prometheus, and an alert says when one had to be started again or is not
+# running. Nothing here restarts a network helper.
 #
 # Application and runbook: ~/code/durable-pi-workspace
 # (workspaces/sgg/OPERATIONS.md). The service starts paused and holds every
@@ -238,6 +245,85 @@
         ++ lib.optional cfg.sampler.enable cfg.sampler.port
         ++ lib.optional cfg.planning.enable cfg.planning.relayPort;
 
+      # The VM networks' anchors (durable-pi-workspace#418): one per network
+      # that is named, the sandbox's with the sandbox proxy and the planning
+      # service network's with `planning`. Each keeps an idle, detached VM
+      # attached, so the network's vmnet bridge (and gateway) stays up from
+      # before anything else uses it and its unit is never given to another
+      # network. The agent only starts the VM when it isn't running and
+      # watches it; it never stops it (pi-durable-net-anchor.sh).
+      netAnchorNetworks = lib.optional (cfg.enable && cfg.proxy.network != null) cfg.proxy.network
+        ++ lib.optional (cfg.enable && cfg.planning.enable && cfg.planning.network != null) cfg.planning.network;
+      netAnchorGateways = lib.optional (cfg.enable && cfg.proxy.network != null) cfg.proxy.listenAddress
+        ++ lib.optional (cfg.enable && cfg.planning.enable && cfg.planning.network != null) cfg.planning.listenAddress;
+      netAnchorAgent = network: "pi-durable-net-anchor-${network}";
+      # Each network with its gateway and the gateways of the networks whose
+      # anchors come before it, in this fixed order: the sandbox's, then the
+      # planning network's. An anchor that has to start a VM waits for every
+      # earlier gateway first, so two networks' first attaches never happen at
+      # the same moment (never probed; at boot both agents would otherwise
+      # start together).
+      netAnchors = lib.imap0
+        (i: network: {
+          inherit network;
+          gateway = builtins.elemAt netAnchorGateways i;
+          earlier = lib.take i netAnchorGateways;
+        })
+        netAnchorNetworks;
+      # A network name `container network create` accepts and a launchd label
+      # and file name can carry: lowercase, digits and inner hyphens.
+      isNetworkName = s: builtins.match "[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?" s != null;
+      # An image reference: name, optional tag or digest; no space or anything
+      # a shell or launchd could read as another argument.
+      isImageRef = s: builtins.match "[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(@sha256:[0-9a-f]{64})?" s != null;
+      netAnchorRunbook = "Check both networks before starting any VM: `container list` shows a net-anchor-<network> VM running for each, and each gateway (${lib.concatStringsSep ", " (map toString netAnchorGateways)}) appears on a host bridge in `ifconfig`. Never `launchctl kickstart` a com.apple.container.container-network-vmnet.* helper: that takes the bridge down and can hang `container exec` everywhere. Recovery: durable-pi-workspace workspaces/proxies/OPERATIONS.md §9. Logs: /tmp/pi-durable-net-anchor-<network>.log and .error.log.";
+      netAnchorRules = [
+        {
+          alert = "PiDurableNetAnchorRestarted";
+          # Anchor VMs started this boot (an agent that adopts a running VM
+          # counts nothing); the first is the boot's, or the first activation's.
+          # It fires for an hour after each later start, so one notifies once
+          # and resolves, and a loop keeps it firing. A later start means the
+          # previous VM had ended, so the bridge really went down.
+          expr = "pi_durable_net_anchor_runs_since_boot > 1 and (time() - pi_durable_net_anchor_last_run_timestamp_seconds) < 3600";
+          labels = { severity = "warning"; };
+          annotations = {
+            summary = "VM network {{ $labels.network }}'s bridge went down: its anchor VM ended and a new one was started";
+            description = "The anchor VM that holds VM network {{ $labels.network }}'s bridge up ended, and its agent started a new one ({{ $value }} anchor VMs started since boot), so the bridge and its gateway were down in between. The VM networks may collide until both are checked: one network's bridge can take the other's gateway, cutting its VMs off from the proxies and brokers. ${netAnchorRunbook}";
+          };
+        }
+        {
+          alert = "PiDurableNetAnchorDown";
+          # Not attached (or waiting for an earlier network's gateway), no
+          # check written for 5 minutes (a hung agent, or a file left from
+          # before a reboot: the agent writes every poll and every wait, and
+          # up 0 before its first `container` call), or no metrics at all for
+          # a configured network.
+          expr = lib.concatStringsSep " or " ([
+            "pi_durable_net_anchor_up == 0"
+            "(time() - pi_durable_net_anchor_last_check_timestamp_seconds) > 300"
+          ] ++ map (network: ''absent(pi_durable_net_anchor_up{network="${network}"})'') netAnchorNetworks);
+          "for" = "5m";
+          labels = { severity = "critical"; };
+          annotations = {
+            summary = "VM network {{ $labels.network }}'s anchor VM isn't running, or its agent has stopped checking: its bridge may be down";
+            description = "For 5 minutes no anchor VM has been seen holding VM network {{ $labels.network }}'s bridge up: the anchor isn't running, is waiting for an earlier network's gateway, its agent has stopped writing its checks (hung, or gone since a reboot), or it has never reported. So the bridge and its gateway may be down or held only by whatever VM is on the network. The VM networks may collide until both are checked: the next network to come up can take this one's bridge unit, and with it a gateway. ${netAnchorRunbook}";
+          };
+        }
+        {
+          alert = "PiDurableNetAnchorGatewayMissing";
+          # The anchor VM is attached, yet its network's gateway is on no host
+          # interface. The agent never deletes or restarts anything for it.
+          expr = "pi_durable_net_anchor_up == 1 and pi_durable_net_anchor_gateway_present == 0";
+          "for" = "3m";
+          labels = { severity = "critical"; };
+          annotations = {
+            summary = "VM network {{ $labels.network }} has no gateway on the host, though its anchor VM is attached";
+            description = "For 3 minutes VM network {{ $labels.network }}'s anchor VM has been running and attached, but the network's gateway is on no host interface, so its VMs can't reach the proxies and brokers and nothing new starts on it. This is the bridge collision (another network's bridge took this one's unit) or a killed InternetSharing. It needs a person: follow the recovery in durable-pi-workspace workspaces/proxies/OPERATIONS.md §9 (nothing restarts it automatically). The VM networks may collide until both are checked. ${netAnchorRunbook}";
+          };
+        }
+      ];
+
       # No secret: only what finds node, git, claude, hermes, pi-bots (the
       # system profile's, installed only while services.pi-bots is enabled;
       # notify.pi_bots in sgg.json and sampler.json names it) and container
@@ -271,6 +357,30 @@
     in
     {
       options.services.pi-durable = {
+        netAnchor = {
+          image = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            example = "pi-durable-planning-agent:30bade4";
+            description = ''
+              Image every VM network's anchor runs (`sleep infinity`). It must
+              already be in the local `container` image store: the anchor never
+              builds one, and a missing image fails its start, so the network's
+              bridge stays down. A change does not replace a running anchor
+              VM: it takes effect only once that VM is gone (removed by hand
+              with `container delete --force net-anchor-<network>`, which takes
+              the network's bridge down, or a restart of the host). Required
+              while any anchor runs (`proxy.network` with `enable`,
+              `planning.network` with `planning.enable`).
+            '';
+          };
+          metricsDir = lib.mkOption {
+            type = lib.types.strMatching "/[^[:space:]]+";
+            default = "/Users/${config.system.primaryUser}/.local/state/pi-durable-net-anchors/metrics";
+            description = "Directory each anchor writes net-anchor-<network>.prom into for node_exporter's textfile collector.";
+          };
+        };
+
         enable = lib.mkEnableOption ''
           the Pi Durable SGG pre-review agent. It starts paused and
           uncommissioned; see the application's OPERATIONS.md before enabling'';
@@ -293,6 +403,21 @@
         };
 
         proxy = {
+          network = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            example = "pi-durable-sgg";
+            description = ''
+              Name of the sandbox's internal container network, whose gateway
+              is `listenAddress`. Set: an agent keeps an idle, detached anchor
+              VM (`net-anchor-<network>`, `netAnchor.image`) attached to it, so
+              its bridge never goes down. Requires `listenAddress`; the agent
+              runs only with `enable`. Null: no agent. The VM outlives its
+              agent, so unsetting this leaves it running; `container delete
+              --force net-anchor-<network>` removes it and takes the network's
+              bridge down.
+            '';
+          };
           listenAddress = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
             default = null;
@@ -464,6 +589,18 @@
         };
 
         planning = {
+          network = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            example = "pi-durable-planning";
+            description = ''
+              Name of the planning service network, whose gateway is
+              `listenAddress`. Set: an agent keeps an idle, detached anchor
+              VM (`net-anchor-<network>`, `netAnchor.image`) attached to it, as
+              `proxy.network` does for the sandbox's, only with `enable`.
+              Null: no agent; as there, a running VM is left running.
+            '';
+          };
           enable = lib.mkEnableOption ''
             the planning service in its VM: the launcher that runs it on the
             planning service network, the relay that carries its page from
@@ -983,6 +1120,79 @@
           (lib.mkIf (cfg.planning.tailscaleHttpsPort != null) {
             system.activationScripts.extraActivation.text =
               lib.mkOrder 1600 (pageRoute "planning page" cfg.planning.tailscaleHttpsPort cfg.planning.relayPort);
+          })
+        ]))
+
+        # One agent per named network, watching a detached anchor VM: it
+        # adopts a running one, starts one only when none runs (after the
+        # earlier networks' gateways are up, one network at a time), and exits
+        # 1 when it ends, for launchd to start a fresh one. It runs `container
+        # system start` itself if the runtime isn't answering, bounds every
+        # `container` call, and reports its gateway; a missing gateway is
+        # alerted on, never acted on. Restarting the agent
+        # (KeepAlive, an activation that changes its plist) never touches a
+        # running VM, so the bridge stays up. HOME and the system PATH only
+        # (Apple's `container`, /usr/local/bin): no secret, mount, volume or
+        # grant. The agent runs while its network's service runs: the
+        # sandbox's with `enable`, the planning network's with `planning` too.
+        # Turning a service off removes the agent but leaves its VM running;
+        # `container delete --force net-anchor-<network>` removes it and takes
+        # that network's bridge down.
+        (lib.mkIf (netAnchorNetworks != [ ]) (lib.mkMerge [
+          {
+            assertions = [
+              {
+                assertion = !(cfg.enable && cfg.proxy.network != null) || cfg.proxy.listenAddress != null;
+                message = "services.pi-durable.proxy.network requires proxy.listenAddress (and so allowedClients and ipv6Subnet): its anchor holds up that network's gateway";
+              }
+              {
+                assertion = lib.all isNetworkName netAnchorNetworks;
+                message = "services.pi-durable.proxy.network and planning.network must be container network names: lowercase letters, digits and inner hyphens";
+              }
+              {
+                assertion = lib.length (lib.unique netAnchorNetworks) == lib.length netAnchorNetworks;
+                message = "services.pi-durable.planning.network must differ from proxy.network: each network has its own gateway and its own anchor";
+              }
+              {
+                assertion = cfg.netAnchor.image != null && isImageRef cfg.netAnchor.image;
+                message = "services.pi-durable.netAnchor.image must name an image in the local container store (name[:tag][@sha256:digest]) while any network's anchor runs";
+              }
+            ];
+
+            launchd.user.agents = lib.listToAttrs (map
+              (anchor: lib.nameValuePair (netAnchorAgent anchor.network) {
+                serviceConfig = {
+                  # Its network, the image, the metrics directory, its own
+                  # gateway, then the earlier networks' gateways it waits for
+                  # before starting a VM.
+                  ProgramArguments = [
+                    "/bin/sh"
+                    "${./pi-durable-net-anchor.sh}"
+                    anchor.network
+                    (toString cfg.netAnchor.image)
+                    cfg.netAnchor.metricsDir
+                    (toString anchor.gateway)
+                  ] ++ map toString anchor.earlier;
+                  EnvironmentVariables = {
+                    HOME = home;
+                    PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+                  };
+                  RunAtLoad = true;
+                  KeepAlive = true;
+                  # SIGTERM ends the agent at once and leaves the VM running.
+                  ExitTimeOut = 30;
+                  StandardOutPath = "/tmp/${netAnchorAgent anchor.network}.log";
+                  StandardErrorPath = "/tmp/${netAnchorAgent anchor.network}.error.log";
+                };
+              })
+              netAnchors);
+          }
+
+          (lib.optionalAttrs (options.services ? monitoring) {
+            services.monitoring = {
+              nodeExporter.textfileDirectories = [ cfg.netAnchor.metricsDir ];
+              extraAlertRules = netAnchorRules;
+            };
           })
         ]))
 

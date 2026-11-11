@@ -269,6 +269,7 @@
       # subnets. The gateway exists only while a VM is attached; tinyproxy
       # retries until the first one, then keeps its socket across VM churn.
       # pf confines both subnets to the proxy.
+      proxy.network = "pi-durable-sgg";
       proxy.listenAddress = "192.168.128.1";
       proxy.allowedClients = [ "192.168.128.0/24" ];
       proxy.ipv6Subnet = "fd85:1c07:74fb:2dc7::/64";
@@ -286,6 +287,24 @@
       # Without that `push` block it opens no port. It exits 1 until the file
       # exists; launchd retries.
       githubProxy.enable = true;
+      # The VM networks' anchors (durable-pi-workspace#418): with
+      # `proxy.network` and `planning.network` set, one agent per network
+      # keeps an idle, detached VM (`net-anchor-<network>`) attached, so
+      # neither bridge goes down and the two never share a bridge unit. The
+      # sandbox network's anchor comes first: the planning anchor starts a VM
+      # only once the sandbox gateway is on the host. Each reports its
+      # gateway, and an attached anchor without one raises an alert for a
+      # person (never an automatic restart). The VM outlives its agent:
+      # restarting or disabling the agent leaves it running, and `container delete --force net-anchor-<network>` removes
+      # it, taking that network's bridge down. The image must already be in
+      # Studio's local `container` image store (`container image list`); the
+      # anchors never build or pull it. It is the planning agent image the
+      # deployment builds. Changing it does not replace a running anchor: the
+      # new image is used only once that VM is gone (removed by hand, or a
+      # restart of Studio). Before the image is removed from the store, set
+      # this to an image that is present and run update-system, so no anchor
+      # is left needing an image that is gone.
+      netAnchor.image = "pi-durable-planning-agent:30bade4";
       # Replay proxy (durable-pi-workspace#21) for the evaluation's replay VMs,
       # on the gateway at the default 8889, which must equal `sandbox.proxy`'s
       # port in ~/.config/pi-durable/replay.json. Its allowlist is the package
@@ -310,6 +329,7 @@
       # 9120, 10443, 12345 and 33000; nothing listened on 8792).
       planning = {
         enable = true;
+        network = "pi-durable-planning";
         listenAddress = "192.168.129.1";
         allowedClients = [ "192.168.129.0/24" ];
         ipv6Subnet = "fdd2:4a0c:729f:fb6::/64";
