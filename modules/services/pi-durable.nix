@@ -14,8 +14,10 @@
 # planning service network's gateway alone at 8895; the planning service's
 # launcher and its relay (planning runbook §4.1), the relay's page routed
 # through the same Serve guard; and a second pf anchor that confines the
-# planning service network to those two brokers. The VM broker's port never
-# enters the sandbox's anchor, so an agent VM cannot reach it.
+# planning service network to those two brokers and any workspace relay ports
+# (the service VM's leg to a sandbox, through a relay on the host). Neither
+# the VM broker's port nor a relay port ever enters the sandbox's anchor, so
+# an agent VM cannot reach them.
 # And the VM networks' anchors (durable-pi-workspace#418): one agent per
 # network that keeps an idle, detached VM attached to it, so Apple `container`
 # never takes the network's bridge down and gives its unit to another network.
@@ -206,15 +208,17 @@
       pfLoader = [ "${pkgs.bash}/bin/bash" "${./pi-durable-pf.sh}" "/sbin/pfctl" pfAnchor "${pfRules}" "/var/run/pi-durable-pf.token" ];
 
       # The planning service network, the same way in its own anchor: the
-      # service VM reaches the forge broker and the VM broker on its gateway
-      # and nothing else. The same loader keeps it, with its own enable
-      # reference, at activation and from its own boot daemon.
+      # service VM reaches the forge broker and the VM broker on its gateway,
+      # then each workspace relay port (none by default), and nothing else.
+      # The same loader keeps it, with its own enable reference, at
+      # activation and from its own boot daemon.
       planningPfAnchor = "com.apple/101.pi-durable-planning";
+      planningBrokerPorts = [ cfg.forgeBroker.port cfg.vmBroker.port ];
       planningPfRules = pkgs.writeText "pi-durable-planning.pf" (confinement {
         title = "Pi Durable planning service network isolation";
         clients = cfg.planning.allowedClients;
         address = cfg.planning.listenAddress;
-        ports = [ cfg.forgeBroker.port cfg.vmBroker.port ];
+        ports = planningBrokerPorts ++ cfg.planning.workspaceRelayPorts;
         inherit (cfg.planning) ipv6Subnet;
       });
       planningPfLoader = [ "${pkgs.bash}/bin/bash" "${./pi-durable-pf.sh}" "/sbin/pfctl" planningPfAnchor "${planningPfRules}" "/var/run/pi-durable-planning-pf.token" ];
@@ -648,6 +652,19 @@
             default = 8792;
             description = "Loopback port of the relay to the service's page. Must equal `listen.port` in planning-relay.json (its default, 8792).";
           };
+          workspaceRelayPorts = lib.mkOption {
+            type = lib.types.listOf lib.types.port;
+            default = [ ];
+            example = [ 8896 ];
+            description = ''
+              Ports on the planning service network's gateway
+              (`listenAddress`) that its VMs may reach for workspace relays:
+              the host relays that carry a service VM to a sandbox VM. The
+              planning anchor passes each as it passes the brokers' ports.
+              Never passed by the sandbox network's anchor, so a sandbox has
+              no path to a relay. Empty: the anchor is the brokers' alone.
+            '';
+          };
           tailscaleHttpsPort = lib.mkOption {
             type = lib.types.nullOr lib.types.port;
             default = null;
@@ -1039,6 +1056,15 @@
               {
                 assertion = cfg.planning.relayPort != cfg.page.port && (!cfg.sampler.enable || cfg.planning.relayPort != cfg.sampler.port);
                 message = "services.pi-durable.planning.relayPort must differ from the pages' ports (page.port and sampler.port)";
+              }
+              {
+                assertion = !lib.any (port: lib.elem port gatewayPorts) cfg.planning.workspaceRelayPorts;
+                message = "services.pi-durable.planning.workspaceRelayPorts must never be passed by the sandbox network's pf anchor (proxy.port, modelProxy.port, githubProxy.port, replayProxy.port and forgeBroker.port): a sandbox must have no path to a relay";
+              }
+              {
+                assertion = !lib.any (port: lib.elem port planningBrokerPorts) cfg.planning.workspaceRelayPorts
+                  && lib.allUnique cfg.planning.workspaceRelayPorts;
+                message = "services.pi-durable.planning.workspaceRelayPorts must differ from the ports already passed on the planning gateway (forgeBroker.port, vmBroker.port and each other)";
               }
               {
                 assertion = cfg.planning.tailscaleHttpsPort == null || config.services.tailscale.enable;

@@ -48,13 +48,16 @@ STUDIO_PF_RULES = (
 # forge broker, the VM broker and planning disabled it is exactly this.
 SANDBOX_PF_RULES_WITHOUT_PLANNING = STUDIO_PF_RULES.replace(FORGE_BROKER_PF_RULE, "")
 # The planning service network's anchor (durable-pi-workspace#48): the network
-# reaches the forge broker (8894) and the VM broker (8895) on its gateway and
+# reaches the forge broker (8894) and the VM broker (8895) on its gateway, then
+# the workspace relay leg's probe port (8896, durable-pi-workspace#421), and
 # nothing else.
 PLANNING_PF_ANCHOR = "com.apple/101.pi-durable-planning"
+WORKSPACE_RELAY_PF_RULE = "pass in quick inet proto tcp from { 192.168.129.0/24 } to 192.168.129.1 port 8896 flags S/SA keep state\n"
 PLANNING_PF_RULES = (
     "# Pi Durable planning service network isolation: nix-configs modules/services/pi-durable.nix\n"
     "pass in quick inet proto tcp from { 192.168.129.0/24 } to 192.168.129.1 port 8894 flags S/SA keep state\n"
     "pass in quick inet proto tcp from { 192.168.129.0/24 } to 192.168.129.1 port 8895 flags S/SA keep state\n"
+    + WORKSPACE_RELAY_PF_RULE +
     "block return in quick on ! lo0 inet from { 192.168.129.0/24 } to any\n"
     "block return in quick on ! lo0 inet6 from fdd2:4a0c:729f:fb6::/64 to any\n"
     f"block return in quick on {{ {' '.join(BRIDGES)} }} inet6 proto {{ tcp udp }} from fe80::/10 to any\n"
@@ -852,18 +855,20 @@ class Planning(unittest.TestCase):
         lines = parsed.stdout.splitlines()
         forge = "pass in quick inet proto tcp from 192.168.129.0/24 to 192.168.129.1 port = 8894 flags S/SA keep state"
         vm = "pass in quick inet proto tcp from 192.168.129.0/24 to 192.168.129.1 port = 8895 flags S/SA keep state"
+        relay = "pass in quick inet proto tcp from 192.168.129.0/24 to 192.168.129.1 port = 8896 flags S/SA keep state"
         blocking = "block return in quick on ! lo0 inet from 192.168.129.0/24 to any"
         link_local = {
             f"block return in quick on {bridge} inet6 proto {proto} from fe80::/10 to any"
             for bridge in BRIDGES for proto in ("tcp", "udp")
         }
         self.assertEqual(
-            {forge, vm, blocking, "block return in quick on ! lo0 inet6 from fdd2:4a0c:729f:fb6::/64 to any"} | link_local,
+            {forge, vm, relay, blocking, "block return in quick on ! lo0 inet6 from fdd2:4a0c:729f:fb6::/64 to any"} | link_local,
             set(lines),
         )
         self.assertEqual(len(lines), len(set(lines)))
         self.assertLess(lines.index(forge), lines.index(blocking))
         self.assertLess(lines.index(vm), lines.index(blocking))
+        self.assertLess(lines.index(relay), lines.index(blocking))
 
     def test_activation_and_a_root_daemon_load_it_with_its_own_token(self):
         daemon = studio("{ }", PLANNING_PF_DAEMON)
@@ -962,6 +967,60 @@ class Planning(unittest.TestCase):
           in {FAILED}
         """))
         self.assertIn("services.pi-durable.planning.tailscaleHttpsPort requires services.tailscale", failed)
+
+
+class WorkspaceRelayPorts(unittest.TestCase):
+    """Workspace relay ports (durable-pi-workspace#421): passed on the planning gateway, never the sandbox's."""
+
+    def test_studio_passes_its_probe_port_in_the_planning_anchor_alone(self):
+        self.assertEqual([8896], studio("{ }", "config.services.pi-durable.planning.workspaceRelayPorts"))
+        planning_rules = studio("{ }", f"builtins.readFile {PLANNING_PF_RULES_FILE}")
+        self.assertEqual(1, planning_rules.count(WORKSPACE_RELAY_PF_RULE))
+        # After the brokers' passes, before every block.
+        lines = planning_rules.splitlines(True)
+        self.assertEqual(WORKSPACE_RELAY_PF_RULE, lines[3])
+        self.assertTrue(lines[4].startswith("block return "))
+        sandbox_rules = studio("{ }", f"builtins.readFile {PF_RULES}")
+        self.assertEqual(STUDIO_PF_RULES, sandbox_rules)
+        self.assertNotIn("8896", sandbox_rules)
+
+    def test_empty_leaves_both_anchors_byte_identical_to_before(self):
+        settings = "{ planning.workspaceRelayPorts = lib.mkForce [ ]; }"
+        s = studio(settings, SUMMARY)
+        self.assertEqual([], s["failed"])
+        self.assertEqual(PLANNING_PF_RULES.replace(WORKSPACE_RELAY_PF_RULE, ""), studio(settings, f"builtins.readFile {PLANNING_PF_RULES_FILE}"))
+        self.assertEqual(STUDIO_PF_RULES, studio(settings, f"builtins.readFile {PF_RULES}"))
+        self.assertNotIn("8896", PLANNING_PF_RULES.replace(WORKSPACE_RELAY_PF_RULE, ""))
+
+    def test_each_port_follows_the_option_into_the_planning_anchor_in_order(self):
+        settings = "{ planning.workspaceRelayPorts = lib.mkForce [ 9901 9900 ]; }"
+        rule = WORKSPACE_RELAY_PF_RULE.replace
+        self.assertEqual(
+            PLANNING_PF_RULES.replace(WORKSPACE_RELAY_PF_RULE, rule("port 8896 ", "port 9901 ") + rule("port 8896 ", "port 9900 ")),
+            studio(settings, f"builtins.readFile {PLANNING_PF_RULES_FILE}"),
+        )
+        self.assertEqual(STUDIO_PF_RULES, studio(settings, f"builtins.readFile {PF_RULES}"))
+
+    def test_refuses_a_sandbox_anchor_port_or_one_already_passed_on_the_planning_gateway(self):
+        in_sandbox = [f"{{ planning.workspaceRelayPorts = lib.mkForce [ 8896 {port} ]; }}" for port in (8888, 8892, 8893, 8889, 8894)]
+        # A sandbox listener moved onto the relay port would put it in the sandbox anchor.
+        moved = ["{ modelProxy.port = lib.mkForce 8896; }", "{ replayProxy.port = lib.mkForce 8896; }"]
+        on_planning = [
+            "{ planning.workspaceRelayPorts = lib.mkForce [ 8895 ]; }",
+            "{ planning.workspaceRelayPorts = lib.mkForce [ 8896 8896 ]; }",
+            "{ vmBroker.port = lib.mkForce 8896; }",
+        ]
+        accepted, *results = failures("{ }", *in_sandbox, *moved, *on_planning)
+        self.assertEqual([], accepted)
+        sandbox_message = "services.pi-durable.planning.workspaceRelayPorts must never be passed by the sandbox network's pf anchor"
+        planning_message = "services.pi-durable.planning.workspaceRelayPorts must differ from the ports already passed on the planning gateway"
+        for settings, failed in zip(in_sandbox + moved, results):
+            with self.subTest(settings):
+                self.assertTrue(any(m.startswith(sandbox_message) for m in failed), failed)
+        for settings, failed in zip(on_planning, results[len(in_sandbox) + len(moved):]):
+            with self.subTest(settings):
+                self.assertTrue(any(m.startswith(planning_message) for m in failed), failed)
+                self.assertFalse(any(m.startswith(sandbox_message) for m in failed), failed)
 
 
 class PlanningNodeFirewall(unittest.TestCase):

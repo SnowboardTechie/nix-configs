@@ -338,6 +338,8 @@
         allowedClients = [ "192.168.129.0/24" ];
         ipv6Subnet = "fdd2:4a0c:729f:fb6::/64";
         tailscaleHttpsPort = 8792;
+        # The relay leg's probe port for durable-pi-workspace#421.
+        workspaceRelayPorts = [ 8896 ];
       };
     };
 
