@@ -386,15 +386,15 @@
     #   ~/.secrets/grafana-smtp-password   (smtp2go password, shared with Grafana)
     services.monitoring.alertEmail = "bryan@snowboardtechie.com";
 
-    # Every notification also goes to Hermes's loopback `studio-alerts` webhook
-    # route (deliver-only, no agent run), which posts it into the encrypted
-    # "Studio Alerts" Matrix room (!BY2yuFPzB-GFM6e1MCD33kHk-YH2c1H3Ga-R59PCTUg).
-    # Hermes owns the route, the room and the token; its route config lives in
-    # ~/.hermes/config.yaml, not here.
+    # Every notification also goes to the bot service's loopback
+    # `studio-alerts` webhook (pi-bots `webhooks/studio-alerts.json`): Steve
+    # posts it into the encrypted "Studio Alerts" Matrix room, with no model
+    # turn. pi-bots owns the route, the room key and the token
+    # (`pi-bots webhook token studio-alerts`); nothing of theirs is here.
     services.monitoring.alertWebhook = {
-      url = "http://127.0.0.1:8644/webhooks/studio-alerts";
-      tokenHeader = "X-Gitlab-Token";
-      tokenFile = "/Users/bryan/.secrets/hermes-alertmanager-webhook-token";
+      url = "http://127.0.0.1:8645/webhooks/studio-alerts";
+      tokenHeader = "X-Pi-Bots-Token";
+      tokenFile = "/Users/bryan/.secrets/pi-bots/webhooks/studio-alerts.token";
     };
 
     # Studio host policy: keep Grafana clear of the 3000/3001 development-server

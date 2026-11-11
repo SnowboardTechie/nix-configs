@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """services.monitoring.alertWebhook: Alertmanager notifications also posted to a token-authenticated webhook.
 
-On Studio the webhook is Hermes's `studio-alerts` route, which posts into an
-encrypted Matrix room; Hermes owns that side and it is not exercised here.
-Evaluates through a `path:` flake reference so an uncommitted module is
-evaluated as it is on disk. The real Alertmanager runs on loopback against a
-stand-in endpoint; nothing is activated and Hermes is never contacted.
+On Studio the webhook is the bot service's (pi-bots) `studio-alerts` route,
+which has Steve post into an encrypted Matrix room; pi-bots owns that side and
+tests it itself. Evaluates through a `path:` flake reference so an uncommitted
+module is evaluated as it is on disk. The real Alertmanager runs on loopback
+against a stand-in endpoint; nothing is activated and the bot service is never
+contacted.
 """
 import json
 import socket
@@ -21,8 +22,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 TOKEN = "s3cret-token-value"
-HERMES_URL = "http://127.0.0.1:8644/webhooks/studio-alerts"
-HERMES_TOKEN_FILE = "/Users/bryan/.secrets/hermes-alertmanager-webhook-token"
+PI_BOTS_URL = "http://127.0.0.1:8645/webhooks/studio-alerts"
+PI_BOTS_HEADER = "X-Pi-Bots-Token"
+PI_BOTS_TOKEN_FILE = "/Users/bryan/.secrets/pi-bots/webhooks/studio-alerts.token"
 
 
 def webhook(**fields):
@@ -102,15 +104,23 @@ def free_port():
 
 
 class Wiring(unittest.TestCase):
-    def test_studio_posts_to_hermes_alongside_email(self):
+    def test_studio_posts_to_the_bot_service_alongside_email(self):
         am = studio(None, "readJSON alertmanagerConfig")
         self.assertEqual("primary", am["route"]["receiver"])
+        # The notice shows the group's common labels and annotations as the
+        # alert's own, which holds only while groups are one alert per instance.
+        self.assertEqual(["alertname", "instance"], am["route"]["group_by"])
         [receiver] = am["receivers"]
         self.assertEqual([{"to": "bryan@snowboardtechie.com", "send_resolved": True}], receiver["email_configs"])
         self.assertEqual([{
-            "url": HERMES_URL, "send_resolved": True,
-            "http_config": {"http_headers": {"X-Gitlab-Token": {"files": [HERMES_TOKEN_FILE]}}},
+            "url": PI_BOTS_URL, "send_resolved": True,
+            "http_config": {"http_headers": {PI_BOTS_HEADER: {"files": [PI_BOTS_TOKEN_FILE]}}},
         }], receiver["webhook_configs"])
+
+    def test_studio_no_longer_posts_to_hermes(self):
+        text = json.dumps(studio(None, "readJSON alertmanagerConfig"))
+        for hermes in ("127.0.0.1:8644", "X-Gitlab-Token", "hermes-alertmanager-webhook-token"):
+            self.assertNotIn(hermes, text)
 
     def test_unset_leaves_delivery_email_only(self):
         [receiver] = studio("null", "(readJSON alertmanagerConfig).receivers")
@@ -132,7 +142,7 @@ class Wiring(unittest.TestCase):
     def test_activation_warns_when_the_token_is_missing(self):
         activation = studio(None, "config.system.activationScripts.extraActivation.text")
         self.assertIn("# === alertmanager: webhook preflight ===", activation)
-        self.assertIn(HERMES_TOKEN_FILE, activation)
+        self.assertIn(PI_BOTS_TOKEN_FILE, activation)
 
 
 class Refusals(unittest.TestCase):
@@ -191,7 +201,7 @@ class GeneratedConfigs(unittest.TestCase):
             # Healthy: every counter Alertmanager pre-creates stays at zero.
             case([series("webhook", "serverError", "0x60"), series("email", "other", "0x60")],
                  ("30m", []), ("60m", [])),
-            # One webhook failure at 20m (Hermes down or answering 502) fires, then clears.
+            # One webhook failure at 20m (the bot service down or answering 502) fires, then clears.
             case([series("webhook", "serverError", "0x19 1x40"), series("email", "other", "0x60")],
                  ("10m", []), ("25m", firing("webhook")), ("45m", [])),
             # Failures for different reasons on one integration are one alert.
@@ -207,7 +217,7 @@ class GeneratedConfigs(unittest.TestCase):
 
 
 class FakeEndpoint(ThreadingHTTPServer):
-    """Records each POST; answers 502 to the first `fail_first` of them, like Hermes on a failed delivery."""
+    """Records each POST; answers 502 to the first `fail_first` of them, like pi-bots on a failed post."""
 
     def __init__(self, fail_first=0):
         self.requests = []
@@ -240,7 +250,7 @@ class Alertmanager(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(subprocess.run, ["rm", "-rf", str(tmp)])
         token_file = tmp / "token"
-        token_file.write_text(TOKEN + "\n")  # as Hermes wrote it: with a trailing newline
+        token_file.write_text(TOKEN + "\n")  # with a trailing newline, which Alertmanager trims
         token_file.chmod(0o600)
         header = next(iter(integration["http_config"]["http_headers"]))
         integration["url"] = f"http://127.0.0.1:{endpoint.server_port}/webhooks/studio-alerts"
@@ -296,7 +306,7 @@ class Alertmanager(unittest.TestCase):
             }]).encode())
         urllib.request.urlopen(request, timeout=5).close()
 
-    def test_sends_the_token_without_its_newline_and_the_fields_hermes_renders(self):
+    def test_sends_the_token_without_its_newline_and_the_fields_the_notice_renders(self):
         endpoint = self.start_endpoint()
         port, header = self.run_alertmanager(endpoint)
         self.post_alert(port)
@@ -304,9 +314,12 @@ class Alertmanager(unittest.TestCase):
 
         [request] = endpoint.requests[:1]
         self.assertEqual("/webhooks/studio-alerts", request["path"])
+        self.assertEqual(PI_BOTS_HEADER, header)
         self.assertEqual(TOKEN, request["headers"][header])
         body = request["body"]
-        # Hermes's route template reads exactly these fields.
+        # pi-bots' `alertmanager` format reads Alertmanager's version 4 JSON,
+        # these fields among them.
+        self.assertEqual("4", body["version"])
         self.assertEqual("firing", body["status"])
         self.assertEqual({"alertname": "ServiceDown", "severity": "critical",
                           "instance": "http://localhost:8080/health", "job": "blackbox"}, body["commonLabels"])

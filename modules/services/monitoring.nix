@@ -11,7 +11,7 @@
 #
 # Alerting pipeline:
 #   Prometheus (rule eval) → Alertmanager (dedup/group/route) → smtp2go → email
-#                                                            ↘ webhook → (Studio: Hermes → encrypted Matrix room)
+#                                                            ↘ webhook → (Studio: pi-bots' Steve → encrypted Matrix room)
 # Grafana stays as pure visualization (Alertmanager added as datasource for alert-state
 # view in UI). Set services.monitoring.alertEmail in the host config to enable, and
 # services.monitoring.alertWebhook to also post every notification to a webhook.
@@ -514,17 +514,17 @@
           options = {
             url = lib.mkOption {
               type = lib.types.strMatching "https?://[^[:space:]]+";
-              example = "http://127.0.0.1:8644/webhooks/studio-alerts";
+              example = "http://127.0.0.1:8645/webhooks/studio-alerts";
               description = "Endpoint that receives Alertmanager's webhook JSON.";
             };
             tokenHeader = lib.mkOption {
               type = lib.types.strMatching "[A-Za-z0-9-]+";
-              example = "X-Gitlab-Token";
+              example = "X-Pi-Bots-Token";
               description = "HTTP header that carries the shared token.";
             };
             tokenFile = lib.mkOption {
               type = lib.types.strMatching "/[^[:space:]]+";
-              example = "/Users/bryan/.secrets/hermes-alertmanager-webhook-token";
+              example = "/Users/bryan/.secrets/pi-bots/webhooks/studio-alerts.token";
               description = "0600 file holding the shared token, read by Alertmanager.";
             };
           };
@@ -537,7 +537,8 @@
 
           Wiring: Alertmanager → webhook (Alertmanager's JSON payload, token
           in `tokenHeader`). The endpoint owns delivery from there; on Studio
-          it is a Hermes route that posts into an encrypted Matrix room.
+          it is the bot service's route, where Steve posts into an encrypted
+          Matrix room.
           Requires alertEmail, since this adds an integration to the
           existing receiver rather than replacing it.
         '';

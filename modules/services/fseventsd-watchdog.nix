@@ -14,7 +14,7 @@
 # at most once per `cooldownSeconds`.
 #
 # With the monitoring module on the same host, Prometheus alerts (email, plus
-# the Studio Alerts Matrix room through Hermes) when fseventsd's memory or CPU
+# the Studio Alerts Matrix room through the bot service) when fseventsd's memory or CPU
 # is high, on every restart, when fseventsd is down, and when the watchdog stops
 # reporting. Grafana gets an "fseventsd" dashboard.
 { inputs, ... }:
