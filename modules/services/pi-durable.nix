@@ -45,6 +45,56 @@
     , ...
     }:
     let
+      # OpenCode Go's allowance (durable-pi-workspace#399, P399.3), from the
+      # sampler's /metrics. At 100% of any window every paid Go model stops
+      # until it resets; the OpenCode console is authoritative.
+      goConsole = "These are estimates; the OpenCode console (https://opencode.ai/console) is authoritative. At 100% of any window every paid Go model stops until it resets; free models keep working.";
+      goAlertRules = [
+        {
+          alert = "OpenCodeGoAllowanceHigh";
+          expr = "pi_durable_sampler_opencode_go_share >= 0.8";
+          "for" = "5m";
+          labels = { severity = "warning"; };
+          annotations = {
+            summary = "OpenCode Go's {{ $labels.window }} window is at {{ $value | humanizePercentage }}";
+            description = "OpenCode Go's estimated use of its {{ $labels.window }} window has been at 80% or more for 5 minutes. See the Claude usage page's OpenCode Go section for who used it. ${goConsole}";
+          };
+        }
+        {
+          alert = "OpenCodeGoAllowanceCritical";
+          expr = "pi_durable_sampler_opencode_go_share >= 0.95";
+          "for" = "5m";
+          labels = { severity = "critical"; };
+          annotations = {
+            summary = "OpenCode Go's {{ $labels.window }} window is at {{ $value | humanizePercentage }}";
+            description = "OpenCode Go's estimated use of its {{ $labels.window }} window has been at 95% or more for 5 minutes: paid Go models are about to stop. ${goConsole}";
+          };
+        }
+        {
+          # Bad lines are left out on purpose: Pi skips them too, and a line
+          # torn by a crash stays in its file for good.
+          alert = "OpenCodeGoUsageUnreadable";
+          # `or`, not a sum: each term alone raises it, whatever series the
+          # others have.
+          expr = "pi_durable_sampler_opencode_go_readable == 0 or pi_durable_sampler_opencode_go_missing_dirs > 0 or pi_durable_sampler_opencode_go_unreadable_files > 0";
+          "for" = "30m";
+          labels = { severity = "warning"; };
+          annotations = {
+            summary = "OpenCode Go's usage records can't all be read";
+            description = "For 30 minutes the sampler has had a configured session directory missing, a session file or Hermes database it can't read, or no source at all, so OpenCode Go's figures undercount. The Claude usage page's OpenCode Go section names what. ${goConsole}";
+          };
+        }
+        {
+          alert = "OpenCodeGoUnknownModel";
+          expr = "pi_durable_sampler_opencode_go_unknown_models > 0";
+          "for" = "1h";
+          labels = { severity = "warning"; };
+          annotations = {
+            summary = "OpenCode Go use on a model the sampler can't weigh";
+            description = "For an hour the sampler has counted {{ $value }} OpenCode Go model(s) at the dearest weight, because its weight table lacks them or Pi recorded no cost. The Claude usage page names them; add a line to GO_WEIGHTS in durable-pi-workspace's workspaces/sampler/src/opencode-go.ts after a probe. ${goConsole}";
+          };
+        }
+      ];
       cfg = config.services.pi-durable;
       home = "/Users/${config.system.primaryUser}";
       # Dedicated clean, pushed-main checkout; human/agent work stays in ~/code.
@@ -980,11 +1030,21 @@
 
           # The sampler's /metrics answers on loopback without the page's
           # Tailscale login; a live sampler exports its readings counter.
+          # Prometheus also scrapes it, for OpenCode Go's allowance alerts
+          # (durable-pi-workspace#399, P399.3): the sampler computes each Go
+          # window's share from Pi's session records. The OpenCode console is
+          # the authority; these are estimates.
           (lib.optionalAttrs (options.services ? monitoring) {
             services.monitoring.blackbox.contentProbes."Claude usage" = {
               url = "http://127.0.0.1:${toString cfg.sampler.port}/metrics";
               bodyMatches = "(?m)^pi_durable_sampler_readings_total";
             };
+            services.monitoring.extraScrapeConfigs = [{
+              job_name = "pi-durable-sampler";
+              metrics_path = "/metrics";
+              static_configs = [{ targets = [ "127.0.0.1:${toString cfg.sampler.port}" ]; }];
+            }];
+            services.monitoring.extraAlertRules = goAlertRules;
           })
         ]))
       ];
