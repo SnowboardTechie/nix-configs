@@ -1664,10 +1664,21 @@ exec /bin/sleep "$@"
 
     def start_controlled(self, tmp, earlier=(), **kwargs):
         env = {**self.setup(tmp, **kwargs), "PI_DURABLE_NET_ANCHOR_POLL_SECONDS": self.CONTROLLED}
-        proc = subprocess.Popen(self.command(tmp, earlier), env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # restore_signals resets only SIGPIPE, SIGXFZ and SIGXFSZ. A non-interactive shell starts its background jobs
+        # with SIGINT and SIGQUIT ignored, and /bin/sh can't trap a signal that was ignored when it started, so the
+        # agent would never see the test's SIGINT: these tests would then pass in the foreground and time out when
+        # the suite is run with `&`. Give the agent the default dispositions launchd gives it.
+        proc = subprocess.Popen(self.command(tmp, earlier), env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                preexec_fn=self.default_signals)
         self.addCleanup(self.release, tmp)
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
         return proc
+
+    @staticmethod
+    def default_signals():
+        import signal
+        for number in (signal.SIGINT, signal.SIGQUIT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(number, signal.SIG_DFL)
 
     @staticmethod
     def release(tmp):
