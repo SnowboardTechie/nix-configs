@@ -154,6 +154,8 @@
     services.pi-bots = {
       enable = true;
       homeserver = "https://matrix.snowboardtechie.com";
+      # The SGG preview watchdog runs as one of its jobs here.
+      alerts.sggPreviewWatchdog = true;
     };
 
     # Nightly encrypted (age) archive of the bot service's state and secrets on
