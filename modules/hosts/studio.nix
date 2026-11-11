@@ -460,12 +460,13 @@
 
     # NAS storage health: alert on new btrfs device errors from the NAS's
     # node_exporter (the unraid-node job above) and when the backup share stops
-    # taking writes, checked by writing a small file every 10 minutes.
+    # taking writes, checked by writing a small file every 10 minutes. It probes
+    # the directory pi-bots-backup is configured to publish to (its destDir).
     services.nas-storage-health = {
       enable = true;
       shares.Bryan = {
         mountPoint = "/Users/bryan/NAS/Bryan";
-        directory = "/Users/bryan/NAS/Bryan/Backups";
+        directory = config.services.pi-bots-backup.destDir;
       };
     };
 

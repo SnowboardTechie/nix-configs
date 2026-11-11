@@ -306,11 +306,16 @@ class Module(unittest.TestCase):
     def test_studio_probes_the_backup_share_every_ten_minutes(self):
         agent = studio("probe")
         self.assertEqual("org.nixos.nas-write-probe", agent["Label"])
-        self.assertEqual(["Bryan", "/Users/bryan/NAS/Bryan", "/Users/bryan/NAS/Bryan/Backups"], agent["ProgramArguments"][1:])
+        self.assertEqual(["Bryan", "/Users/bryan/NAS/Bryan", "/Users/bryan/NAS/Bryan/Backups/pi-bots"], agent["ProgramArguments"][1:])
         self.assertEqual(600, agent["StartInterval"])
         self.assertTrue(agent["RunAtLoad"])
         self.assertGreater(agent["ExitTimeOut"], int(agent["EnvironmentVariables"]["TIMEOUT"]) + 5)
         self.assertTrue(agent["EnvironmentVariables"]["TIMEOUT_CMD"].endswith("/bin/timeout"))
+
+    def test_studio_probes_wherever_the_bot_service_backup_publishes(self):
+        args = studio("probe.ProgramArguments",
+                      '{ services.pi-bots-backup.destDir = lib.mkForce "/Users/bryan/NAS/Bryan/Elsewhere"; }')
+        self.assertEqual("/Users/bryan/NAS/Bryan/Elsewhere", args[-1])
 
     def test_node_exporter_reads_the_probe_metrics(self):
         args = studio("config.launchd.user.agents.node-exporter.serviceConfig.ProgramArguments")
