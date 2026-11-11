@@ -305,6 +305,8 @@
       # this to an image that is present and run update-system, so no anchor
       # is left needing an image that is gone.
       netAnchor.image = "pi-durable-planning-agent:30bade4";
+      # Passwordless `sudo /usr/bin/killall InternetSharing` only, the VM networks' recovery (durable-pi-workspace#418).
+      netAnchor.recoverySudo.enable = true;
       # Replay proxy (durable-pi-workspace#21) for the evaluation's replay VMs,
       # on the gateway at the default 8889, which must equal `sandbox.proxy`'s
       # port in ~/.config/pi-durable/replay.json. Its allowlist is the package

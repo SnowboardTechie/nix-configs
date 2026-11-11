@@ -379,6 +379,13 @@
             default = "/Users/${config.system.primaryUser}/.local/state/pi-durable-net-anchors/metrics";
             description = "Directory each anchor writes net-anchor-<network>.prom into for node_exporter's textfile collector.";
           };
+          recoverySudo.enable = lib.mkEnableOption ''
+            one passwordless sudoers rule for the primary user: exactly
+            `/usr/bin/killall InternetSharing` as root, the VM networks'
+            recovery when two collide or a network helper cannot create its
+            network (durable-pi-workspace's proxies runbook §9). Anything that
+            runs as that user can then drop every VM network. Inert unless
+            `enable` is set'';
         };
 
         enable = lib.mkEnableOption ''
@@ -1195,6 +1202,22 @@
             };
           })
         ]))
+
+        # The VM networks' recovery (durable-pi-workspace#418; the proxies
+        # runbook §9): when two networks collide, or a network helper is left
+        # unable to create its network, the fix is to restart InternetSharing.
+        # This lets the primary user (and so Bryan's agents) run exactly that
+        # one command line as root without a password: no other process name,
+        # signal or binary. Its cost: anything running as that user can drop
+        # every VM network at will. It merges with the other sudoers rules
+        # (Hermes's operator lines) rather than replacing them.
+        # It goes with the service: with `enable` off it adds nothing.
+        (lib.mkIf (cfg.enable && cfg.netAnchor.recoverySudo.enable) {
+          security.sudo.extraConfig = ''
+            # Pi Durable VM network recovery (durable-pi-workspace#418): ${config.system.primaryUser} may restart InternetSharing, which drops every VM network
+            ${config.system.primaryUser} ALL=(root) NOPASSWD: /usr/bin/killall InternetSharing
+          '';
+        })
 
         # The sampler runs on its own: it reads the workspaces' state
         # directories and its own config, and needs nothing above enabled.

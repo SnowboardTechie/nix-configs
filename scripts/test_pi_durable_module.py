@@ -1999,5 +1999,55 @@ exec /bin/sleep "$@"
             self.assertEqual(64, result.returncode)
 
 
+SUDOERS = 'config.environment.etc."sudoers.d/10-nix-darwin-extra-config".text'
+RECOVERY_SUDO_RULE = "bryan ALL=(root) NOPASSWD: /usr/bin/killall InternetSharing"
+HERMES_SUDO_LINES = [
+    "bryan ALL=(traci) NOPASSWD: ALL",
+    "bryan ALL=(root) NOPASSWD: /bin/launchctl kickstart -k system/ai.hermes.gateway-traci, "
+    "/bin/launchctl kickstart -k system/ai.hermes.serve-traci, /bin/launchctl kickstart system/ai.hermes.update-traci, "
+    "/bin/cat /var/log/hermes-updates/traci.log, /bin/cat /var/log/hermes-updates/traci.error.log",
+]
+
+
+class NetAnchorRecoverySudo(unittest.TestCase):
+    """The VM networks' recovery: exactly `/usr/bin/killall InternetSharing`, passwordless (durable-pi-workspace#418)."""
+
+    def rules(self, settings):
+        return [line for line in studio(settings, SUDOERS).splitlines() if line and not line.startswith("#")]
+
+    def test_studio_gets_exactly_the_rule_beside_the_hermes_lines(self):
+        rules = self.rules("{ }")
+        # Exactly one line mentions it, and it is exactly the rule.
+        self.assertEqual([RECOVERY_SUDO_RULE], [line for line in rules if "killall" in line or "InternetSharing" in line])
+        # It merges with Hermes's operator rule rather than replacing it.
+        for line in HERMES_SUDO_LINES:
+            self.assertIn(line, rules)
+        self.assertEqual(sorted([RECOVERY_SUDO_RULE, *HERMES_SUDO_LINES]),
+                         sorted(line for line in rules if not line.startswith("Defaults")))
+
+    def test_rule_names_one_command_line_and_no_wildcard(self):
+        self.assertNotRegex(RECOVERY_SUDO_RULE, r"[*?\[\]!,\\]")
+        self.assertEqual("/usr/bin/killall InternetSharing", RECOVERY_SUDO_RULE.split("NOPASSWD: ", 1)[1])
+        rule = next(line for line in self.rules("{ }") if "InternetSharing" in line)
+        self.assertNotRegex(rule.split("NOPASSWD: ", 1)[1], r"[*?\[\]!,\\]")
+
+    def test_off_leaves_no_rule_and_the_hermes_lines(self):
+        rules = self.rules("{ netAnchor.recoverySudo.enable = lib.mkForce false; }")
+        self.assertEqual([], [line for line in rules if "killall" in line or "InternetSharing" in line])
+        for line in HERMES_SUDO_LINES:
+            self.assertIn(line, rules)
+
+    def test_nothing_without_the_service(self):
+        self.assertNotIn("InternetSharing", studio(
+            "{ enable = lib.mkForce false; netAnchor.recoverySudo.enable = lib.mkForce true; }", SUDOERS))
+
+    def test_visudo_accepts_studios_built_sudoers_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sudoers"
+            path.write_text(studio("{ }", SUDOERS))
+            result = subprocess.run(["/usr/sbin/visudo", "-c", "-f", str(path)], text=True, capture_output=True)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
