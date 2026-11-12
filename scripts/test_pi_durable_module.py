@@ -2207,6 +2207,235 @@ class Supervisor(unittest.TestCase):
         self.assertNotIn(f"--collector.textfile.directory={SUPERVISOR_METRICS}", moved)
 
 
+FOLLOWER_TOOLS = ("pi-durable-commit-status", "pi-durable-verify-commit-signature")
+SHA = "d81667134616d7d1958a9903476364ec93b110c5"
+VERIFY_ARGS = ("--keyid-format=long", "--status-fd=1", "--verify")
+
+
+@cache
+def follower_tool(name, settings="{ }"):
+    """Build one of the follower's commands as Studio declares it; its bin path."""
+    out = nix("build", "--impure", "--no-link", "--print-out-paths", "--expr", studio_expr(
+        settings, f'builtins.head (builtins.filter (p: (p.name or "") == "{name}") config.environment.systemPackages)'))
+    return Path(out.strip().splitlines()[-1]) / "bin" / name
+
+
+class SupervisorFollowerTools(unittest.TestCase):
+    """The follower's two commands (durable-pi-workspace#443 task 9): linked into the system path with the supervisor."""
+
+    PACKAGES = 'map (p: p.name or "") config.environment.systemPackages'
+
+    def test_linked_into_the_system_path_with_the_supervisor_only(self):
+        on = studio("{ }", self.PACKAGES)
+        for tool in FOLLOWER_TOOLS:
+            self.assertEqual(1, on.count(tool), tool)
+            self.assertNotIn(tool, studio(SUPERVISOR_OFF, self.PACKAGES))
+        # The agent's own PATH is unchanged: the configuration names the tools by path.
+        self.assertNotIn("/run/current-system/sw/bin", studio("{ }", SUPERVISOR)["EnvironmentVariables"]["PATH"])
+        self.assertEqual({"host": "git.snowboardtechie.com", "repository": "bryan/durable-pi-workspace",
+                          "keyring": f"{HOME}/.config/pi-durable/follower-keyring.gpg"},
+                         studio("{ }", "config.services.pi-durable.supervisor.follower"))
+
+    def test_refuses_malformed_options(self):
+        for settings in ('{ supervisor.follower.host = lib.mkForce "git.example/x"; }',
+                         '{ supervisor.follower.repository = lib.mkForce "bryan"; }',
+                         '{ supervisor.follower.repository = lib.mkForce "bryan/x y"; }',
+                         '{ supervisor.follower.keyring = lib.mkForce "relative/keyring.gpg"; }',
+                         '{ supervisor.follower.keyring = lib.mkForce "/a b/keyring.gpg"; }'):
+            with self.subTest(settings), self.assertRaisesRegex(AssertionError, "is not of type"):
+                studio(settings, "config.services.pi-durable.supervisor.follower")
+
+
+class CommitStatus(unittest.TestCase):
+    """`pi-durable-commit-status`, run with a stand-in `tea` in place of the store's (nothing reaches the forge)."""
+
+    # Records its arguments, directory, the directory's entries, environment and stdin outside that directory.
+    FAKE_TEA = """#!/bin/sh
+printf '%s\\n' "$@" > {record}/argv
+pwd -P > {record}/cwd
+ls -A > {record}/entries
+/usr/bin/env > {record}/env
+cat > {record}/stdin
+echo '{{"state":"success"}}'
+exit {status}
+"""
+    SHELL_OWN = ("PWD", "SHLVL", "_", "OLDPWD")
+
+    def record(self, tmp):
+        r = tmp / "record"
+        env = dict(line.split("=", 1) for line in (r / "env").read_text().splitlines())
+        return {"argv": (r / "argv").read_text().splitlines(), "cwd": (r / "cwd").read_text().strip(),
+                "entries": (r / "entries").read_text().splitlines(), "stdin": (r / "stdin").read_text(),
+                "env": {k: v for k, v in env.items() if k not in self.SHELL_OWN}}
+
+    def runnable(self, tmp, settings="{ }", status=0):
+        built = follower_tool("pi-durable-commit-status", settings)
+        tea = studio("{ }", "pkgs.tea.outPath") + "/bin/tea"
+        text = built.read_text()
+        self.assertEqual(1, text.count(tea), text)
+        fake = tmp / "tea"
+        (tmp / "record").mkdir(exist_ok=True)
+        fake.write_text(self.FAKE_TEA.format(record=str(tmp / "record"), status=status))
+        fake.chmod(0o755)
+        script = tmp / "pi-durable-commit-status"
+        script.write_text(text.replace(tea, str(fake)))
+        script.chmod(0o755)
+        return script
+
+    def run_it(self, tmp, script, *args, **env):
+        (tmp / "t").mkdir(exist_ok=True)
+        environment = {"HOME": str(tmp / "home"), "TMPDIR": str(tmp / "t"), "PATH": "/nonexistent", "SECRET": "x", **env}
+        return subprocess.run([str(script), *args], env=environment, text=True, capture_output=True, input="stdin", timeout=60)
+
+    def test_runs_tea_api_with_the_login_pinned_from_an_empty_directory_it_removes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory).resolve()
+            result = self.run_it(tmp, self.runnable(tmp), SHA)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual('{"state":"success"}\n', result.stdout)
+            record = self.record(tmp)
+            self.assertEqual(["api", "--login", "git.snowboardtechie.com", f"/repos/bryan/durable-pi-workspace/commits/{SHA}/status"], record["argv"])
+            self.assertEqual({"HOME": str(tmp / "home"), "PATH": "/usr/bin:/bin"}, record["env"])
+            self.assertEqual([], record["entries"])
+            self.assertTrue(record["cwd"].startswith(str(tmp / "t") + "/"), record["cwd"])
+            self.assertEqual("", record["stdin"])
+            self.assertEqual([], os.listdir(tmp / "t"))
+
+    def test_teas_failure_is_its_exit_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory).resolve()
+            result = self.run_it(tmp, self.runnable(tmp, status=3), SHA)
+            self.assertEqual(3, result.returncode)
+            self.assertEqual([], os.listdir(tmp / "t"))
+
+    def test_host_and_repository_follow_the_options(self):
+        settings = '{ supervisor.follower = { host = lib.mkForce "forge.example"; repository = lib.mkForce "someone/other"; }; }'
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory).resolve()
+            self.assertEqual(0, self.run_it(tmp, self.runnable(tmp, settings), SHA).returncode)
+            record = self.record(tmp)
+            self.assertEqual(["api", "--login", "forge.example", f"/repos/someone/other/commits/{SHA}/status"], record["argv"])
+
+    def test_refuses_anything_but_one_full_lower_case_commit_and_runs_nothing(self):
+        refused = [(), (SHA, SHA), (SHA[:39],), (SHA + "0",), (SHA.upper(),), ("g" + SHA[1:],), (SHA[:20] + " " + SHA[21:],),
+                   (SHA[:39] + "\n",), ("main",), ("",), ("--login",), ("../" + SHA[3:],)]
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory).resolve()
+            script = self.runnable(tmp)
+            for args in refused:
+                with self.subTest(args):
+                    result = self.run_it(tmp, script, *args)
+                    self.assertEqual(2, result.returncode)
+                    self.assertEqual("", result.stdout)
+                    self.assertEqual([], os.listdir(tmp / "record"))
+                    self.assertEqual([], os.listdir(tmp / "t"))
+
+
+class VerifyCommitSignature(unittest.TestCase):
+    """`pi-durable-verify-commit-signature` as git's gpg.program: real gpgv against throwaway keys in a scratch GNUPGHOME."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.scratch = tempfile.TemporaryDirectory()
+        cls.tmp = Path(cls.scratch.name).resolve()
+        gnupg = studio("{ }", "pkgs.gnupg.outPath")
+        cls.gpg, cls.gpgconf = f"{gnupg}/bin/gpg", f"{gnupg}/bin/gpgconf"
+        cls.homes = {}
+        for who in ("trusted", "other"):
+            home = cls.tmp / f"gnupg-{who}"
+            home.mkdir(mode=0o700)
+            cls.homes[who] = home
+            cls.gpg_run(who, "--quick-gen-key", f"{who} <{who}@example.invalid>", "ed25519", "sign", "never")
+        cls.keyring = cls.tmp / "keyring.gpg"
+        cls.keyring.write_bytes(cls.gpg_run("trusted", "--export", text=False).stdout)
+        cls.payload = b"tree 0000\n\npayload\n"
+        for who in cls.homes:
+            (cls.tmp / f"{who}.sig").write_bytes(cls.gpg_run(who, "--armor", "--detach-sign", input=cls.payload, text=False).stdout)
+        cls.wrapper = follower_tool("pi-durable-verify-commit-signature", f'{{ supervisor.follower.keyring = lib.mkForce "{cls.keyring}"; }}')
+
+    @classmethod
+    def tearDownClass(cls):
+        for home in cls.homes.values():
+            subprocess.run([cls.gpgconf, "--homedir", str(home), "--kill", "all"], capture_output=True)
+        cls.scratch.cleanup()
+
+    @classmethod
+    def gpg_run(cls, who, *args, input=None, text=True):
+        result = subprocess.run([cls.gpg, "--homedir", str(cls.homes[who]), "--batch", "--pinentry-mode", "loopback",
+                                 "--passphrase", "", *args], input=input, capture_output=True, text=text, timeout=120)
+        assert result.returncode == 0, result.stderr
+        return result
+
+    def verify(self, *args, payload=None, wrapper=None):
+        home, temp = self.tmp / "caller-home", self.tmp / "caller-tmp"
+        for d in (home, temp):
+            shutil.rmtree(d, ignore_errors=True)
+            d.mkdir()
+        result = subprocess.run([str(wrapper or self.wrapper), *args], input=self.payload if payload is None else payload,
+                                env={"HOME": str(home), "TMPDIR": str(temp), "PATH": "/usr/bin:/bin"}, capture_output=True, timeout=60)
+        # Never ~/.gnupg, and its private GNUPGHOME (with anything an agent would leave) is gone.
+        self.assertEqual([], os.listdir(home))
+        self.assertEqual([], os.listdir(temp))
+        return result
+
+    def test_a_good_signature_by_the_keyring_key_passes(self):
+        result = self.verify(*VERIFY_ARGS, str(self.tmp / "trusted.sig"), "-")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn(b"[GNUPG:] GOODSIG ", result.stdout)
+        self.assertIn(b"[GNUPG:] VALIDSIG ", result.stdout)
+
+    def test_a_changed_payload_or_another_key_fails(self):
+        changed = self.verify(*VERIFY_ARGS, str(self.tmp / "trusted.sig"), "-", payload=self.payload + b"x")
+        self.assertNotEqual(0, changed.returncode)
+        self.assertIn(b"[GNUPG:] BADSIG ", changed.stdout)
+        self.assertNotIn(b"GOODSIG", changed.stdout)
+        other = self.verify(*VERIFY_ARGS, str(self.tmp / "other.sig"), "-")
+        self.assertNotEqual(0, other.returncode)
+        self.assertNotIn(b"GOODSIG", other.stdout)
+        self.assertNotIn(b"VALIDSIG", other.stdout)
+
+    def test_refuses_any_other_invocation(self):
+        sig = str(self.tmp / "trusted.sig")
+        refused = [(), (*VERIFY_ARGS, sig), (*VERIFY_ARGS, sig, "-", "-"), ("--status-fd=1", "--keyid-format=long", "--verify", sig, "-"),
+                   ("--keyid-format=short", "--status-fd=1", "--verify", sig, "-"), ("--keyid-format=long", "--status-fd=2", "--verify", sig, "-"),
+                   ("--keyid-format=long", "--status-fd=1", "-bsau", sig, "-"), (*VERIFY_ARGS, "", "-"), (*VERIFY_ARGS, "--keyring=/x", "-"),
+                   (*VERIFY_ARGS, sig, sig), ("--version",)]
+        for args in refused:
+            with self.subTest(args):
+                result = self.verify(*args)
+                self.assertEqual(2, result.returncode)
+                self.assertEqual(b"", result.stdout)
+
+    def test_a_missing_or_unreadable_keyring_fails_closed_with_one_line(self):
+        missing = follower_tool("pi-durable-verify-commit-signature", f'{{ supervisor.follower.keyring = lib.mkForce "{self.tmp}/absent.gpg"; }}')
+        unreadable = self.tmp / "unreadable.gpg"
+        unreadable.write_bytes(self.keyring.read_bytes())
+        unreadable.chmod(0)
+        locked = follower_tool("pi-durable-verify-commit-signature", f'{{ supervisor.follower.keyring = lib.mkForce "{unreadable}"; }}')
+        for wrapper in (missing, locked):
+            with self.subTest(str(wrapper)):
+                result = self.verify(*VERIFY_ARGS, str(self.tmp / "trusted.sig"), "-", wrapper=wrapper)
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual(b"", result.stdout)
+                self.assertEqual(1, len(result.stderr.decode().splitlines()), result.stderr)
+
+    def test_git_verify_commit_accepts_it_as_gpg_program(self):
+        repo = self.tmp / "repo"
+        repo.mkdir()
+        git = ["/usr/bin/git", "-C", str(repo), "-c", "user.name=trusted", "-c", "user.email=trusted@example.invalid"]
+        env = {"HOME": str(self.tmp / "caller-home"), "PATH": "/usr/bin:/bin", "GNUPGHOME": str(self.homes["trusted"])}
+        (self.tmp / "caller-home").mkdir(exist_ok=True)
+        subprocess.run([*git, "init", "-q"], env=env, check=True)
+        signer = self.tmp / "sign.sh"
+        signer.write_text(f'#!/bin/sh\nexec {self.gpg} --batch --pinentry-mode loopback --passphrase "" "$@"\n')
+        signer.chmod(0o755)
+        subprocess.run([*git, "-c", f"gpg.program={signer}", "commit", "-q", "-S", "--allow-empty", "-m", "signed"], env=env, check=True)
+        env.pop("GNUPGHOME")
+        result = subprocess.run([*git, "-c", f"gpg.program={self.wrapper}", "verify-commit", "--raw", "HEAD"], env=env, capture_output=True, text=True)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("[GNUPG:] GOODSIG ", result.stderr)
+
+
 GIB = 1024 ** 3
 EXPORT_METRICS = ("pi_durable_supervisor_last_export_ok", "pi_durable_supervisor_last_export_timestamp_seconds")
 
