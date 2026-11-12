@@ -6,6 +6,7 @@ evaluated as it is on disk (a git flake hides untracked files).
 """
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -2118,13 +2119,22 @@ class NetAnchorRecoverySudo(unittest.TestCase):
 SUPERVISOR = f"{AGENTS}.pi-durable-supervisor.serviceConfig"
 SUPERVISOR_METRICS = f"{HOME}/.local/state/pi-durable/supervisor/metrics"
 SUPERVISOR_ALERTS = {"PiDurableWorkspaceVmDown": "critical", "PiDurableWorkspaceReconcileFailed": "warning",
-                     "PiDurableSupervisorSilent": "warning"}
+                     "PiDurableSupervisorSilent": "warning", "PiDurableWorkspaceHeld": "warning",
+                     "PiDurableWorkspaceHeldWorst": "critical", "PiDurableWorkspaceDiskHigh": "warning",
+                     "PiDurableWorkspaceExportFailing": "warning", "PiDurableWorkspaceExportStale": "warning"}
 SUPERVISOR_EXPRS = {
     "PiDurableWorkspaceVmDown": "pi_durable_supervisor_vm_up == 0",
     "PiDurableWorkspaceReconcileFailed": "pi_durable_supervisor_reconcile_ok == 0",
     "PiDurableSupervisorSilent": "(time() - pi_durable_supervisor_last_reconcile_timestamp_seconds) > 900",
+    "PiDurableWorkspaceHeld": "pi_durable_supervisor_held == 1",
+    "PiDurableWorkspaceHeldWorst": "pi_durable_supervisor_held_worst == 1",
+    "PiDurableWorkspaceDiskHigh": "pi_durable_supervisor_disk_used_bytes / (pi_durable_supervisor_disk_budget_bytes > 0) > 0.8",
+    "PiDurableWorkspaceExportFailing": "pi_durable_supervisor_last_export_ok == 0",
+    "PiDurableWorkspaceExportStale": "(time() - (pi_durable_supervisor_last_export_timestamp_seconds > 0)) > 180000",
 }
-SUPERVISOR_FOR = {"PiDurableWorkspaceVmDown": "5m", "PiDurableWorkspaceReconcileFailed": "10m", "PiDurableSupervisorSilent": "10m"}
+SUPERVISOR_FOR = {"PiDurableWorkspaceVmDown": "5m", "PiDurableWorkspaceReconcileFailed": "10m", "PiDurableSupervisorSilent": "10m",
+                  "PiDurableWorkspaceHeld": "5m", "PiDurableWorkspaceHeldWorst": "5m", "PiDurableWorkspaceDiskHigh": "15m",
+                  "PiDurableWorkspaceExportFailing": "2h", "PiDurableWorkspaceExportStale": "10m"}
 SUPERVISOR_OFF = "{ supervisor.enable = lib.mkForce false; }"
 
 
@@ -2141,12 +2151,25 @@ class Supervisor(unittest.TestCase):
             agent["ProgramArguments"],
         )
         # HOME and PATH only, no secret. PATH: the same Node (load-image.sh's
-        # bare `node`), Determinate Nix, Apple's container, the system tools.
+        # bare `node`), then the full Node 24's bin for apply's build_commands
+        # (`npm ci`, `npm run build`), Determinate Nix, Apple's container, the
+        # system tools.
+        full = studio("{ }", "pkgs.nodejs_24.outPath")
+        self.assertRegex(full, r"^/nix/store/[0-9a-z]{32}-nodejs-24\.[0-9.]+$")
         self.assertEqual(
-            {"HOME": HOME, "PATH": f"{node.removesuffix('/node')}:/nix/var/nix/profiles/default/bin:{SYSTEM_PATH}"},
+            {"HOME": HOME, "PATH": f"{node.removesuffix('/node')}:{full}/bin:/nix/var/nix/profiles/default/bin:{SYSTEM_PATH}"},
             agent["EnvironmentVariables"],
         )
         self.assertNotIn("homebrew", agent["EnvironmentVariables"]["PATH"])
+        # A bare `node` is the slim Node's (the first entry); npm and npx are
+        # only in the full Node's bin, whose own node links to the same binary.
+        entries = agent["EnvironmentVariables"]["PATH"].split(":")
+        self.assertEqual(node, entries[0] + "/node")
+        if Path(full).exists():
+            self.assertEqual(Path(node).resolve(), (Path(full) / "bin" / "node").resolve())
+            for tool in ("npm", "npx"):
+                self.assertTrue((Path(full) / "bin" / tool).exists(), tool)
+                self.assertFalse((Path(node).parent / tool).exists(), tool)
         self.assertIs(True, agent["RunAtLoad"])
         self.assertIs(True, agent["KeepAlive"])
         self.assertEqual("/tmp/pi-durable-supervisor.log", agent["StandardOutPath"])
@@ -2184,6 +2207,10 @@ class Supervisor(unittest.TestCase):
         self.assertNotIn(f"--collector.textfile.directory={SUPERVISOR_METRICS}", moved)
 
 
+GIB = 1024 ** 3
+EXPORT_METRICS = ("pi_durable_supervisor_last_export_ok", "pi_durable_supervisor_last_export_timestamp_seconds")
+
+
 class SupervisorAlerts(unittest.TestCase):
     """The supervisor's alerts, through Studio's own promtool, on series shaped like its metrics file."""
 
@@ -2196,17 +2223,27 @@ class SupervisorAlerts(unittest.TestCase):
 
     def healthy(self, minutes=120):
         # A reconcile stamps every 5 minutes; the stamp tracks time() in steps.
+        # Not held, half the disk budget used, and an export that succeeded at
+        # the start (a day's exports would move it on; it never goes stale here).
         stamps = " ".join(str(60 * (m - m % 5)) for m in range(minutes))
         return [self.series("pi_durable_supervisor_vm_up", f"1x{minutes}", vm=True),
                 self.series("pi_durable_supervisor_reconcile_ok", f"1x{minutes}"),
-                self.series("pi_durable_supervisor_last_reconcile_timestamp_seconds", stamps)]
+                self.series("pi_durable_supervisor_last_reconcile_timestamp_seconds", stamps),
+                self.series("pi_durable_supervisor_held", f"0x{minutes}"),
+                self.series("pi_durable_supervisor_held_worst", f"0x{minutes}"),
+                self.series("pi_durable_supervisor_disk_used_bytes", f"{GIB}x{minutes}"),
+                self.series("pi_durable_supervisor_disk_budget_bytes", f"{2 * GIB}x{minutes}"),
+                self.series("pi_durable_supervisor_last_export_ok", f"1x{minutes}"),
+                self.series("pi_durable_supervisor_last_export_timestamp_seconds", f"60x{minutes}")]
 
     def replaced(self, name, values):
         return [x for x in self.healthy() if not x["series"].startswith(name + "{")] + [self.series(name, values, vm=name.endswith("vm_up"))]
 
-    def firing(self, alert, value, labels=None, vm=False):
+    def firing(self, alert, value, labels=None, vm=False, shown=None):
+        # `shown`: how a `{{ $value | <humanize> }}` renders, for a rule that formats its value.
         _, _, by_name = NetAnchorAlerts.rules()
         def fill(text):
+            text = re.sub(r"\{\{ \$value \| \w+ \}\}", lambda _: shown, text) if shown is not None else text
             return text.replace("{{ $labels.workspace }}", "sampler").replace("{{ $labels.vm }}", self.VM).replace("{{ $value }}", value)
         own = {"workspace": "sampler", **({"vm": self.VM} if vm else {})}
         return [{"exp_labels": {**(self.TARGET if labels is None else labels), **({} if labels == {} else own), "severity": SUPERVISOR_ALERTS[alert]},
@@ -2238,7 +2275,10 @@ class SupervisorAlerts(unittest.TestCase):
                 self.assertIn("OPERATIONS.md §11", text)
                 self.assertIn("supervisor-main.js status", text)
         self.assertIn("{{ $labels.vm }}", by_name["PiDurableWorkspaceVmDown"]["annotations"]["summary"])
-        # Only the metrics the supervisor writes today: no update or disk-budget rule yet.
+        self.assertIn("release", by_name["PiDurableWorkspaceHeld"]["annotations"]["description"])
+        self.assertIn("release", by_name["PiDurableWorkspaceHeldWorst"]["annotations"]["description"])
+        self.assertIn("{{ $value", by_name["PiDurableWorkspaceDiskHigh"]["annotations"]["summary"])
+        # Every rule reading the supervisor's metrics is one of these.
         names = [r["alert"] for g in json.loads(Path(rule_file).read_text())["groups"] for r in g["rules"]
                  if "pi_durable_supervisor_" in r["expr"]]
         self.assertEqual(sorted(SUPERVISOR_ALERTS), sorted(names))
@@ -2290,6 +2330,64 @@ class SupervisorAlerts(unittest.TestCase):
         self.promtool_test(inputs, "PiDurableSupervisorSilent",
                            ("30m", []),
                            ("36m", self.firing("PiDurableSupervisorSilent", "1560")))
+
+    def test_a_held_workspace_warns_and_the_worst_state_is_critical(self):
+        held = self.replaced("pi_durable_supervisor_held", "0x10 1x40 0x69")
+        self.promtool_test(held, "PiDurableWorkspaceHeld",
+                           ("14m", []),
+                           ("16m", self.firing("PiDurableWorkspaceHeld", "1")),
+                           ("55m", []))
+        self.promtool_test(held, "PiDurableWorkspaceHeldWorst", ("16m", []), ("40m", []))
+        worst = [x for x in held if not x["series"].startswith("pi_durable_supervisor_held_worst{")] + [
+            self.series("pi_durable_supervisor_held_worst", "0x10 1x40 0x69")]
+        self.promtool_test(worst, "PiDurableWorkspaceHeldWorst",
+                           ("14m", []),
+                           ("16m", self.firing("PiDurableWorkspaceHeldWorst", "1")),
+                           ("55m", []))
+
+    def test_disk_over_80_percent_of_the_budget_warns(self):
+        # 1.75 of 2 GiB: 87.5%.
+        inputs = self.replaced("pi_durable_supervisor_disk_used_bytes", f"{GIB}x10 {7 * GIB // 4}x40 {GIB}x69")
+        self.promtool_test(inputs, "PiDurableWorkspaceDiskHigh",
+                           ("24m", []),
+                           ("26m", self.firing("PiDurableWorkspaceDiskHigh", "0.875", shown="87.5%")),
+                           ("55m", []))
+        # Exactly 80% is not over it.
+        self.promtool_test(self.replaced("pi_durable_supervisor_disk_used_bytes", f"{8 * GIB // 5}x119"),
+                           "PiDurableWorkspaceDiskHigh", ("60m", []))
+
+    def test_disk_unmeasured_or_without_a_budget_raises_nothing(self):
+        # -1: not measured. A budget of 0: no definition read yet.
+        self.promtool_test(self.replaced("pi_durable_supervisor_disk_used_bytes", "-1x119"), "PiDurableWorkspaceDiskHigh", ("60m", []))
+        self.promtool_test(self.replaced("pi_durable_supervisor_disk_budget_bytes", "0x119"), "PiDurableWorkspaceDiskHigh", ("60m", []))
+
+    def test_a_failing_export_warns_after_two_hours(self):
+        # One failure the hourly retry fixes: nothing.
+        self.promtool_test(self.replaced("pi_durable_supervisor_last_export_ok", "1x10 0x60 1x49"),
+                           "PiDurableWorkspaceExportFailing", ("69m", []), ("100m", []))
+        inputs = self.replaced("pi_durable_supervisor_last_export_ok", "1x10 0x200")
+        self.promtool_test(inputs, "PiDurableWorkspaceExportFailing",
+                           ("129m", []),
+                           ("131m", self.firing("PiDurableWorkspaceExportFailing", "0")))
+        # None yet (-1) is not a failure.
+        self.promtool_test(self.replaced("pi_durable_supervisor_last_export_ok", "-1x200"),
+                           "PiDurableWorkspaceExportFailing", ("190m", []))
+
+    def test_an_export_over_50_hours_old_warns_only_once_there_has_been_one(self):
+        # The last success at 60 s; 50 hours (180000 s) later it is stale, firing 10 minutes after.
+        inputs = self.replaced("pi_durable_supervisor_last_export_timestamp_seconds", "60x3100")
+        self.promtool_test(inputs, "PiDurableWorkspaceExportStale",
+                           ("3000m", []),
+                           ("3012m", self.firing("PiDurableWorkspaceExportStale", "180660", shown="2d 2h 11m 0s")))
+        # 0: none yet. However long, nothing (no export a day after the VM came up is not alerted).
+        self.promtool_test(self.replaced("pi_durable_supervisor_last_export_timestamp_seconds", "0x3100"),
+                           "PiDurableWorkspaceExportStale", ("3050m", []))
+
+    def test_a_workspace_without_an_export_raises_no_export_alert(self):
+        # A definition with no `export` writes none of the export metrics.
+        inputs = [x for x in self.healthy(3100) if not x["series"].startswith(EXPORT_METRICS)]
+        for alert in ("PiDurableWorkspaceExportFailing", "PiDurableWorkspaceExportStale"):
+            self.promtool_test(inputs, alert, ("200m", []), ("3050m", []))
 
     def test_no_file_yet_raises_nothing(self):
         # Between update-system and supervisor.json there is no file: expected, not an alert.

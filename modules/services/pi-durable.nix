@@ -388,6 +388,76 @@
             description = "The supervisor reconciles each workspace every 5 minutes, and none of workspace {{ $labels.workspace }}'s has finished for over 15 minutes: the supervisor isn't running (no supervisor.json, another one holding the lock, or a crash), is stuck (an image build can hold it up to 30 minutes), or every reconcile stops early (a refused definition or an unreadable VM list, which also raises PiDurableWorkspaceReconcileFailed). Its VMs keep running, but nothing checks, restarts or renews their grants (a grant lasts 24 hours). A workspace dropped from supervisor.json leaves its file behind: remove pi-durable-supervisor-<workspace>.prom from the metrics directory. ${supervisorRunbook}";
           };
         }
+        {
+          alert = "PiDurableWorkspaceHeld";
+          # Set by a failed update and cleared only by `release`, so a hold
+          # never ends by itself; 5 minutes only lets a release just made land
+          # in the next reconcile's file.
+          expr = "pi_durable_supervisor_held == 1";
+          "for" = "5m";
+          labels = { severity = "warning"; };
+          annotations = {
+            summary = "Workspace {{ $labels.workspace }} is held after a failed update";
+            description = "A build applied to workspace {{ $labels.workspace }} failed probation or its VM couldn't be started, so the supervisor rolled it back and held the workspace: no apply is taken until `supervisor-main.js release {{ $labels.workspace }}`. Its grants are still renewed and its health watched. `status` gives why and since when, and the events (probation-failed, rolled-back, workspace-held) name the build; fix the cause, then release. If PiDurableWorkspaceHeldWorst fires too, no build was brought to pass. ${supervisorRunbook}";
+          };
+        }
+        {
+          alert = "PiDurableWorkspaceHeldWorst";
+          # The worst state: held with no build that passed (no last good
+          # build, or its rollback failed probation too). The VM is left as
+          # it is, so the page may or may not still answer.
+          expr = "pi_durable_supervisor_held_worst == 1";
+          "for" = "5m";
+          labels = { severity = "critical"; };
+          annotations = {
+            summary = "Workspace {{ $labels.workspace }} is held with no build that passes";
+            description = "An update of workspace {{ $labels.workspace }} failed and there was no last good build to roll back to, or the rollback failed its probation too. The workspace is held in the worst state with its VM left as it is, not stopped: it may still serve its page, or nothing. Nothing is retried until someone looks: `status` gives why, the events (probation-failed, workspace-held with worst) the builds. Fix the cause, then `supervisor-main.js release {{ $labels.workspace }}` and apply a build that passes. ${supervisorRunbook}";
+          };
+        }
+        {
+          alert = "PiDurableWorkspaceDiskHigh";
+          # used / budget, only where the budget is above 0 (0: no definition
+          # read yet). Used is -1 when not measured, which never exceeds 0.8.
+          # Measured every 5-minute reconcile; nothing is ever deleted.
+          expr = "pi_durable_supervisor_disk_used_bytes / (pi_durable_supervisor_disk_budget_bytes > 0) > 0.8";
+          "for" = "15m";
+          labels = { severity = "warning"; };
+          annotations = {
+            summary = "Workspace {{ $labels.workspace }}'s volumes use {{ $value | humanizePercentage }} of its disk budget";
+            description = "For 15 minutes the volumes of workspace {{ $labels.workspace }} have used over 80% of its definition's disk_budget_bytes, measured on the host with du. Nothing enforces the budget and the supervisor deletes nothing. `status` lists each volume's use and any unclaimed pi-{{ $labels.workspace }}-… volumes (pi_durable_supervisor_unclaimed_volumes counts them), which no VM uses and may be removed by hand once checked. Otherwise trim the service's records or raise the budget in the definition. ${supervisorRunbook}";
+          };
+        }
+        {
+          alert = "PiDurableWorkspaceExportFailing";
+          # 0 only after a failed export (1 success, -1 none yet). A failure
+          # is retried no sooner than an hour later, so 2 hours is at least
+          # one retry failing too. A workspace with no `export` writes none
+          # of the export metrics, and absence is never alerted.
+          expr = "pi_durable_supervisor_last_export_ok == 0";
+          "for" = "2h";
+          labels = { severity = "warning"; };
+          annotations = {
+            summary = "Workspace {{ $labels.workspace }}'s record export has been failing for over 2 hours";
+            description = "The supervisor's last record export of workspace {{ $labels.workspace }} failed, and the hourly retries since have not succeeded for 2 hours. The records exist only on the VM's volume, which is in no backup, until an export succeeds; the last good copy is still in exports/{{ $labels.workspace }}/current. The export-failed event's why, and `status`'s export_failure, give the cause (the VM unhealthy, its export socket missing, a probation in progress, a bound passed, nothing exported). Run one by hand with `supervisor-main.js export {{ $labels.workspace }}` once fixed. Runbook §11.6. ${supervisorRunbook}";
+          };
+        }
+        {
+          alert = "PiDurableWorkspaceExportStale";
+          # The last successful export's start, 0 until there has been one
+          # (`> 0` drops that, so a workspace that never exported is not
+          # stale here). Exports run daily by default; 50 hours is two missed
+          # with room. Missing entirely for a workspace without `export`.
+          # Not alerted: no export yet a day after the workspace's VM came
+          # up. Nothing in the metrics says when that was (the VM's start
+          # isn't written), so a rule would be a guess; `status` shows it.
+          expr = "(time() - (pi_durable_supervisor_last_export_timestamp_seconds > 0)) > 180000";
+          "for" = "10m";
+          labels = { severity = "warning"; };
+          annotations = {
+            summary = "Workspace {{ $labels.workspace }}'s last successful record export is {{ $value | humanizeDuration }} old";
+            description = "No record export of workspace {{ $labels.workspace }} has succeeded for over 50 hours, though exports run every day by default (the definition's export.every_hours). Either they fail (PiDurableWorkspaceExportFailing fires too after 2 hours) or none is being attempted: the supervisor isn't reconciling (PiDurableSupervisorSilent), the VM isn't healthy, or a probation is recorded. Until one succeeds the newest records exist only on the VM's volume, which is in no backup. Runbook §11.6. ${supervisorRunbook}";
+          };
+        }
       ];
 
       # No secret: only what finds node, git, claude, hermes, pi-bots (the
@@ -1299,14 +1369,18 @@
               ];
               # HOME for its config, state, grants and sockets. PATH: the same
               # Node first (nix/load-image.sh runs a bare `node` for its
-              # Mac-binary check and digest read), Determinate Nix (`nix eval`,
-              # `nix build`), Apple's `container` (/usr/local/bin), then the
-              # system tools load-image.sh uses (bash, mktemp, dirname, rm,
-              # cat). No Homebrew. No secret: placeholders reach `container`
-              # by its environment, never this plist.
+              # Mac-binary check and digest read), then the full nodejs_24's
+              # bin for `npm` and `npx`, which the slim Node lacks: `apply`'s
+              # build_commands are `npm ci` and `npm run build` (its own `node`
+              # links to the same slim binary, so a bare `node` is that Mac
+              # Node 24 either way). Then Determinate Nix (`nix eval`, `nix
+              # build`), Apple's `container` (/usr/local/bin), then the system
+              # tools load-image.sh uses (bash, mktemp, dirname, rm, cat). No
+              # Homebrew. No secret: placeholders reach `container` by its
+              # environment, never this plist.
               EnvironmentVariables = {
                 HOME = home;
-                PATH = "${lib.makeBinPath [ pkgs.nodejs-slim_24 ]}:/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+                PATH = "${lib.makeBinPath [ pkgs.nodejs-slim_24 pkgs.nodejs_24 ]}:/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
               };
               RunAtLoad = true;
               KeepAlive = true;
