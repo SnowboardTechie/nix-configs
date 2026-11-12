@@ -49,14 +49,17 @@ STUDIO_PF_RULES = (
 SANDBOX_PF_RULES_WITHOUT_PLANNING = STUDIO_PF_RULES.replace(FORGE_BROKER_PF_RULE, "")
 # The planning service network's anchor (durable-pi-workspace#48): the network
 # reaches the forge broker (8894) and the VM broker (8895) on its gateway, then
+# the model proxy (8892, `planning.modelProxy`, durable-pi-workspace#443), then
 # the workspace relay leg's probe port (8896, durable-pi-workspace#421), and
 # nothing else.
 PLANNING_PF_ANCHOR = "com.apple/101.pi-durable-planning"
+PLANNING_MODEL_PROXY_PF_RULE = "pass in quick inet proto tcp from { 192.168.129.0/24 } to 192.168.129.1 port 8892 flags S/SA keep state\n"
 WORKSPACE_RELAY_PF_RULE = "pass in quick inet proto tcp from { 192.168.129.0/24 } to 192.168.129.1 port 8896 flags S/SA keep state\n"
 PLANNING_PF_RULES = (
     "# Pi Durable planning service network isolation: nix-configs modules/services/pi-durable.nix\n"
     "pass in quick inet proto tcp from { 192.168.129.0/24 } to 192.168.129.1 port 8894 flags S/SA keep state\n"
     "pass in quick inet proto tcp from { 192.168.129.0/24 } to 192.168.129.1 port 8895 flags S/SA keep state\n"
+    + PLANNING_MODEL_PROXY_PF_RULE
     + WORKSPACE_RELAY_PF_RULE +
     "block return in quick on ! lo0 inet from { 192.168.129.0/24 } to any\n"
     "block return in quick on ! lo0 inet6 from fdd2:4a0c:729f:fb6::/64 to any\n"
@@ -109,12 +112,12 @@ PF_RULES = f'(builtins.head (builtins.filter (lib.hasSuffix "-pi-durable-sgg.pf"
 PLANNING_PF_DAEMON = "config.launchd.daemons.pi-durable-planning-pf.serviceConfig"
 PLANNING_PF_RULES_FILE = f'(builtins.head (builtins.filter (lib.hasSuffix "-pi-durable-planning.pf") {PLANNING_PF_DAEMON}.ProgramArguments))'
 # Planning on VMs off: the forge broker, the VM broker and the planning service.
-NO_PLANNING = "forgeBroker.enable = lib.mkForce false; vmBroker.enable = lib.mkForce false; planning.enable = lib.mkForce false;"
+NO_PLANNING = "forgeBroker.enable = lib.mkForce false; vmBroker.enable = lib.mkForce false; planning.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false;"
 # Studio sets the commissioning inputs, so a scenario forces the ones it is about.
 ENABLED = (
     "{ enable = lib.mkForce true; proxy = { network = lib.mkForce null; listenAddress = lib.mkForce null; allowedClients = lib.mkForce [ ]; }; "
     "page.tailscaleHttpsPort = lib.mkForce null; sampler.enable = lib.mkForce false; modelProxy.enable = lib.mkForce false; "
-    f"githubProxy.enable = lib.mkForce false; replayProxy.enable = lib.mkForce false; {NO_PLANNING} }}"
+    f"githubProxy.enable = lib.mkForce false; replayProxy.enable = lib.mkForce false; {NO_PLANNING} supervisor.enable = lib.mkForce false; }}"
 )
 PROXY = (
     '{ enable = lib.mkForce true; proxy = { listenAddress = lib.mkForce "192.168.128.1"; '
@@ -148,6 +151,7 @@ class StudioAsCommissioned(unittest.TestCase):
         self.assertIn("8790 http://127.0.0.1:8790", s["activation"])
         self.assertIn("pi-durable-sampler", s["agents"])
         self.assertIn("8791 http://127.0.0.1:8791", s["activation"])
+        self.assertIn("pi-durable-supervisor", s["agents"])
         proxy_config = studio("{ }", "builtins.readFile (builtins.elemAt config.launchd.user.agents.pi-durable-proxy.serviceConfig.ProgramArguments 3)")
         self.assertIn("Listen 192.168.128.1\n", proxy_config)
         self.assertIn("Allow 192.168.128.0/24\n", proxy_config)
@@ -349,11 +353,11 @@ class ModelProxy(unittest.TestCase):
         self.assertNotRegex(activation, r"socketfilterfw --add /opt/homebrew/\S*node")
 
     def test_disabled_declares_no_agent_or_pf_port(self):
-        s = studio("{ modelProxy.enable = lib.mkForce false; }", SUMMARY)
+        s = studio("{ modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; }", SUMMARY)
         self.assertEqual([], s["failed"])
         self.assertNotIn("pi-durable-model-proxy", s["agents"])
         # The Node exception stays for the write proxy (GithubProxy covers it).
-        rules = studio("{ modelProxy.enable = lib.mkForce false; }", f"builtins.readFile {PF_RULES}")
+        rules = studio("{ modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; }", f"builtins.readFile {PF_RULES}")
         self.assertEqual(STUDIO_PF_RULES.replace(STUDIO_PF_RULES.splitlines(True)[2], ""), rules)
 
     def test_port_follows_the_option_into_pf(self):
@@ -423,7 +427,7 @@ class GithubProxy(unittest.TestCase):
     def test_one_firewall_exception_for_the_shared_node_while_either_proxy_runs(self):
         for name, settings in {
             "both": "{ }",
-            "write proxy only": "{ modelProxy.enable = lib.mkForce false; }",
+            "write proxy only": "{ modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; }",
             "model proxy only": "{ githubProxy.enable = lib.mkForce false; }",
         }.items():
             with self.subTest(name):
@@ -448,15 +452,15 @@ class GithubProxy(unittest.TestCase):
         rules = studio("{ githubProxy.port = lib.mkForce 9893; }", f"builtins.readFile {PF_RULES}")
         self.assertEqual(STUDIO_PF_RULES.replace("port 8893 ", "port 9893 "), rules)
         # Only the write proxy: the anchor passes its port alone beside tinyproxy's.
-        rules = studio("{ modelProxy.enable = lib.mkForce false; }", f"builtins.readFile {PF_RULES}")
+        rules = studio("{ modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; }", f"builtins.readFile {PF_RULES}")
         self.assertEqual(STUDIO_PF_RULES.replace(STUDIO_PF_RULES.splitlines(True)[2], ""), rules)
 
     def test_refuses_without_the_sandbox_proxy_or_on_a_clashing_port(self):
         accepted, model_off_same_port, no_listen, disabled, tiny, model, page, sampler = failures(
             "{ }",
-            "{ modelProxy.enable = lib.mkForce false; githubProxy.port = lib.mkForce 8892; }",
-            "{ proxy.listenAddress = lib.mkForce null; modelProxy.enable = lib.mkForce false; }",
-            "{ enable = lib.mkForce false; modelProxy.enable = lib.mkForce false; }",
+            "{ modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; githubProxy.port = lib.mkForce 8892; }",
+            "{ proxy.listenAddress = lib.mkForce null; modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; }",
+            "{ enable = lib.mkForce false; modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; }",
             "{ githubProxy.port = lib.mkForce 8888; }",
             "{ githubProxy.port = lib.mkForce 8892; }",
             "{ githubProxy.port = lib.mkForce 8790; }",
@@ -540,8 +544,8 @@ class ReplayProxy(unittest.TestCase):
             "{ }",
             *[f'{{ replayProxy.allowedDomains = lib.mkForce [ "registry.npmjs.org" "{d}" ]; }}' for d in github + inexact],
             *[f"{{ replayProxy.port = lib.mkForce {port}; }}" for port in clashing],
-            "{ proxy.listenAddress = lib.mkForce null; modelProxy.enable = lib.mkForce false; githubProxy.enable = lib.mkForce false; }",
-            "{ enable = lib.mkForce false; modelProxy.enable = lib.mkForce false; githubProxy.enable = lib.mkForce false; }",
+            "{ proxy.listenAddress = lib.mkForce null; modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; githubProxy.enable = lib.mkForce false; }",
+            "{ enable = lib.mkForce false; modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; githubProxy.enable = lib.mkForce false; }",
         )
         self.assertEqual([], results[0])
         results = iter(results[1:])
@@ -577,7 +581,7 @@ class ReplayProxy(unittest.TestCase):
 
 SAMPLER_ONLY = (
     "{ enable = lib.mkForce false; modelProxy.enable = lib.mkForce false; githubProxy.enable = lib.mkForce false; "
-    f"replayProxy.enable = lib.mkForce false; {NO_PLANNING} "
+    f"replayProxy.enable = lib.mkForce false; {NO_PLANNING} supervisor.enable = lib.mkForce false; "
     "sampler = { enable = lib.mkForce true; tailscaleHttpsPort = lib.mkForce null; }; }"
 )
 
@@ -737,7 +741,7 @@ class ForgeBroker(unittest.TestCase):
                     8790: "pages' ports", 8791: "pages' ports", 8792: "pages' ports"}
         accepted, model_off_same_port, no_listen, disabled, *ports = failures(
             "{ }",
-            "{ modelProxy.enable = lib.mkForce false; forgeBroker.port = lib.mkForce 8892; }",
+            "{ modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; forgeBroker.port = lib.mkForce 8892; }",
             "{ proxy.listenAddress = lib.mkForce null; }",
             "{ enable = lib.mkForce false; }",
             *[f"{{ forgeBroker.port = lib.mkForce {port}; }}" for port in clashing],
@@ -855,6 +859,7 @@ class Planning(unittest.TestCase):
         lines = parsed.stdout.splitlines()
         forge = "pass in quick inet proto tcp from 192.168.129.0/24 to 192.168.129.1 port = 8894 flags S/SA keep state"
         vm = "pass in quick inet proto tcp from 192.168.129.0/24 to 192.168.129.1 port = 8895 flags S/SA keep state"
+        model = "pass in quick inet proto tcp from 192.168.129.0/24 to 192.168.129.1 port = 8892 flags S/SA keep state"
         relay = "pass in quick inet proto tcp from 192.168.129.0/24 to 192.168.129.1 port = 8896 flags S/SA keep state"
         blocking = "block return in quick on ! lo0 inet from 192.168.129.0/24 to any"
         link_local = {
@@ -862,12 +867,13 @@ class Planning(unittest.TestCase):
             for bridge in BRIDGES for proto in ("tcp", "udp")
         }
         self.assertEqual(
-            {forge, vm, relay, blocking, "block return in quick on ! lo0 inet6 from fdd2:4a0c:729f:fb6::/64 to any"} | link_local,
+            {forge, vm, model, relay, blocking, "block return in quick on ! lo0 inet6 from fdd2:4a0c:729f:fb6::/64 to any"} | link_local,
             set(lines),
         )
         self.assertEqual(len(lines), len(set(lines)))
         self.assertLess(lines.index(forge), lines.index(blocking))
         self.assertLess(lines.index(vm), lines.index(blocking))
+        self.assertLess(lines.index(model), lines.index(blocking))
         self.assertLess(lines.index(relay), lines.index(blocking))
 
     def test_activation_and_a_root_daemon_load_it_with_its_own_token(self):
@@ -978,8 +984,8 @@ class WorkspaceRelayPorts(unittest.TestCase):
         self.assertEqual(1, planning_rules.count(WORKSPACE_RELAY_PF_RULE))
         # After the brokers' passes, before every block.
         lines = planning_rules.splitlines(True)
-        self.assertEqual(WORKSPACE_RELAY_PF_RULE, lines[3])
-        self.assertTrue(lines[4].startswith("block return "))
+        self.assertEqual(WORKSPACE_RELAY_PF_RULE, lines[4])
+        self.assertTrue(lines[5].startswith("block return "))
         sandbox_rules = studio("{ }", f"builtins.readFile {PF_RULES}")
         self.assertEqual(STUDIO_PF_RULES, sandbox_rules)
         self.assertNotIn("8896", sandbox_rules)
@@ -1030,7 +1036,7 @@ class PlanningNodeFirewall(unittest.TestCase):
         node = studio("{ }", "builtins.head config.launchd.user.agents.pi-durable-forge-broker.serviceConfig.ProgramArguments")
         for name, settings in {
             "all": "{ }",
-            "the brokers only": "{ modelProxy.enable = lib.mkForce false; githubProxy.enable = lib.mkForce false; }",
+            "the brokers only": "{ modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; githubProxy.enable = lib.mkForce false; }",
             "the proxies only": f"{{ {NO_PLANNING} }}",
         }.items():
             with self.subTest(name):
@@ -2106,6 +2112,295 @@ class NetAnchorRecoverySudo(unittest.TestCase):
             path.write_text(studio("{ }", SUDOERS))
             result = subprocess.run(["/usr/sbin/visudo", "-c", "-f", str(path)], text=True, capture_output=True)
             self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+
+
+SUPERVISOR = f"{AGENTS}.pi-durable-supervisor.serviceConfig"
+SUPERVISOR_METRICS = f"{HOME}/.local/state/pi-durable/supervisor/metrics"
+SUPERVISOR_ALERTS = {"PiDurableWorkspaceVmDown": "critical", "PiDurableWorkspaceReconcileFailed": "warning",
+                     "PiDurableSupervisorSilent": "warning"}
+SUPERVISOR_EXPRS = {
+    "PiDurableWorkspaceVmDown": "pi_durable_supervisor_vm_up == 0",
+    "PiDurableWorkspaceReconcileFailed": "pi_durable_supervisor_reconcile_ok == 0",
+    "PiDurableSupervisorSilent": "(time() - pi_durable_supervisor_last_reconcile_timestamp_seconds) > 900",
+}
+SUPERVISOR_FOR = {"PiDurableWorkspaceVmDown": "5m", "PiDurableWorkspaceReconcileFailed": "10m", "PiDurableSupervisorSilent": "10m"}
+SUPERVISOR_OFF = "{ supervisor.enable = lib.mkForce false; }"
+
+
+class Supervisor(unittest.TestCase):
+    """The workspace supervisor (durable-pi-workspace#443): one agent on the proxies' Node, its metrics scraped."""
+
+    def test_agent_runs_the_contract_command_on_nix_node_with_nix_and_container_on_path(self):
+        agent = studio("{ }", SUPERVISOR)
+        node = studio("{ }", "builtins.head config.launchd.user.agents.pi-durable-model-proxy.serviceConfig.ProgramArguments")
+        self.assertRegex(node, r"^/nix/store/[0-9a-z]{32}-nodejs-slim-24\.[0-9.]+/bin/node$")
+        self.assertEqual("org.nixos.pi-durable-supervisor", agent["Label"])
+        self.assertEqual(
+            [node, f"{DEPLOYMENT}/dist/workspaces/proxies/src/supervisor-main.js", "run", "--config", f"{HOME}/.config/pi-durable/supervisor.json"],
+            agent["ProgramArguments"],
+        )
+        # HOME and PATH only, no secret. PATH: the same Node (load-image.sh's
+        # bare `node`), Determinate Nix, Apple's container, the system tools.
+        self.assertEqual(
+            {"HOME": HOME, "PATH": f"{node.removesuffix('/node')}:/nix/var/nix/profiles/default/bin:{SYSTEM_PATH}"},
+            agent["EnvironmentVariables"],
+        )
+        self.assertNotIn("homebrew", agent["EnvironmentVariables"]["PATH"])
+        self.assertIs(True, agent["RunAtLoad"])
+        self.assertIs(True, agent["KeepAlive"])
+        self.assertEqual("/tmp/pi-durable-supervisor.log", agent["StandardOutPath"])
+        self.assertEqual("/tmp/pi-durable-supervisor.error.log", agent["StandardErrorPath"])
+        for key in ("UserName", "WatchPaths", "Sockets", "WorkingDirectory", "ExitTimeOut"):
+            self.assertIsNone(agent[key], key)
+
+    def test_loopback_only_so_no_firewall_exception_or_repin_of_its_own(self):
+        activation = studio("{ }", "config.system.activationScripts.extraActivation.text + config.system.activationScripts.postActivation.text")
+        self.assertNotIn("pi-durable-supervisor", activation)
+        self.assertNotIn("supervisor-main", activation)
+        # Alone (no gateway listener), the shared Node gets no exception.
+        alone = f"{{ modelProxy.enable = lib.mkForce false; githubProxy.enable = lib.mkForce false; {NO_PLANNING} }}"
+        s = studio(alone, SUMMARY)
+        self.assertEqual([], s["failed"])
+        self.assertIn("pi-durable-supervisor", s["agents"])
+        self.assertNotIn(NODE_FIREWALL, s["activation"])
+
+    def test_disabled_declares_no_agent_scrape_or_rules(self):
+        s = studio(SUPERVISOR_OFF, SUMMARY)
+        self.assertEqual([], s["failed"])
+        self.assertNotIn("pi-durable-supervisor", s["agents"])
+        self.assertNotIn(SUPERVISOR_METRICS, studio(SUPERVISOR_OFF, f"toString {AGENTS}.node-exporter.serviceConfig.ProgramArguments"))
+        self.assertFalse(set(SUPERVISOR_ALERTS) & set(studio(SUPERVISOR_OFF, 'map (r: r.alert or "") config.services.monitoring.extraAlertRules')))
+        # Nothing else moves: both anchors as with it on.
+        self.assertEqual(STUDIO_PF_RULES, studio(SUPERVISOR_OFF, f"builtins.readFile {PF_RULES}"))
+        self.assertEqual(PLANNING_PF_RULES, studio(SUPERVISOR_OFF, f"builtins.readFile {PLANNING_PF_RULES_FILE}"))
+
+    def test_its_metrics_directory_is_scraped_and_follows_the_option(self):
+        args = studio("{ }", f"{AGENTS}.node-exporter.serviceConfig.ProgramArguments")
+        self.assertEqual(1, args.count(f"--collector.textfile.directory={SUPERVISOR_METRICS}"))
+        self.assertEqual(SUPERVISOR_METRICS, studio("{ }", "config.services.pi-durable.supervisor.metricsDir"))
+        moved = studio('{ supervisor.metricsDir = lib.mkForce "/Users/bryan/sup-metrics"; }', f"{AGENTS}.node-exporter.serviceConfig.ProgramArguments")
+        self.assertIn("--collector.textfile.directory=/Users/bryan/sup-metrics", moved)
+        self.assertNotIn(f"--collector.textfile.directory={SUPERVISOR_METRICS}", moved)
+
+
+class SupervisorAlerts(unittest.TestCase):
+    """The supervisor's alerts, through Studio's own promtool, on series shaped like its metrics file."""
+
+    TARGET = {"instance": "localhost:9100", "job": "node_exporter"}
+    VM = "pi-sampler-service"
+
+    def series(self, name, values, vm=False):
+        labels = {**self.TARGET, "workspace": "sampler", **({"vm": self.VM} if vm else {})}
+        return {"series": name + "{" + ",".join(f'{k}="{v}"' for k, v in labels.items()) + "}", "values": values}
+
+    def healthy(self, minutes=120):
+        # A reconcile stamps every 5 minutes; the stamp tracks time() in steps.
+        stamps = " ".join(str(60 * (m - m % 5)) for m in range(minutes))
+        return [self.series("pi_durable_supervisor_vm_up", f"1x{minutes}", vm=True),
+                self.series("pi_durable_supervisor_reconcile_ok", f"1x{minutes}"),
+                self.series("pi_durable_supervisor_last_reconcile_timestamp_seconds", stamps)]
+
+    def replaced(self, name, values):
+        return [x for x in self.healthy() if not x["series"].startswith(name + "{")] + [self.series(name, values, vm=name.endswith("vm_up"))]
+
+    def firing(self, alert, value, labels=None, vm=False):
+        _, _, by_name = NetAnchorAlerts.rules()
+        def fill(text):
+            return text.replace("{{ $labels.workspace }}", "sampler").replace("{{ $labels.vm }}", self.VM).replace("{{ $value }}", value)
+        own = {"workspace": "sampler", **({"vm": self.VM} if vm else {})}
+        return [{"exp_labels": {**(self.TARGET if labels is None else labels), **({} if labels == {} else own), "severity": SUPERVISOR_ALERTS[alert]},
+                 "exp_annotations": {k: fill(v) for k, v in by_name[alert]["annotations"].items()}}]
+
+    def promtool_test(self, inputs, alert, *expectations):
+        promtool, rule_file, _ = NetAnchorAlerts.rules()
+        spec = {"rule_files": [rule_file], "evaluation_interval": "1m", "tests": [{
+            "interval": "1m", "input_series": inputs, "alert_rule_test": [
+                {"eval_time": t, "alertname": alert, "exp_alerts": exp} for t, exp in expectations]}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_file = Path(tmp) / "t.json"
+            spec_file.write_text(json.dumps(spec))
+            result = subprocess.run([promtool, "test", "rules", str(spec_file)], text=True, capture_output=True)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+    def test_rules_are_generated_as_intended_and_worded_for_a_person(self):
+        promtool, rule_file, by_name = NetAnchorAlerts.rules()
+        result = subprocess.run([promtool, "check", "rules", rule_file], text=True, capture_output=True)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        for alert, severity in SUPERVISOR_ALERTS.items():
+            with self.subTest(alert):
+                rule = by_name[alert]
+                self.assertEqual(SUPERVISOR_EXPRS[alert], rule["expr"])
+                self.assertEqual(SUPERVISOR_FOR[alert], rule["for"])
+                self.assertEqual({"severity": severity}, rule["labels"])
+                text = rule["annotations"]["summary"] + rule["annotations"]["description"]
+                self.assertIn("{{ $labels.workspace }}", text)
+                self.assertIn("OPERATIONS.md §11", text)
+                self.assertIn("supervisor-main.js status", text)
+        self.assertIn("{{ $labels.vm }}", by_name["PiDurableWorkspaceVmDown"]["annotations"]["summary"])
+        # Only the metrics the supervisor writes today: no update or disk-budget rule yet.
+        names = [r["alert"] for g in json.loads(Path(rule_file).read_text())["groups"] for r in g["rules"]
+                 if "pi_durable_supervisor_" in r["expr"]]
+        self.assertEqual(sorted(SUPERVISOR_ALERTS), sorted(names))
+
+    def test_a_metrics_file_shaped_like_the_supervisors_passes_promtool(self):
+        # metricsText (durable-pi-workspace packages/foundation/src/supervisor/supervisor.ts, 67e31c4).
+        text = "\n".join([
+            "# HELP pi_durable_supervisor_vm_up 1 while the VM's page socket answered its last /metrics health check, else 0.",
+            "# TYPE pi_durable_supervisor_vm_up gauge",
+            'pi_durable_supervisor_vm_up{workspace="sampler",vm="pi-sampler-service"} 1',
+            "# HELP pi_durable_supervisor_vm_restarts_total Restarts of the VM by this supervisor process (failed health, found not running or absent).",
+            "# TYPE pi_durable_supervisor_vm_restarts_total counter",
+            'pi_durable_supervisor_vm_restarts_total{workspace="sampler",vm="pi-sampler-service"} 0',
+            "# HELP pi_durable_supervisor_reconcile_ok 1 when the last reconcile read the definition and brought every VM to it, else 0.",
+            "# TYPE pi_durable_supervisor_reconcile_ok gauge",
+            'pi_durable_supervisor_reconcile_ok{workspace="sampler"} 1',
+            "# HELP pi_durable_supervisor_last_reconcile_timestamp_seconds When the last complete reconcile ended (0: none yet).",
+            "# TYPE pi_durable_supervisor_last_reconcile_timestamp_seconds gauge",
+            'pi_durable_supervisor_last_reconcile_timestamp_seconds{workspace="sampler"} 1762900000',
+        ]) + "\n"
+        result = subprocess.run([NetAnchorAlerts.rules()[0], "check", "metrics"], input=text, text=True, capture_output=True)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+    def test_healthy_raises_nothing(self):
+        for alert in SUPERVISOR_ALERTS:
+            self.promtool_test(self.healthy(), alert, ("110m", []))
+
+    def test_a_vm_down_is_critical_after_5_minutes(self):
+        inputs = self.replaced("pi_durable_supervisor_vm_up", "1x10 0x30 1x79")
+        self.promtool_test(inputs, "PiDurableWorkspaceVmDown",
+                           ("14m", []),
+                           ("16m", self.firing("PiDurableWorkspaceVmDown", "0", vm=True)),
+                           ("45m", []))
+
+    def test_a_failed_reconcile_warns_only_when_it_stays_failed(self):
+        # One failed reconcile the next fixes: nothing.
+        self.promtool_test(self.replaced("pi_durable_supervisor_reconcile_ok", "1x10 0x5 1x104"),
+                           "PiDurableWorkspaceReconcileFailed", ("16m", []), ("30m", []))
+        inputs = self.replaced("pi_durable_supervisor_reconcile_ok", "1x10 0x40 1x69")
+        self.promtool_test(inputs, "PiDurableWorkspaceReconcileFailed",
+                           ("19m", []),
+                           ("21m", self.firing("PiDurableWorkspaceReconcileFailed", "0")),
+                           ("55m", []))
+
+    def test_a_supervisor_that_stops_reconciling_warns(self):
+        # The stamp stops at 10m (600 s): stale past 25m (> 900 s), firing 10 minutes later.
+        stamps = " ".join(str(60 * (m - m % 5)) if m <= 10 else "600" for m in range(120))
+        inputs = self.replaced("pi_durable_supervisor_last_reconcile_timestamp_seconds", stamps)
+        self.promtool_test(inputs, "PiDurableSupervisorSilent",
+                           ("30m", []),
+                           ("36m", self.firing("PiDurableSupervisorSilent", "1560")))
+
+    def test_no_file_yet_raises_nothing(self):
+        # Between update-system and supervisor.json there is no file: expected, not an alert.
+        inputs = [x for x in self.healthy() if "pi_durable_supervisor_" not in x["series"]]
+        for alert in SUPERVISOR_ALERTS:
+            self.promtool_test(inputs + [{"series": "up{job=\"node_exporter\"}", "values": "1x60"}], alert, ("50m", []))
+
+
+class PlanningModelProxy(unittest.TestCase):
+    """`planning.modelProxy`: the planning service network reaches the model proxy's port on its gateway."""
+
+    OFF = "{ planning.modelProxy = lib.mkForce false; }"
+
+    def test_studio_passes_it_after_the_brokers_and_before_the_relay_port(self):
+        self.assertIs(True, studio("{ }", "config.services.pi-durable.planning.modelProxy"))
+        lines = studio("{ }", f"builtins.readFile {PLANNING_PF_RULES_FILE}").splitlines(True)
+        self.assertEqual(PLANNING_MODEL_PROXY_PF_RULE, lines[3])
+        self.assertEqual(WORKSPACE_RELAY_PF_RULE, lines[4])
+        # The sandbox anchor is unchanged by it.
+        self.assertEqual(STUDIO_PF_RULES, studio("{ }", f"builtins.readFile {PF_RULES}"))
+
+    def test_off_leaves_the_planning_anchor_as_before(self):
+        s = studio(self.OFF, SUMMARY)
+        self.assertEqual([], s["failed"])
+        rules = studio(self.OFF, f"builtins.readFile {PLANNING_PF_RULES_FILE}")
+        self.assertEqual(PLANNING_PF_RULES.replace(PLANNING_MODEL_PROXY_PF_RULE, ""), rules)
+        self.assertNotIn("8892", rules)
+        self.assertEqual(STUDIO_PF_RULES, studio(self.OFF, f"builtins.readFile {PF_RULES}"))
+        self.assertFalse(studio("{ }", "(builtins.getFlake \"path:" + str(REPO) + "\").darwinConfigurations.studio.options.services.pi-durable.planning.modelProxy.default"))
+
+    def test_on_adds_exactly_the_model_proxys_port(self):
+        on, off = (studio(s, f"builtins.readFile {PLANNING_PF_RULES_FILE}").splitlines(True) for s in ("{ }", self.OFF))
+        added = [line for line in on if line not in off]
+        self.assertEqual([PLANNING_MODEL_PROXY_PF_RULE], added)
+        self.assertEqual(len(off) + 1, len(on))
+        moved = studio("{ modelProxy.port = lib.mkForce 9892; }", f"builtins.readFile {PLANNING_PF_RULES_FILE}")
+        self.assertEqual(PLANNING_PF_RULES.replace("port 8892 ", "port 9892 "), moved)
+
+    def test_this_macs_pfctl_parses_it(self):
+        rules = nix(
+            "build", "--impure", "--no-link", "--print-out-paths", "--expr",
+            studio_expr("{ }", f'pkgs.writeText "pi-durable-planning.pf" (builtins.readFile {PLANNING_PF_RULES_FILE})'),
+        ).strip().splitlines()[-1]
+        parsed = subprocess.run(["/sbin/pfctl", "-nvf", rules], text=True, capture_output=True)
+        self.assertEqual(0, parsed.returncode, parsed.stderr)
+        self.assertIn("pass in quick inet proto tcp from 192.168.129.0/24 to 192.168.129.1 port = 8892 flags S/SA keep state", parsed.stdout.splitlines())
+
+    def test_refuses_without_the_model_proxy_or_planning(self):
+        message = "services.pi-durable.planning.modelProxy requires services.pi-durable.modelProxy.enable and planning.enable"
+        accepted, no_proxy, no_planning, off_without = failures(
+            "{ }",
+            "{ modelProxy.enable = lib.mkForce false; }",
+            f"{{ {NO_PLANNING.replace('planning.modelProxy = lib.mkForce false;', '')} }}",
+            "{ modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; }",
+        )
+        self.assertEqual([], accepted)
+        self.assertEqual([], off_without)
+        for failed in (no_proxy, no_planning):
+            self.assertTrue(any(m.startswith(message) for m in failed), failed)
+
+    def test_the_proxys_node_firewall_exception_is_unchanged(self):
+        node = studio("{ }", "builtins.head config.launchd.user.agents.pi-durable-model-proxy.serviceConfig.ProgramArguments")
+        for settings in ("{ }", self.OFF):
+            with self.subTest(settings):
+                activation = studio(settings, "config.system.activationScripts.extraActivation.text")
+                self.assertEqual(1, activation.count(f"socketfilterfw --add {node} "))
+                self.assertEqual(1, activation.count(NODE_FIREWALL))
+
+
+class SamplerHostAgent(unittest.TestCase):
+    """`sampler.hostAgent = false` removes the host sampler's agent alone (durable-pi-workspace#443 cut-over)."""
+
+    OFF = "{ sampler.hostAgent = lib.mkForce false; }"
+    PROBES = "builtins.attrNames config.services.monitoring.blackbox.contentProbes"
+    JOBS = "map (j: j.job_name) config.services.monitoring.extraScrapeConfigs"
+    RULES = 'map (r: r.alert or "") config.services.monitoring.extraAlertRules'
+    GO_RULES = {"OpenCodeGoAllowanceHigh", "OpenCodeGoAllowanceCritical", "OpenCodeGoUsageUnreadable", "OpenCodeGoUnknownModel"}
+
+    def test_studio_keeps_the_host_agent_by_default(self):
+        self.assertIs(True, studio("{ }", "config.services.pi-durable.sampler.hostAgent"))
+        self.assertIn("pi-durable-sampler", studio("{ }", SUMMARY)["agents"])
+
+    def test_off_removes_the_agent_and_keeps_route_probe_scrape_and_rules(self):
+        on, off = studio("{ }", SUMMARY), studio(self.OFF, SUMMARY)
+        self.assertEqual([], off["failed"])
+        self.assertNotIn("pi-durable-sampler", off["agents"])
+        self.assertEqual(sorted(set(on["agents"]) - {"pi-durable-sampler"}), sorted(off["agents"]))
+        # Activation: identical but for base/homebrew.nix's re-pin list, which
+        # loses the Homebrew-node agent that is gone.
+        extra = "config.system.activationScripts.extraActivation.text"
+        self.assertEqual(studio("{ }", extra), studio(self.OFF, extra))
+        self.assertEqual(on["activation"].replace(" pi-durable-sampler ", " "), off["activation"])
+        self.assertNotIn("pi-durable-sampler", off["activation"])
+        self.assertIn("8791 http://127.0.0.1:8791", off["activation"])
+        probes = studio(self.OFF, f"config.services.monitoring.blackbox.contentProbes.\"Claude usage\"")
+        self.assertEqual({"url": "http://127.0.0.1:8791/metrics", "bodyMatches": "(?m)^pi_durable_sampler_readings_total"}, probes)
+        self.assertEqual(studio("{ }", self.PROBES), studio(self.OFF, self.PROBES))
+        self.assertIn("pi-durable-sampler", studio(self.OFF, self.JOBS))
+        self.assertEqual(studio("{ }", self.JOBS), studio(self.OFF, self.JOBS))
+        self.assertTrue(self.GO_RULES <= set(studio(self.OFF, self.RULES)))
+        self.assertEqual(studio("{ }", self.RULES), studio(self.OFF, self.RULES))
+        # The Dashy link to the page stays too.
+        link = 'map (l: l.title) config.services.dashy.piDurableLinks'
+        self.assertIn("Claude usage", studio(self.OFF, link))
+
+    def test_sampler_disabled_still_declares_nothing(self):
+        settings = "{ sampler.enable = lib.mkForce false; sampler.hostAgent = lib.mkForce true; }"
+        s = studio(settings, SUMMARY)
+        self.assertNotIn("pi-durable-sampler", s["agents"])
+        self.assertNotIn("http://127.0.0.1:8791", s["activation"])
+        self.assertNotIn("Claude usage", studio(settings, self.PROBES))
 
 
 if __name__ == "__main__":

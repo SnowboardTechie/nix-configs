@@ -2,7 +2,14 @@
 # proxy and the standing page's Tailscale route. Also the shared Claude usage
 # sampler (workspaces/sampler/OPERATIONS.md): its agent and its page's route.
 # And the model-provider proxy (workspaces/proxies/OPERATIONS.md): its agent on
-# Nix's Node, its firewall exception and its port in the sandbox's pf anchor.
+# Nix's Node, its firewall exception and its port in the sandbox's pf anchor
+# (and, with `planning.modelProxy`, the planning network's). It binds every
+# address in model-proxy.json's `listen`; pf decides which network reaches it.
+# And the workspace supervisor (the proxies runbook §11, durable-pi-workspace
+# #443): one agent on the same Node that starts each workspace's VMs from its
+# definition, detached, and relays its page on loopback; its metrics files and
+# alerts. With `sampler.hostAgent` off, the host sampler's agent goes while its
+# page's route, probe, scrape and alerts stay, for the supervisor's relay.
 # And the GitHub write proxy (the same runbook, §7): its agent on the same Node,
 # with Nix's git and openssh on its PATH, and its gateway port (8893: case VMs'
 # pushes and signature requests) in the pf anchor, sharing that exception.
@@ -118,7 +125,9 @@
       # Node 24 satisfies the application's engines (>=22.19.0).
       node = "${pkgs.nodejs-slim_24}/bin/node";
       # Each proxy or broker listening on a gateway needs that one exception.
-      # The planning relay listens on loopback only and needs none.
+      # The planning relay and the supervisor listen on loopback only and need
+      # none. The exception is per binary (socketfilterfw takes a path, never
+      # an address), so one covers every address a listener binds.
       nodeListens = cfg.modelProxy.enable || cfg.githubProxy.enable
         || cfg.forgeBroker.enable || cfg.vmBroker.enable;
 
@@ -214,11 +223,17 @@
       # activation and from its own boot daemon.
       planningPfAnchor = "com.apple/101.pi-durable-planning";
       planningBrokerPorts = [ cfg.forgeBroker.port cfg.vmBroker.port ];
+      # With `planning.modelProxy`, the model proxy's port after the brokers':
+      # a workspace VM on this network (the sampler's) reaches the proxy on
+      # this gateway, where model-proxy.json's `listen` binds it too.
+      planningPorts = planningBrokerPorts
+        ++ lib.optional cfg.planning.modelProxy cfg.modelProxy.port
+        ++ cfg.planning.workspaceRelayPorts;
       planningPfRules = pkgs.writeText "pi-durable-planning.pf" (confinement {
         title = "Pi Durable planning service network isolation";
         clients = cfg.planning.allowedClients;
         address = cfg.planning.listenAddress;
-        ports = planningBrokerPorts ++ cfg.planning.workspaceRelayPorts;
+        ports = planningPorts;
         inherit (cfg.planning) ipv6Subnet;
       });
       planningPfLoader = [ "${pkgs.bash}/bin/bash" "${./pi-durable-pf.sh}" "/sbin/pfctl" planningPfAnchor "${planningPfRules}" "/var/run/pi-durable-planning-pf.token" ];
@@ -324,6 +339,53 @@
           annotations = {
             summary = "VM network {{ $labels.network }} has no gateway on the host, though its anchor VM is attached";
             description = "For 3 minutes VM network {{ $labels.network }}'s anchor VM has been running and attached, but the network's gateway is on no host interface, so its VMs can't reach the proxies and brokers and nothing new starts on it. This is the bridge collision (another network's bridge took this one's unit) or a killed InternetSharing. It needs a person: follow the recovery in durable-pi-workspace workspaces/proxies/OPERATIONS.md §9 (nothing restarts it automatically). The VM networks may collide until both are checked. ${netAnchorRunbook}";
+          };
+        }
+      ];
+
+      # The workspace supervisor (proxies runbook §11): its metrics, one file
+      # per workspace, and the alerts on them. It reconciles every 5 minutes
+      # and checks each VM's health every 30 s, restarting it after 3 failures.
+      supervisorRunbook = "`node ~/.local/share/pi-durable/sgg-deployment/dist/workspaces/proxies/src/supervisor-main.js status` shows each workspace's definition, its VMs and the newest event of each kind; events are in ~/.local/state/pi-durable/supervisor/events.jsonl, logs in /tmp/pi-durable-supervisor.log and .error.log. Runbook: durable-pi-workspace workspaces/proxies/OPERATIONS.md §11.";
+      supervisorRules = [
+        {
+          alert = "PiDurableWorkspaceVmDown";
+          expr = "pi_durable_supervisor_vm_up == 0";
+          "for" = "5m";
+          labels = { severity = "critical"; };
+          annotations = {
+            summary = "Workspace {{ $labels.workspace }}'s VM {{ $labels.vm }} is down";
+            description = "For 5 minutes VM {{ $labels.vm }} of workspace {{ $labels.workspace }} has not answered its health check (its page socket's /metrics), so its service and page are down. The supervisor restarts a VM after 3 failed checks and backs off between restarts, so it has not come back by itself: look at why it fails before restarting anything by hand. ${supervisorRunbook}";
+          };
+        }
+        {
+          alert = "PiDurableWorkspaceReconcileFailed";
+          # Reconciles run every 5 minutes, so 10 is at least two more
+          # failing after the first: one the next fixes never notifies.
+          expr = "pi_durable_supervisor_reconcile_ok == 0";
+          "for" = "10m";
+          labels = { severity = "warning"; };
+          annotations = {
+            summary = "The supervisor can't bring workspace {{ $labels.workspace }} to its definition";
+            description = "For 10 minutes the supervisor's reconciles of workspace {{ $labels.workspace }} have failed: its definition was refused or couldn't be read, the VM list couldn't be read, or a VM couldn't be built, started or replaced. VMs already running are left running; nothing in the definition since then is applied. The events (definition-refused, vm-reconcile-failed, removal-unconfirmed) name the cause. ${supervisorRunbook}";
+          };
+        }
+        {
+          alert = "PiDurableSupervisorSilent";
+          # Every 5 minutes a reconcile ends and stamps the time (0 until the
+          # first); one stopped early (a refused definition, an unreadable VM
+          # list) doesn't stamp it. Over 15 minutes is three missed, held 10
+          # more, since an image build may hold one reconcile up to 30
+          # minutes. Not `absent`: until supervisor.json exists (between
+          # update-system and commissioning) there is no file, and that is
+          # expected; its files persist, so a supervisor gone after a reboot
+          # goes stale here.
+          expr = "(time() - pi_durable_supervisor_last_reconcile_timestamp_seconds) > 900";
+          "for" = "10m";
+          labels = { severity = "warning"; };
+          annotations = {
+            summary = "The workspace supervisor hasn't finished a reconcile of workspace {{ $labels.workspace }} for over 15 minutes";
+            description = "The supervisor reconciles each workspace every 5 minutes, and none of workspace {{ $labels.workspace }}'s has finished for over 15 minutes: the supervisor isn't running (no supervisor.json, another one holding the lock, or a crash), is stuck (an image build can hold it up to 30 minutes), or every reconcile stops early (a refused definition or an unreadable VM list, which also raises PiDurableWorkspaceReconcileFailed). Its VMs keep running, but nothing checks, restarts or renews their grants (a grant lasts 24 hours). A workspace dropped from supervisor.json leaves its file behind: remove pi-durable-supervisor-<workspace>.prom from the metrics directory. ${supervisorRunbook}";
           };
         }
       ];
@@ -487,17 +549,21 @@
           enable = lib.mkEnableOption ''
             the model-provider proxy: the sandbox's VMs reach Claude and Jev
             through it with a per-case placeholder, and it alone reads the real
-            credentials. It listens on the sandbox network's gateway
-            (`proxy.listenAddress`), so it requires the sandbox proxy, and
-            exits 1 until ~/.config/pi-durable/model-proxy.json exists; see the
-            application's workspaces/proxies/OPERATIONS.md before enabling'';
+            credentials. It binds every address in model-proxy.json's
+            `listen`: the sandbox network's gateway (`proxy.listenAddress`),
+            so it requires the sandbox proxy, and with `planning.modelProxy`
+            the planning service network's too. pf decides which network
+            reaches it. It exits 1 until ~/.config/pi-durable/model-proxy.json
+            exists; see the application's workspaces/proxies/OPERATIONS.md
+            before enabling'';
           port = lib.mkOption {
             type = lib.types.port;
             default = 8892;
             description = ''
-              Port the model proxy listens on at `proxy.listenAddress`, the one
-              pf passes the network to besides tinyproxy's. Must equal
-              `listen.port` in model-proxy.json.
+              Port the model proxy listens on at each gateway, which the
+              sandbox anchor passes besides tinyproxy's (and the planning
+              anchor with `planning.modelProxy`). Must equal each `listen`
+              entry's port in model-proxy.json.
             '';
           };
         };
@@ -665,6 +731,13 @@
               no path to a relay. Empty: the anchor is the brokers' alone.
             '';
           };
+          modelProxy = lib.mkEnableOption ''
+            the planning service network's pass to the model proxy: its
+            anchor passes `allowedClients` to `listenAddress` at
+            `modelProxy.port`, after the brokers' ports, so a workspace VM on
+            this network reaches the proxy on this gateway. The proxy binds
+            it once model-proxy.json's `listen` names this gateway. Requires
+            `modelProxy.enable` and `planning.enable`'';
           tailscaleHttpsPort = lib.mkOption {
             type = lib.types.nullOr lib.types.port;
             default = null;
@@ -672,6 +745,26 @@
               Tailnet-only HTTPS port that Tailscale Serve forwards to the
               relay. Null: no route. Activation refuses a port that already
               serves another route.
+            '';
+          };
+        };
+
+        supervisor = {
+          enable = lib.mkEnableOption ''
+            the workspace supervisor: it starts each workspace's VMs
+            (detached, so they outlive it) from the definitions named in
+            ~/.config/pi-durable/supervisor.json, keeps their grants renewed,
+            restarts unhealthy ones and relays each page on loopback. It exits
+            1 until that file exists; see the application's
+            workspaces/proxies/OPERATIONS.md §11 before enabling'';
+          metricsDir = lib.mkOption {
+            type = lib.types.strMatching "/[^[:space:]]+";
+            default = "/Users/${config.system.primaryUser}/.local/state/pi-durable/supervisor/metrics";
+            description = ''
+              Directory the supervisor writes pi-durable-supervisor-<workspace>.prom
+              into, for node_exporter's textfile collector. Must equal the
+              `metrics_dir` supervisor.json resolves to (its default,
+              `<state_dir>/metrics`, is this one).
             '';
           };
         };
@@ -695,6 +788,18 @@
               Tailnet-only HTTPS port that Tailscale Serve forwards to the
               sampler's page. Null: no route. Activation refuses a port that
               already serves another route.
+            '';
+          };
+          hostAgent = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = ''
+              Whether the host runs the sampler's launchd agent
+              (`org.nixos.pi-durable-sampler`). False removes only that agent:
+              with `enable`, the page's Serve route, its content probe, the
+              scrape job and OpenCode Go's alert rules stay, since the
+              supervisor's relay serves the sampler's VM on the same loopback
+              `port`.
             '';
           };
         };
@@ -793,7 +898,7 @@
           assertions = [
             {
               assertion = cfg.enable && cfg.proxy.listenAddress != null;
-              message = "services.pi-durable.modelProxy requires services.pi-durable.enable and proxy.listenAddress: it listens on the sandbox network's gateway, and only the sandbox proxy's pf anchor confines that network";
+              message = "services.pi-durable.modelProxy requires services.pi-durable.enable and proxy.listenAddress: it binds the sandbox network's gateway, and only the sandbox proxy's pf anchor confines that network";
             }
             {
               assertion = cfg.modelProxy.port != cfg.proxy.port;
@@ -805,8 +910,11 @@
             }
           ];
 
-          # Until the internal network's gateway exists the bind fails; the
-          # proxy retries in-process and KeepAlive covers an exit. Without
+          # It binds every address in model-proxy.json's `listen` (the sandbox
+          # gateway, and the planning one for `planning.modelProxy`), each on
+          # its own; pf decides which network reaches which. Until a gateway
+          # exists its bind fails; the proxy retries in-process and KeepAlive
+          # covers an exit. Without
           # model-proxy.json, `run` exits 1 and KeepAlive retries it at
           # launchd's throttle.
           launchd.user.agents.pi-durable-model-proxy.serviceConfig = {
@@ -829,8 +937,11 @@
           };
         })
 
-        # Both proxies listen on the gateway from the same Node binary: one
-        # exception, while either is enabled.
+        # The proxies and brokers listen on the gateways from the same Node
+        # binary: one exception, while any is enabled. The application
+        # firewall is per binary, so a second address (the model proxy on the
+        # planning gateway) needs nothing more; vmnet bridges aren't filtered
+        # by it anyway (measured 2026-10-16), which is why pf confines them.
         (lib.mkIf nodeListens {
           system.activationScripts.extraActivation.text = lib.mkAfter ''
             # === pi-durable proxies' Node firewall ===
@@ -1156,6 +1267,62 @@
           })
         ]))
 
+        # The planning service network's pass to the model proxy: only with
+        # the proxy running and the planning anchor loaded.
+        (lib.mkIf cfg.planning.modelProxy {
+          assertions = [
+            {
+              assertion = cfg.modelProxy.enable && cfg.planning.enable;
+              message = "services.pi-durable.planning.modelProxy requires services.pi-durable.modelProxy.enable and planning.enable: it passes the planning service network to the model proxy in the planning pf anchor";
+            }
+          ];
+        })
+
+        # The workspace supervisor (proxies runbook §11). On the proxies' Nix
+        # Node, as the planning relay is: like the relay it listens on loopback
+        # only (each workspace's page relay), so it needs no firewall
+        # exception, and a store path is never re-pinned (restarted) by
+        # base/homebrew.nix on every activation, as the Homebrew-node agents
+        # are. Its VMs are detached and a new supervisor adopts them, so a
+        # restart is harmless, but nothing gains from one. Without
+        # supervisor.json, `run` exits 1 and KeepAlive retries it at launchd's
+        # throttle, as the proxies do; a second supervisor exits 1 too.
+        (lib.mkIf cfg.supervisor.enable (lib.mkMerge [
+          {
+            launchd.user.agents.pi-durable-supervisor.serviceConfig = {
+              ProgramArguments = [
+                node
+                "${checkout}/dist/workspaces/proxies/src/supervisor-main.js"
+                "run"
+                "--config"
+                "${home}/.config/pi-durable/supervisor.json"
+              ];
+              # HOME for its config, state, grants and sockets. PATH: the same
+              # Node first (nix/load-image.sh runs a bare `node` for its
+              # Mac-binary check and digest read), Determinate Nix (`nix eval`,
+              # `nix build`), Apple's `container` (/usr/local/bin), then the
+              # system tools load-image.sh uses (bash, mktemp, dirname, rm,
+              # cat). No Homebrew. No secret: placeholders reach `container`
+              # by its environment, never this plist.
+              EnvironmentVariables = {
+                HOME = home;
+                PATH = "${lib.makeBinPath [ pkgs.nodejs-slim_24 ]}:/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+              };
+              RunAtLoad = true;
+              KeepAlive = true;
+              StandardOutPath = "/tmp/pi-durable-supervisor.log";
+              StandardErrorPath = "/tmp/pi-durable-supervisor.error.log";
+            };
+          }
+
+          (lib.optionalAttrs (options.services ? monitoring) {
+            services.monitoring = {
+              nodeExporter.textfileDirectories = [ cfg.supervisor.metricsDir ];
+              extraAlertRules = supervisorRules;
+            };
+          })
+        ]))
+
         # One agent per named network, watching a detached anchor VM: it
         # adopts a running one, starts one only when none runs (after the
         # earlier networks' gateways are up, one network at a time), and exits
@@ -1264,8 +1431,13 @@
               }
             ];
 
-            # Without sampler.json, `run` prints "<file>: does not exist" and
-            # exits 1; KeepAlive then retries it at launchd's throttle.
+          }
+
+          # Without sampler.json, `run` prints "<file>: does not exist" and
+          # exits 1; KeepAlive then retries it at launchd's throttle.
+          # `hostAgent = false` removes this agent alone: everything below
+          # stays, since the supervisor's relay serves the same port.
+          (lib.mkIf cfg.sampler.hostAgent {
             launchd.user.agents.pi-durable-sampler.serviceConfig = {
               ProgramArguments = [
                 "${config.homebrew.prefix}/bin/node"
@@ -1280,7 +1452,7 @@
               StandardOutPath = "/tmp/pi-durable-sampler.log";
               StandardErrorPath = "/tmp/pi-durable-sampler.error.log";
             };
-          }
+          })
 
           (lib.mkIf (cfg.sampler.tailscaleHttpsPort != null) {
             system.activationScripts.extraActivation.text =

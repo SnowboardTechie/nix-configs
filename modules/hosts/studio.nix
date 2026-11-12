@@ -340,15 +340,30 @@
         tailscaleHttpsPort = 8792;
         # The relay leg's probe port for durable-pi-workspace#421.
         workspaceRelayPorts = [ 8896 ];
+        # The planning network reaches the model proxy (8892) on its gateway,
+        # for the sampler's VM (durable-pi-workspace#443). The proxy binds it
+        # once model-proxy.json's `listen` names 192.168.129.1.
+        modelProxy = true;
       };
+      # The workspace supervisor (durable-pi-workspace#443; the proxies
+      # runbook §11): starts the sampler's VM from its definition and relays
+      # its page. It exits 1 until ~/.config/pi-durable/supervisor.json exists;
+      # launchd retries.
+      supervisor.enable = true;
     };
 
     # Shared Claude usage sampler (#236; the application's
     # workspaces/sampler/OPERATIONS.md). Runs from the same deployment
     # checkout and refuses to start until the coordinator has written
     # ~/.config/pi-durable/sampler.json, whose page.port must be 8791.
+    # The host agent stays on until the sampler's VM has been checked live
+    # (durable-pi-workspace#443 commissioning): turning it off
+    # (`hostAgent = false`) is a later, separate change at cut-over. The
+    # route, probe, scrape and alerts then stay for the supervisor's relay
+    # on the same port.
     services.pi-durable.sampler = {
       enable = true;
+      hostAgent = true;
       port = 8791;
       # Free tailnet HTTPS port (2026-11-01 Serve held 443, 8790, 9090, 9120,
       # 10443, 11434, 12345 and 33000; nothing listened on 8791).
