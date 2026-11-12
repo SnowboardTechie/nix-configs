@@ -356,14 +356,14 @@
     # workspaces/sampler/OPERATIONS.md). Runs from the same deployment
     # checkout and refuses to start until the coordinator has written
     # ~/.config/pi-durable/sampler.json, whose page.port must be 8791.
-    # The host agent stays on until the sampler's VM has been checked live
-    # (durable-pi-workspace#443 commissioning): turning it off
-    # (`hostAgent = false`) is a later, separate change at cut-over. The
-    # route, probe, scrape and alerts then stay for the supervisor's relay
-    # on the same port.
+    # The host agent is off since the cut-over (durable-pi-workspace#443):
+    # the sampler runs in its VM under the supervisor, whose relay serves
+    # its page on the same port. The route, probe, scrape and alerts stay.
+    # Turning it back on (the slice's rollback) needs the relay's port
+    # free: see the application's workspaces/proxies/OPERATIONS.md §11.
     services.pi-durable.sampler = {
       enable = true;
-      hostAgent = true;
+      hostAgent = false;
       port = 8791;
       # Free tailnet HTTPS port (2026-11-01 Serve held 443, 8790, 9090, 9120,
       # 10443, 11434, 12345 and 33000; nothing listened on 8791).

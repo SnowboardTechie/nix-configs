@@ -150,7 +150,8 @@ class StudioAsCommissioned(unittest.TestCase):
             self.assertNotIn("tinyproxy", item)
             self.assertNotIn("container", item)
         self.assertIn("8790 http://127.0.0.1:8790", s["activation"])
-        self.assertIn("pi-durable-sampler", s["agents"])
+        # The host sampler's agent is off since the cut-over (#443); its route stays for the supervisor's relay.
+        self.assertNotIn("pi-durable-sampler", s["agents"])
         self.assertIn("8791 http://127.0.0.1:8791", s["activation"])
         self.assertIn("pi-durable-supervisor", s["agents"])
         proxy_config = studio("{ }", "builtins.readFile (builtins.elemAt config.launchd.user.agents.pi-durable-proxy.serviceConfig.ProgramArguments 3)")
@@ -583,7 +584,7 @@ class ReplayProxy(unittest.TestCase):
 SAMPLER_ONLY = (
     "{ enable = lib.mkForce false; modelProxy.enable = lib.mkForce false; githubProxy.enable = lib.mkForce false; "
     f"replayProxy.enable = lib.mkForce false; {NO_PLANNING} supervisor.enable = lib.mkForce false; "
-    "sampler = { enable = lib.mkForce true; tailscaleHttpsPort = lib.mkForce null; }; }"
+    "sampler = { enable = lib.mkForce true; hostAgent = lib.mkForce true; tailscaleHttpsPort = lib.mkForce null; }; }"
 )
 
 
@@ -2690,34 +2691,40 @@ class SamplerHostAgent(unittest.TestCase):
     """`sampler.hostAgent = false` removes the host sampler's agent alone (durable-pi-workspace#443 cut-over)."""
 
     OFF = "{ sampler.hostAgent = lib.mkForce false; }"
+    ON = "{ sampler.hostAgent = lib.mkForce true; }"
     PROBES = "builtins.attrNames config.services.monitoring.blackbox.contentProbes"
     JOBS = "map (j: j.job_name) config.services.monitoring.extraScrapeConfigs"
     RULES = 'map (r: r.alert or "") config.services.monitoring.extraAlertRules'
     GO_RULES = {"OpenCodeGoAllowanceHigh", "OpenCodeGoAllowanceCritical", "OpenCodeGoUsageUnreadable", "OpenCodeGoUnknownModel"}
 
-    def test_studio_keeps_the_host_agent_by_default(self):
-        self.assertIs(True, studio("{ }", "config.services.pi-durable.sampler.hostAgent"))
-        self.assertIn("pi-durable-sampler", studio("{ }", SUMMARY)["agents"])
+    def test_studio_runs_without_the_host_agent_since_the_cut_over(self):
+        self.assertIs(False, studio("{ }", "config.services.pi-durable.sampler.hostAgent"))
+        self.assertNotIn("pi-durable-sampler", studio("{ }", SUMMARY)["agents"])
+        # Studio as committed is the off case exactly.
+        self.assertEqual(studio(self.OFF, SUMMARY), studio("{ }", SUMMARY))
+
+    def test_on_brings_the_agent_back(self):
+        self.assertIn("pi-durable-sampler", studio(self.ON, SUMMARY)["agents"])
 
     def test_off_removes_the_agent_and_keeps_route_probe_scrape_and_rules(self):
-        on, off = studio("{ }", SUMMARY), studio(self.OFF, SUMMARY)
+        on, off = studio(self.ON, SUMMARY), studio(self.OFF, SUMMARY)
         self.assertEqual([], off["failed"])
         self.assertNotIn("pi-durable-sampler", off["agents"])
         self.assertEqual(sorted(set(on["agents"]) - {"pi-durable-sampler"}), sorted(off["agents"]))
         # Activation: identical but for base/homebrew.nix's re-pin list, which
         # loses the Homebrew-node agent that is gone.
         extra = "config.system.activationScripts.extraActivation.text"
-        self.assertEqual(studio("{ }", extra), studio(self.OFF, extra))
+        self.assertEqual(studio(self.ON, extra), studio(self.OFF, extra))
         self.assertEqual(on["activation"].replace(" pi-durable-sampler ", " "), off["activation"])
         self.assertNotIn("pi-durable-sampler", off["activation"])
         self.assertIn("8791 http://127.0.0.1:8791", off["activation"])
         probes = studio(self.OFF, f"config.services.monitoring.blackbox.contentProbes.\"Claude usage\"")
         self.assertEqual({"url": "http://127.0.0.1:8791/metrics", "bodyMatches": "(?m)^pi_durable_sampler_readings_total"}, probes)
-        self.assertEqual(studio("{ }", self.PROBES), studio(self.OFF, self.PROBES))
+        self.assertEqual(studio(self.ON, self.PROBES), studio(self.OFF, self.PROBES))
         self.assertIn("pi-durable-sampler", studio(self.OFF, self.JOBS))
-        self.assertEqual(studio("{ }", self.JOBS), studio(self.OFF, self.JOBS))
+        self.assertEqual(studio(self.ON, self.JOBS), studio(self.OFF, self.JOBS))
         self.assertTrue(self.GO_RULES <= set(studio(self.OFF, self.RULES)))
-        self.assertEqual(studio("{ }", self.RULES), studio(self.OFF, self.RULES))
+        self.assertEqual(studio(self.ON, self.RULES), studio(self.OFF, self.RULES))
         # The Dashy link to the page stays too.
         link = 'map (l: l.title) config.services.dashy.piDurableLinks'
         self.assertIn("Claude usage", studio(self.OFF, link))
