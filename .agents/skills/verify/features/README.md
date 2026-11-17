@@ -70,6 +70,8 @@ here is edited by hand. Each was also run against the harness before Correction 
 | an unrelated process whose command line names `nix-verify run`, recorded in a `run.json` | SIGTERMed by `cleanup <dir>` | survives bare and named cleanup |
 | a reused PID (start time differs) or a recorded PID that does not hold `run.lock` | would be signalled | not signalled, reason printed |
 | `cleanup` of a directory inside the repository, or outside the evidence root | `run.json` rewritten in the repository | refused, exit 2, nothing written |
+| bare `cleanup`, `doctor` or `run` with the evidence root inside the repository (Correction 2) | bare `cleanup` rewrote the record there; `doctor` did not refuse | all three refused, exit 2, record untouched |
+| a record whose `scratch` names a prefixed temporary directory it did not make (Correction 2) | the directory deleted | kept; also kept for another run's marker, a path outside the temporary directory, and a symlink |
 
 A break that passed and was replaced: oMLX's port default changed from 8000 to 8001. Studio sets `port = 8000` itself,
 so nothing any host builds changed; the break was wrong, not the journey.

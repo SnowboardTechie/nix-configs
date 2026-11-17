@@ -40,6 +40,7 @@ JOURNEYS = {
 # The number of scripts/test_*.py that features/module-tests.md states. Change both together.
 EXPECTED_TESTS = 19
 SCRATCH_PREFIX = "nix-verify-tests-"
+SCRATCH_MARKER = "nix-verify-run.json"
 DEFAULT = [name for name, (kind, _) in JOURNEYS.items() if kind == "default"]
 
 
@@ -229,6 +230,7 @@ def throwaway_copy(run):
     The repository's tests find the flake from their own path (scripts/..), so in the copy every Nix call they
     make, locked or not, and every file they write land in the copy."""
     scratch = Path(tempfile.mkdtemp(prefix=SCRATCH_PREFIX))
+    (scratch / SCRATCH_MARKER).write_text(json.dumps({"run_dir": str(run.dir), "pid": os.getpid()}) + "\n")
     run.meta["scratch"] = str(scratch)
     run.save_meta()
     files = git("ls-files", "-z", "--cached", "--others", "--exclude-standard").split("\0")
@@ -242,11 +244,29 @@ def throwaway_copy(run):
     return scratch / "repo"
 
 
-def remove_scratch(path):
-    """Remove a throwaway copy, and only that: a directory directly in the temporary directory with our prefix."""
-    p = Path(path).resolve()
-    if p.parent == Path(tempfile.gettempdir()).resolve() and p.name.startswith(SCRATCH_PREFIX):
-        shutil.rmtree(p, ignore_errors=True)
+def remove_scratch(path, run_dir):
+    """Remove the throwaway copy that run_dir's run made, and nothing else. The path must not be a symlink, must be
+    a direct child of the temporary directory with the generated prefix, and must hold the marker that run wrote
+    naming run_dir. Returns None when removed, or the reason it refused (and removed nothing)."""
+    given = Path(path)
+    if given.is_symlink():
+        return f"{path} is a symlink"
+    p = given.resolve()
+    if p.parent != Path(tempfile.gettempdir()).resolve() or not p.name.startswith(SCRATCH_PREFIX):
+        return f"{p} is not a {SCRATCH_PREFIX}* directory directly in {tempfile.gettempdir()}"
+    if not p.exists():
+        return None
+    marker = p / SCRATCH_MARKER
+    try:
+        if marker.is_symlink():
+            raise ValueError("a symlink")
+        named = json.loads(marker.read_text()).get("run_dir")
+    except (OSError, ValueError) as e:
+        return f"{p} has no readable {SCRATCH_MARKER} ({e})"
+    if not named or Path(named).resolve() != Path(run_dir).resolve():
+        return f"{p}'s {SCRATCH_MARKER} names {named}, not {run_dir}"
+    shutil.rmtree(p, ignore_errors=True)
+    return None
 
 
 def j_module_tests(run, names):
@@ -289,7 +309,9 @@ def j_module_tests(run, names):
             raise Failed("a test changed flake.lock in the throwaway copy; the real one was not written")
         return "the copy's flake.lock is unchanged too"
     run.step("tests left flake.lock alone", copy_lock_unchanged)
-    remove_scratch(copy.parent)
+    refused = remove_scratch(copy.parent, run.dir)
+    if refused:
+        run.log(f"throwaway copy kept: {refused}")
 
 
 def run_journey(name, test_names):
@@ -302,7 +324,7 @@ def run_journey(name, test_names):
         if run.child and run.child.poll() is None:
             run.child.terminate()
         if run.meta.get("scratch"):
-            remove_scratch(run.meta["scratch"])
+            remove_scratch(run.meta["scratch"], run.dir)
         run.log(f"signal {signum}: stopping")
         run.steps.append({"step": "interrupted", "ok": False, "seconds": 0, "error": f"signal {signum}"})
         run.finish()
@@ -363,12 +385,8 @@ def doctor():
     links = [p.name for p in REPO.glob("result*") if p.is_symlink()]
     report("WARN" if links else "ok", "result links", ", ".join(links) or "none")
     report("ok" if shutil.which("python3") else "WARN", "python3", shutil.which("python3") or "missing: module-tests cannot run")
-    try:
-        EVIDENCE.relative_to(REPO)
-        report("FAIL", "evidence", f"{EVIDENCE} is inside the repository")
-    except ValueError:
-        EVIDENCE.mkdir(parents=True, exist_ok=True)
-        report("ok" if os.access(EVIDENCE, os.W_OK) else "FAIL", "evidence", str(EVIDENCE))
+    EVIDENCE.mkdir(parents=True, exist_ok=True)
+    report("ok" if os.access(EVIDENCE, os.W_OK) else "FAIL", "evidence", str(EVIDENCE))
     running = []
     for meta in EVIDENCE.glob("*/run.json"):
         m = json.loads(meta.read_text())
@@ -457,11 +475,22 @@ def cleanup(target):
             os.kill(pid, signal.SIGTERM)
             print(f"{run_dir.name}: sent SIGTERM to its nix-verify process {pid}")
         if m.get("scratch"):
-            remove_scratch(m["scratch"])
+            refused = remove_scratch(m["scratch"], run_dir)
+            if refused:
+                print(f"{run_dir.name}: throwaway copy not removed: {refused}")
+                code = 1
         m.update(status="abandoned", cleaned=True)
         meta.write_text(json.dumps(m, indent=2) + "\n")
         print(f"{run_dir.name}: marked abandoned; evidence kept")
     return code
+
+
+def evidence_inside_repo():
+    try:
+        EVIDENCE.relative_to(REPO)
+        return True
+    except ValueError:
+        return False
 
 
 def main(argv):
@@ -469,6 +498,10 @@ def main(argv):
         print(__doc__)
         return 0 if argv else 2
     cmd, rest = argv[0], argv[1:]
+    if cmd in ("doctor", "cleanup", "run") and evidence_inside_repo():
+        print(f"nix-verify: refusing {cmd}: the evidence root {EVIDENCE} is inside the repository {REPO}; "
+              "set NIX_VERIFY_EVIDENCE outside it", file=sys.stderr)
+        return 2
     if cmd == "doctor":
         return doctor()
     if cmd == "journeys":
@@ -484,12 +517,6 @@ def main(argv):
         if unknown:
             print(f"nix-verify: unknown journey {', '.join(unknown)}; see `nix-verify journeys`", file=sys.stderr)
             return 2
-        try:
-            EVIDENCE.relative_to(REPO)
-            print(f"nix-verify: evidence root {EVIDENCE} is inside the repository", file=sys.stderr)
-            return 2
-        except ValueError:
-            pass
         results = [run_journey(n, tests) for n in names]
         if len(names) > 1:
             print("summary: " + ", ".join(f"{n} {'PASSED' if ok else 'FAILED'}" for n, ok in zip(names, results)))

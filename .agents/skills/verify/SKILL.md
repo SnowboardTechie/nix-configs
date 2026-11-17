@@ -27,7 +27,8 @@ export NIX_VERIFY_EVIDENCE=/Users/bryan/.pi/pstack-trial/evidence/nix-verify/run
 V=.agents/skills/verify/scripts/nix-verify
 ```
 
-`NIX_VERIFY_EVIDENCE` is the evidence root. It must be outside the repository; `run` refuses a path inside it.
+`NIX_VERIFY_EVIDENCE` is the evidence root. It must be outside the repository; `doctor`, `run` and `cleanup` refuse
+(exit 2, nothing written) when it is inside.
 
 ## Launch
 
@@ -141,15 +142,27 @@ alone, since another agent may own them. Named, the directory must be under the 
 repository, or cleanup refuses it (exit 2) and writes nothing. It then sends SIGTERM only to a process that matches
 all three of: the PID in `run.json`, the start time recorded with it, and holding that directory's `run.lock` (checked
 with `lsof`). A `run.json` that names another run directory is left alone. SIGTERM stops the run's Nix or test child,
-removes its throwaway copy and finishes the run as failed; cleanup then marks it `abandoned`. It never kills by process
-name, never signals a process that fails a check (it says which and exits 1), and never removes evidence.
+removes its throwaway copy and finishes the run as failed; cleanup then marks it `abandoned`. A throwaway copy is
+removed, by the run or by cleanup, only when it is not a symlink, is a `nix-verify-tests-*` directory directly in the
+temporary directory, and holds the `nix-verify-run.json` marker the run wrote naming that run directory; otherwise
+nothing is removed and cleanup says why and exits 1. It never kills by process name, never signals a process that
+fails a check (it says which and exits 1), and never removes evidence.
+
+These checks protect against stale records, reused PIDs, another checkout's run, wrong or planted paths, and bystander
+processes or directories that only look like a run's. They do not protect against the same user deliberately forging a
+record and lock to agree: whoever can write the evidence root and open the lock file can already signal and remove as
+that user.
 
 The safety claims above have a self-test: `.agents/skills/verify/scripts/selftest` (about 5 s, scratch repositories
 and processes only). It runs a test that rewrites `flake.lock` and checks the real one is untouched, an empty test
 set, an ignored file and an already-dirty file changing, and decoy processes whose command lines match a run's: no
 lock, a reused PID, a PID that does not hold the lock, a copied `run.json`, directories inside the repository and
-outside the evidence root. Run it after any change to `nix-verify`. Nix leaves nothing else to clean: builds use `--no-link`, and store paths are collected by `nix store gc`
-only when nothing roots them.
+outside the evidence root, an evidence root inside the repository for `cleanup`, `doctor` and `run`, and records naming
+a throwaway copy that is not theirs (no marker, another run's marker, outside the temporary directory, a symlink). Run
+it after any change to `nix-verify`.
+
+Nix leaves nothing else to clean: builds use `--no-link`, and store paths are collected by `nix store gc` only when
+nothing roots them.
 
 ## Gotchas
 

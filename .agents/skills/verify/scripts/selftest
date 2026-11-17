@@ -198,6 +198,47 @@ def main():
         r = nix_verify(repo, root / "a" / "repo" / "evidence-inside", "cleanup", str(root / "a/repo/evidence-inside/x"))
         check("cleanup refuses when the evidence root itself is inside the repository", r.returncode == 2, r.stderr.strip())
 
+        # Bare cleanup (and doctor, and run) with the evidence root inside the repository: refused, nothing written.
+        inside_root = repo / "evidence-in-repo"
+        planted_run = inside_root / "stale"
+        planted_run.mkdir(parents=True)
+        record = json.dumps({"status": "running", "pid": 0, "run_dir": str(planted_run)})
+        (planted_run / "run.json").write_text(record)
+        for args in (("cleanup",), ("doctor",), ("run", "evaluate")):
+            r = nix_verify(repo, inside_root, *args)
+            check(f"`{' '.join(args)}` refuses an evidence root inside the repository",
+                  r.returncode == 2 and "inside the repository" in r.stderr, r.stderr.strip())
+        check("and the record inside the repository is not rewritten",
+              (planted_run / "run.json").read_text() == record and sorted(os.listdir(inside_root)) == ["stale"])
+
+        # A record naming a throwaway copy that is not its own: nothing removed.
+        def forged(name, scratch):
+            d = fake_run(evidence, name, pid=0, process_start="x", scratch=str(scratch))
+            r = nix_verify(repo, evidence, "cleanup", str(d))
+            return d, r
+        bystander = Path(tempfile.mkdtemp(prefix="nix-verify-tests-"))
+        (bystander / "keep").write_text("x")
+        _, r = forged("scratch-no-marker", bystander)
+        check("a forged scratch path to a prefixed directory with no marker is not removed",
+              (bystander / "keep").exists() and r.returncode == 1 and "no readable" in r.stdout, r.stdout.strip())
+        (bystander / "nix-verify-run.json").write_text(json.dumps({"run_dir": str(evidence / "someone-else")}))
+        _, r = forged("scratch-other-run", bystander)
+        check("a forged scratch path whose marker names another run is not removed",
+              (bystander / "keep").exists() and "names" in r.stdout, r.stdout.strip())
+        elsewhere = root / "nix-verify-tests-elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "nix-verify-run.json").write_text(json.dumps({"run_dir": str(evidence / "scratch-elsewhere")}))
+        _, r = forged("scratch-elsewhere", elsewhere)
+        check("a scratch path outside the temporary directory is not removed, even with a matching marker",
+              elsewhere.exists() and "not a nix-verify-tests-" in r.stdout, r.stdout.strip())
+        link = Path(tempfile.gettempdir()) / f"nix-verify-tests-link-{os.getpid()}"
+        link.symlink_to(elsewhere)
+        _, r = forged("scratch-link", link)
+        check("a scratch path that is a symlink is not followed or removed",
+              elsewhere.exists() and link.is_symlink() and "symlink" in r.stdout, r.stdout.strip())
+        link.unlink()
+        shutil.rmtree(bystander)
+
         # Positive control: a real run is still stopped when named.
         slow = scratch_repo(root / "d", {"slow": SLOW})
         real = subprocess.Popen([sys.executable, str(slow / ".agents/skills/verify/scripts/nix-verify"), "run",
@@ -217,7 +258,7 @@ def main():
         out, _ = real.communicate(timeout=60)
         scratch = json.loads((run_dir / "run.json").read_text()).get("scratch")
         check("named cleanup stops the run's own process", real.returncode == 1 and "signal 15" in out, r.stdout.strip())
-        check("and removes its throwaway copy", scratch and not Path(scratch).exists())
+        check("and removes its throwaway copy, whose marker names the run", scratch and not Path(scratch).exists())
 
         for p in (d1, d2, d3, d4):
             p.kill()
