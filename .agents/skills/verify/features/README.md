@@ -37,7 +37,7 @@ H2 sections follow, in this order: `Sub-features`, `How to get to it (user POV)`
 | [Host configurations evaluate](./host-evaluation.md) | `evaluate` | yes | 2026-11-16 |
 | [Darwin systems build](./darwin-build.md) | `build-darwin` | yes | 2026-11-16 |
 | [The flake's own check](./flake-check.md) | `flake-check` | yes | 2026-11-16 |
-| [Module tests](./module-tests.md) | `module-tests` | no (~11 min) | 2026-11-16, on `omlx_module`; the full set fails on main (two tests) |
+| [Module tests](./module-tests.md) | `module-tests` | no (~12 min) | 2026-11-16, on `omlx_module`; the full set fails on main (two tests) |
 
 "Last proved" means the journey passed on commit 21d51c1 and failed on each break below, on that date.
 
@@ -56,7 +56,20 @@ journey gains a claim.
 | a6mbp adds a `runCommand` that exits 1: evaluates, fails to build | `modules/hosts/a6mbp.nix` | `build-darwin` | `build a6mbp` |
 | the vets-website dev shell names a package nixpkgs lacks | `modules/dev-envs/vets-website.nix` | `flake-check` | `nix flake check` |
 | oMLX's agent binds `0.0.0.0`, not `127.0.0.1` | `modules/services/omlx.nix` | `module-tests -- omlx_module` | `test_omlx_module` (two tests) |
-| the runner lets Python write bytecode into `scripts/` | `../scripts/nix-verify` | `module-tests -- check_github_status` | `worktree untouched` |
+| the runner lets Python write bytecode into `scripts/` | `../scripts/nix-verify` | `module-tests -- check_github_status` | `worktree untouched` (before Correction 1; tests now run in a copy) |
+
+Breaks of the harness itself are scripted in `../scripts/selftest` and run against scratch repositories, so nothing
+here is edited by hand. Each was also run against the harness before Correction 1, which failed it:
+
+| Break | Before Correction 1 | Now (`selftest` check) |
+| --- | --- | --- |
+| a repository test runs `nix flake lock` and rewrites `flake.lock` | the real lock rewritten, then reported | the real lock byte-for-byte unchanged; `tests left flake.lock alone` fails |
+| `scripts/` holds no test | `module-tests` passed | "an empty test set fails" |
+| the full set is not the stated count | passed | "a full set other than the stated count fails" |
+| an ignored file changes; an already-dirty file is edited further | not seen (git status unchanged) | both seen by `worktree untouched` |
+| an unrelated process whose command line names `nix-verify run`, recorded in a `run.json` | SIGTERMed by `cleanup <dir>` | survives bare and named cleanup |
+| a reused PID (start time differs) or a recorded PID that does not hold `run.lock` | would be signalled | not signalled, reason printed |
+| `cleanup` of a directory inside the repository, or outside the evidence root | `run.json` rewritten in the repository | refused, exit 2, nothing written |
 
 A break that passed and was replaced: oMLX's port default changed from 8000 to 8001. Studio sets `port = 8000` itself,
 so nothing any host builds changed; the break was wrong, not the journey.

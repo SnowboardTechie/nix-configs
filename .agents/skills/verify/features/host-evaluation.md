@@ -9,7 +9,9 @@ be rebuilt at all.
 - `darwin-hosts`: each `darwinConfigurations.<host>.system.drvPath` evaluates to an existing `.drv`.
 - `nixos-hosts`: `nixosConfigurations.gnarbox.config.system.build.toplevel.drvPath` evaluates, for `x86_64-linux`.
 - `host-coverage`: every `modules/hosts/<name>.nix` has a configuration named `<name>` in the flake.
-- `locked-inputs`: evaluation uses `flake.lock` as committed and fails rather than updating it.
+- `locked-inputs`: evaluation uses `flake.lock` as it is on disk and fails rather than updating it. Whether that lock
+  matches `HEAD` is recorded, not asserted (a branch that updates the lock must still be verifiable): `run.json`'s
+  `flake_lock`, the run's third line, and `doctor`'s `WARN`.
 
 ## How to get to it (user POV)
 
@@ -24,7 +26,8 @@ Preconditions:
 
 - **Evaluate.** Run `$V run evaluate`. One `evaluate <host>` step per host, each `ok` with its `.drv` path, about 40 s.
 - **Coverage.** The step `every modules/hosts/*.nix is a configuration` lists each host with its output kind.
-- **Lock.** `worktree untouched` says `flake.lock and git status unchanged`.
+- **Lock.** The third line says `flake.lock matches HEAD` (or that it differs). `worktree untouched` says every file,
+  `flake.lock` included, is unchanged.
 - **Proof.** `log.txt` holds the four `.drv` paths; `commands.jsonl` the four `nix eval` calls, each with exit 0.
 
 ## Gotchas

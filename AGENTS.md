@@ -103,8 +103,9 @@ nix develop '.#vets-website'              # or next-build, component-library, et
 `.agents/skills/verify/` is the project skill for proving a Nix change works without activating it: a control command
 (`.agents/skills/verify/scripts/nix-verify doctor | run [journey] | cleanup`), four journeys and a feature map. The
 default `run` evaluates every host, builds each darwin system with `--no-link` and runs `nix flake check`, in about a
-minute; `run module-tests` adds `scripts/test_*.py`. Every Nix call passes `--no-update-lock-file`, and a run fails if
-the tree or `flake.lock` changed. It was generated with pstack's `create-verification-skill`; keep it current with
+minute; `run module-tests` adds `scripts/test_*.py`, run in a throwaway copy because their own Nix calls are unlocked.
+Every Nix call the command makes passes `--no-update-lock-file`, and a run fails if any file in the tree changed.
+`scripts/selftest` proves the harness's safety claims. It was generated with pstack's `create-verification-skill`; keep it current with
 `maintain-verification-skill`.
 
 - **A journey counts only once it has been seen to fail** on the break it exists to catch. The feature map lists them.

@@ -22,7 +22,7 @@ Preconditions:
 - `$V doctor` passes.
 
 - **Check.** Run `$V run flake-check`. The step `nix flake check` is `ok`, about 15 s.
-- **Proof.** `02-flake-check.err` lists `checking derivation devShells.aarch64-darwin.<shell>` for each shell, and
+- **Proof.** `01-flake-check.err` lists `checking derivation devShells.aarch64-darwin.<shell>` for each shell, and
   ends with the warning that `x86_64-linux` was omitted.
 
 ## Gotchas

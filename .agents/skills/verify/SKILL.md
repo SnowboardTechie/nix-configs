@@ -12,7 +12,9 @@ flake's own check passes, and the module tests in `scripts/` pass. It never runs
 
 Everything goes through one control command, `.agents/skills/verify/scripts/nix-verify` (Python 3, standard library
 only). Every Nix call it makes passes `--no-update-lock-file`, and builds pass `--no-link`, so no `result` link is left
-in the tree. Run it from the repository root, the checkout being verified.
+in the tree. The repository's own tests make Nix calls of their own without that flag, so `module-tests` runs them in a
+throwaway copy of the worktree, where nothing they write can reach the real `flake.lock` or tree. Run it from the
+repository root, the checkout being verified.
 
 Never run `update-system`, `upgrade-system`, `darwin-rebuild switch|activate`, `nixos-rebuild switch|boot|test`,
 `nix flake update`, `nix flake lock`, or a built system's `activate` script while verifying. Those change the
@@ -34,7 +36,7 @@ There is no server. Each `run` drives Nix against the checkout as it is on disk 
 ```sh
 $V run                          # the default set: evaluate, build-darwin, flake-check (~55 s warm, see timings)
 $V run evaluate                 # one journey
-$V run module-tests             # opt-in: every scripts/test_*.py (~11 min)
+$V run module-tests             # opt-in: every scripts/test_*.py, in a throwaway copy (~12 min)
 $V run module-tests -- omlx_module pi_durable_module   # chosen tests, by the name after test_
 $V journeys                     # list journeys, default or opt-in, with timings
 ```
@@ -49,7 +51,7 @@ Timings on the Mac Studio (aarch64-darwin, 2026-11-16, store warm):
 | `evaluate` | yes | ~40 s | gnarbox's NixOS evaluation (~15 s), mbp and studio (~9 s each) |
 | `build-darwin` | yes | ~2 s cached; minutes after a nixpkgs change | Building what the store lacks |
 | `flake-check` | yes | ~15 s | Evaluating the eight dev shells and gnarbox |
-| `module-tests` | no | ~11 min for all 19 | `test_pi_durable_module.py` (~5 min), `test_forgejo_runner_module.py` and `test_hermes_updater.py` (~70 s each) |
+| `module-tests` | no | ~12 min for all 19 | `test_pi_durable_module.py` (~5 min), `test_forgejo_runner_module.py` and `test_hermes_updater.py` (~70 s each) |
 
 A cold store after a `flake.lock` change can make `build-darwin` take far longer; that is downloading, not a hang.
 The step's `.err` file shows Nix's progress.
@@ -66,11 +68,12 @@ Read-only apart from creating the evidence root. Exits 1 on any `FAIL`. It repor
 
 - `nix`: present, with its version. `system`: `aarch64-darwin`, or a `WARN` that `build-darwin` needs it.
 - `linux builder`: whether an `x86_64-linux` builder is configured. Without one gnarbox is evaluated, never built.
-- `flake.lock`: matches `HEAD`, or a `WARN` that the run verifies an edited lock.
+- `flake.lock`: matches `HEAD`, or a `WARN` that the run verifies an edited lock. Runs verify the lock as it is on
+  disk, committed or not; each run records which in `run.json` (`flake_lock`) and on its third line.
 - `untracked .nix`: a `.nix` file git does not track is invisible to the flake (see Gotchas); `git add` it first.
 - `result links`: a `result*` link left in the repository by someone's `nix build`.
 - `python3`, needed by `module-tests`; `evidence`: the root is outside the repository and writable.
-- `runs`: runs still marked running. One whose process is gone is a `FAIL`: run `cleanup`.
+- `runs`: runs still marked running. One whose `run.lock` no process holds is a `FAIL`: run `cleanup`.
 
 Run it first, and again whenever a run looks wrong.
 
@@ -87,10 +90,17 @@ to catch are in `features/`. In short:
 - **`flake-check`** runs `nix flake check --no-update-lock-file` for this machine's system.
 - **`module-tests`** runs `scripts/test_*.py` with `PYTHONDONTWRITEBYTECODE=1`. These are the repository's own tests:
   they evaluate hosts with options overridden and run service scripts against stand-ins. Read
-  `modules/services/AGENTS.md` for which test covers which module.
+  `modules/services/AGENTS.md` for which test covers which module. Their Nix calls are unlocked (for example
+  `scripts/test_hermes_updater.py`'s `nix eval` and `nix build`), so the journey copies the worktree's tracked and
+  untracked, not ignored, files to a fresh directory under `$TMPDIR` (`nix-verify-tests-*`) and runs every test there.
+  The tests find the flake from their own path, so any lock update or file they write lands in the copy, which is
+  removed after. The real `flake.lock` cannot be written. The journey fails when no test is found, when the full set
+  is not the 19 `features/module-tests.md` states, or when a test changed the copy's `flake.lock`.
 
-Every journey ends with `worktree untouched`: `flake.lock`'s hash and `git status --porcelain -uall` are the same after
-the run as before. A run that writes the lock or a file in the tree fails.
+Every journey ends with `worktree untouched`: every file in the worktree, ignored files included and only git's own
+metadata left out, has the same mode and SHA-256 after the run as before. A run that writes the lock, adds, removes
+or changes any file, or edits further a file that was already dirty, fails. It detects; for `module-tests` the copy is
+what prevents.
 
 To check one module beyond the journeys, use the same shape the tests use: `nix eval --no-update-lock-file --json
 '.#darwinConfigurations.studio.config.<option path>'`. Record the command and its output with the run.
@@ -105,8 +115,9 @@ Each run writes `$NIX_VERIFY_EVIDENCE/<UTC time>-<journey>/`:
 | `result.json` | Each step's outcome, time and error; `passed` |
 | `commands.jsonl` | Each command run: argv, exit code, seconds |
 | `NN-<step>.out`, `NN-<step>.err` | That command's full stdout and stderr (Nix's error trace, the test's output) |
-| `tree-before.txt`, `tree-after.txt` | `flake.lock`'s SHA-256 and `git status` before and after |
-| `run.json` | The journey, the commit, the process ID and the status |
+| `tree-before.txt`, `tree-after.txt` | Each worktree file's mode and SHA-256 before and after |
+| `run.json` | The journey, the commit, whether `flake.lock` matched `HEAD`, the process ID and start time, the run directory, the throwaway copy, the status |
+| `run.lock` | Held by the run's process while it runs; cleanup reads a free lock as "the process is gone" |
 
 Proof standards:
 
@@ -125,10 +136,19 @@ $V cleanup                  # runs still marked running whose process is gone
 $V cleanup <run directory>  # one run, stopping it if it is still in progress
 ```
 
-Without an argument it marks each run whose process has gone `abandoned` and leaves runs in progress alone, since
-another agent may own them. Named, it sends SIGTERM to that run's own `nix-verify run` process (which stops its Nix
-child and finishes the run as failed) and marks it `abandoned`. It never kills by process name and never removes
-evidence. Nix leaves nothing else to clean: builds use `--no-link`, and store paths are collected by `nix store gc`
+Without an argument it marks each run whose `run.lock` no process holds `abandoned` and leaves runs in progress
+alone, since another agent may own them. Named, the directory must be under the evidence root and outside the
+repository, or cleanup refuses it (exit 2) and writes nothing. It then sends SIGTERM only to a process that matches
+all three of: the PID in `run.json`, the start time recorded with it, and holding that directory's `run.lock` (checked
+with `lsof`). A `run.json` that names another run directory is left alone. SIGTERM stops the run's Nix or test child,
+removes its throwaway copy and finishes the run as failed; cleanup then marks it `abandoned`. It never kills by process
+name, never signals a process that fails a check (it says which and exits 1), and never removes evidence.
+
+The safety claims above have a self-test: `.agents/skills/verify/scripts/selftest` (about 5 s, scratch repositories
+and processes only). It runs a test that rewrites `flake.lock` and checks the real one is untouched, an empty test
+set, an ignored file and an already-dirty file changing, and decoy processes whose command lines match a run's: no
+lock, a reused PID, a PID that does not hold the lock, a copied `run.json`, directories inside the repository and
+outside the evidence root. Run it after any change to `nix-verify`. Nix leaves nothing else to clean: builds use `--no-link`, and store paths are collected by `nix store gc`
 only when nothing roots them.
 
 ## Gotchas
@@ -152,7 +172,9 @@ only when nothing roots them.
 - **A break must hit what the host sets.** Studio sets `services.omlx.port` itself, so changing the option's default
   changes nothing `evaluate` or the tests see. A journey that passes on a break first needs the break checked.
 - Python writes `__pycache__` into `scripts/` when a test is run by hand; `.gitignore` does not cover it. The journey
-  turns that off. If you ran tests by hand, remove the `.pyc` files you made before committing.
+  runs in a copy with bytecode off. If you ran tests by hand, remove the `.pyc` files you made before committing.
+- `worktree untouched` hashes every file in the worktree, so an editor or another agent writing in the same
+  worktree during a run fails it. Don't edit while a run is going.
 - A journey counts as proven only after it has been seen to fail on the break it exists to catch: break the file in the
   worktree, run the journey, record the failure, `git restore` the file. `features/README.md` lists the breaks.
 

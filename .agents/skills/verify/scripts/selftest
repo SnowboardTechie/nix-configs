@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+"""selftest: prove nix-verify's own safety claims, against scratch repositories and processes it starts.
+
+Usage (from anywhere): .agents/skills/verify/scripts/selftest
+Exit 0 when every check passes. It never touches this repository, its flake.lock or another run.
+
+Each check is a break of one claim: a decoy process whose command line matches a run's, a repository test
+that rewrites flake.lock, an empty test set, a change to an ignored file and to an already-dirty file.
+"""
+import importlib.machinery
+import importlib.util
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+HERE = Path(__file__).resolve().parent
+NIX_VERIFY = HERE / "nix-verify"
+results = []
+
+
+def check(name, ok, detail=""):
+    results.append(ok)
+    print(f"{'ok  ' if ok else 'FAIL'} {name}{': ' + detail if detail else ''}", flush=True)
+
+
+def git(cwd, *args):
+    return subprocess.run(["git", "-c", "user.name=selftest", "-c", "user.email=selftest@invalid",
+                           "-c", "commit.gpgsign=false", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+
+def scratch_repo(root, tests):
+    """A git repository shaped like this one: the skill at .agents/skills/verify, a flake with a local input that
+    flake.lock does not lock yet, and the given scripts/test_*.py."""
+    repo = root / "repo"
+    (repo / ".agents/skills/verify/scripts").mkdir(parents=True)
+    shutil.copy2(NIX_VERIFY, repo / ".agents/skills/verify/scripts/nix-verify")
+    (repo / "dep").mkdir()
+    (repo / "dep/flake.nix").write_text('{ outputs = _: { value = 1; }; }\n')
+    (repo / "flake.nix").write_text('{ inputs.dep.url = "path:./dep"; outputs = { dep, ... }: { value = dep.value; }; }\n')
+    (repo / "flake.lock").write_text('{"nodes":{"root":{}},"root":"root","version":7}\n')
+    (repo / ".gitignore").write_text("ignored/\n")
+    (repo / "scripts").mkdir()
+    for name, body in tests.items():
+        (repo / "scripts" / f"test_{name}.py").write_text(body)
+    git(repo, "init", "-q", "--initial-branch=main")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "scratch")
+    return repo
+
+
+def nix_verify(repo, evidence, *args, timeout=600):
+    return subprocess.run([sys.executable, str(repo / ".agents/skills/verify/scripts/nix-verify"), *args], cwd=repo,
+                          env={**os.environ, "NIX_VERIFY_EVIDENCE": str(evidence)}, text=True, capture_output=True,
+                          timeout=timeout)
+
+
+def load_module():
+    loader = importlib.machinery.SourceFileLoader("nix_verify", str(NIX_VERIFY))
+    spec = importlib.util.spec_from_loader("nix_verify", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+# A repository test that does what the verifier feared: an unlocked Nix call on its own flake (found, as this
+# repository's tests do, from its own path), which writes flake.lock, then a direct rewrite to be sure.
+REWRITE_LOCK = '''import subprocess, unittest
+from pathlib import Path
+REPO = Path(__file__).resolve().parents[1]
+class T(unittest.TestCase):
+    def test_rewrites_lock(self):
+        subprocess.run(["nix", "--extra-experimental-features", "nix-command flakes", "flake", "lock"],
+                       cwd=REPO, check=True, capture_output=True)
+        self.assertIn("dep", (REPO / "flake.lock").read_text())
+        (REPO / "flake.lock").write_text("rewritten by a test")
+        (REPO / "written-by-test.txt").write_text("x")
+unittest.main()
+'''
+
+SLOW = '''import time, unittest
+class T(unittest.TestCase):
+    def test_slow(self):
+        time.sleep(120)
+unittest.main()
+'''
+
+
+def decoy(root, extra=()):
+    """An unrelated process whose command line names a nix-verify run, as another checkout's run would."""
+    fake = root / "other-checkout/.agents/skills/verify/scripts/nix-verify"
+    fake.parent.mkdir(parents=True, exist_ok=True)
+    fake.write_text("import sys, time\n" + "".join(extra) + "time.sleep(300)\n")
+    p = subprocess.Popen([sys.executable, str(fake), "run", "evaluate"])
+    time.sleep(0.5)
+    return p
+
+
+def fake_run(evidence, name, **meta):
+    d = evidence / name
+    d.mkdir(parents=True)
+    (d / "run.json").write_text(json.dumps({"journey": "evaluate", "status": "running", "run_dir": str(d), **meta}))
+    return d
+
+
+def main():
+    nv = load_module()
+    with tempfile.TemporaryDirectory(prefix="nix-verify-selftest-") as tmp:
+        root = Path(tmp).resolve()
+        evidence = root / "evidence"
+
+        # 1. A repository test that rewrites flake.lock leaves the real one, and the real tree, untouched.
+        repo = scratch_repo(root / "a", {"rewrite_lock": REWRITE_LOCK})
+        lock = (repo / "flake.lock").read_bytes()
+        r = nix_verify(repo, evidence, "run", "module-tests", "--", "rewrite_lock")
+        check("a test that rewrites flake.lock runs in the copy and passes there",
+              r.returncode != 0 and "step test_rewrite_lock: ok" in r.stdout, r.stdout.strip().splitlines()[-1])
+        check("the real flake.lock is byte-for-byte unchanged", (repo / "flake.lock").read_bytes() == lock)
+        check("the test's file did not land in the real tree", not (repo / "written-by-test.txt").exists())
+        check("the copy's rewritten lock fails the run", "step tests left flake.lock alone: FAIL" in r.stdout)
+        check("the real tree check passes", "step worktree untouched: ok" in r.stdout)
+        scratch = json.loads(next(evidence.glob("*-module-tests/run.json")).read_text()).get("scratch")
+        check("the throwaway copy is removed", scratch and not Path(scratch).exists(), str(scratch))
+
+        # 2. An empty test set fails, and a full set of the wrong size fails.
+        empty = scratch_repo(root / "b", {})
+        r = nix_verify(empty, evidence, "run", "module-tests")
+        check("an empty test set fails", r.returncode == 1 and "no scripts/test_*.py found" in r.stdout)
+        one = scratch_repo(root / "c", {"ok": "import unittest\nunittest.main()\n"})
+        r = nix_verify(one, evidence, "run", "module-tests")
+        check("a full set other than the stated count fails", r.returncode == 1 and
+              f"found 1 scripts/test_*.py, features/module-tests.md states {nv.EXPECTED_TESTS}" in r.stdout)
+
+        # 3. The tree check sees an ignored file and a further edit to an already-dirty file.
+        (repo / "ignored").mkdir()
+        (repo / "ignored/cache").write_text("one")
+        (repo / "flake.nix").write_text((repo / "flake.nix").read_text() + "# dirty\n")
+        before = nv.tree_state(repo)
+        (repo / "ignored/cache").write_text("two")
+        (repo / "flake.nix").write_text((repo / "flake.nix").read_text() + "# dirtier\n")
+        diff = nv.tree_diff(before, nv.tree_state(repo))
+        check("a change to an ignored file is seen", "~ ignored/cache" in diff, str(diff))
+        check("a further edit to an already-dirty file is seen", "~ flake.nix" in diff, str(diff))
+        git_same = subprocess.run(["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True).stdout
+        check("(git status alone would not have seen either)", git_same.strip() == "M flake.nix", git_same.strip())
+
+        # 4. cleanup never signals a process the run did not start.
+        d1 = decoy(root)
+        fake_run(evidence, "decoy-no-lock", pid=d1.pid, process_start=nv.process_start(d1.pid))
+        r1 = nix_verify(repo, evidence, "cleanup")
+        r2 = nix_verify(repo, evidence, "cleanup", str(evidence / "decoy-no-lock"))
+        check("a decoy with a matching command line survives bare and named cleanup",
+              d1.poll() is None, (r1.stdout + r2.stdout).strip().replace("\n", " | "))
+
+        # The decoy holds the run's lock but run.json records a start time it never had (a reused PID).
+        d = fake_run(evidence, "reused-pid", pid=0, process_start="Thu Jan  1 00:00:00 1970")
+        d2 = decoy(root, [f"import fcntl; f = open({str(d / 'run.lock')!r}, 'w'); fcntl.flock(f, fcntl.LOCK_EX)\n"])
+        meta = json.loads((d / "run.json").read_text())
+        meta["pid"] = d2.pid
+        (d / "run.json").write_text(json.dumps(meta))
+        r = nix_verify(repo, evidence, "cleanup", str(d))
+        check("a process with the recorded PID but another start time is not signalled",
+              d2.poll() is None and "start time differs" in r.stdout, r.stdout.strip())
+
+        # Recorded PID and start time match, but another process holds the lock (run.json edited to point at it).
+        d3 = decoy(root)
+        d = fake_run(evidence, "pid-not-holder", pid=d3.pid, process_start=nv.process_start(d3.pid))
+        d4 = decoy(root, [f"import fcntl; f = open({str(d / 'run.lock')!r}, 'w'); fcntl.flock(f, fcntl.LOCK_EX)\n"])
+        r = nix_verify(repo, evidence, "cleanup", str(d))
+        check("a recorded process that does not hold the run's lock is not signalled",
+              d3.poll() is None and d4.poll() is None and "does not hold" in r.stdout, r.stdout.strip())
+
+        # A run.json copied from another run's directory.
+        other = fake_run(evidence, "copied", pid=d1.pid, process_start=nv.process_start(d1.pid))
+        meta = json.loads((other / "run.json").read_text())
+        meta["run_dir"] = str(evidence / "somewhere-else")
+        (other / "run.json").write_text(json.dumps(meta))
+        r = nix_verify(repo, evidence, "cleanup", str(other))
+        check("a run.json naming another run directory is left alone",
+              d1.poll() is None and "names another run directory" in r.stdout, r.stdout.strip())
+
+        # Outside the evidence root, and inside the repository: refused, and the repository's run.json not written.
+        inside = repo / "planted"
+        inside.mkdir()
+        (inside / "run.json").write_text(json.dumps({"status": "running", "pid": d1.pid}))
+        planted = (inside / "run.json").read_text()
+        r = nix_verify(repo, evidence, "cleanup", str(inside))
+        check("cleanup refuses a directory inside the repository and leaves its run.json",
+              r.returncode == 2 and (inside / "run.json").read_text() == planted and d1.poll() is None, r.stderr.strip())
+        r = nix_verify(repo, evidence, "cleanup", str(root / "a"))
+        check("cleanup refuses a directory outside the evidence root", r.returncode == 2, r.stderr.strip())
+        r = nix_verify(repo, root / "a" / "repo" / "evidence-inside", "cleanup", str(root / "a/repo/evidence-inside/x"))
+        check("cleanup refuses when the evidence root itself is inside the repository", r.returncode == 2, r.stderr.strip())
+
+        # Positive control: a real run is still stopped when named.
+        slow = scratch_repo(root / "d", {"slow": SLOW})
+        real = subprocess.Popen([sys.executable, str(slow / ".agents/skills/verify/scripts/nix-verify"), "run",
+                                 "module-tests", "--", "slow"], cwd=slow, env={**os.environ, "NIX_VERIFY_EVIDENCE": str(evidence)},
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        run_dir = None
+        for _ in range(100):
+            found = [p.parent for p in evidence.glob("*-module-tests*/run.json")
+                     if json.loads(p.read_text()).get("pid") == real.pid]
+            if found and json.loads((found[0] / "run.json").read_text()).get("scratch"):
+                run_dir = found[0]
+                break
+            time.sleep(0.1)
+        r = nix_verify(slow, evidence, "cleanup")
+        check("bare cleanup leaves a live run alone", real.poll() is None and "in progress" in r.stdout, r.stdout.strip())
+        r = nix_verify(slow, evidence, "cleanup", str(run_dir))
+        out, _ = real.communicate(timeout=60)
+        scratch = json.loads((run_dir / "run.json").read_text()).get("scratch")
+        check("named cleanup stops the run's own process", real.returncode == 1 and "signal 15" in out, r.stdout.strip())
+        check("and removes its throwaway copy", scratch and not Path(scratch).exists())
+
+        for p in (d1, d2, d3, d4):
+            p.kill()
+            p.wait()
+
+    print(f"selftest: {'PASSED' if all(results) else 'FAILED'} ({sum(results)}/{len(results)})")
+    return 0 if all(results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

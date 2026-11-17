@@ -7,10 +7,13 @@ Usage (from the repository root):
   nix-verify run [journey ...] [-- test-name ...]   no journey: the default set
   nix-verify cleanup [run directory]          no directory: only runs whose process is gone
 
-Every nix call passes --no-update-lock-file and builds with --no-link. Nothing here
-runs switch, activate, update-system, upgrade-system or `nix flake update`.
+Every nix call this command makes passes --no-update-lock-file, and builds pass --no-link.
+The repository's own tests (module-tests) run their own Nix calls, unlocked, so they run in a
+throwaway copy of the worktree: the real flake.lock and tree cannot be written by them.
+Nothing here runs switch, activate, update-system, upgrade-system or `nix flake update`.
 """
 import datetime
+import fcntl
 import hashlib
 import json
 import os
@@ -18,6 +21,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -31,8 +35,11 @@ JOURNEYS = {
     "evaluate": ("default", "Every darwinConfigurations and nixosConfigurations host evaluates to a system derivation (~45 s)"),
     "build-darwin": ("default", "Every darwin host's system builds (--no-link) and holds an activate script; never run (~40 s cached)"),
     "flake-check": ("default", "nix flake check for this machine's system (~20 s)"),
-    "module-tests": ("opt-in", "Every scripts/test_*.py, or the ones named after --; ~11 min for all"),
+    "module-tests": ("opt-in", "Every scripts/test_*.py, or the ones named after --, in a throwaway copy; ~12 min for all"),
 }
+# The number of scripts/test_*.py that features/module-tests.md states. Change both together.
+EXPECTED_TESTS = 19
+SCRATCH_PREFIX = "nix-verify-tests-"
 DEFAULT = [name for name, (kind, _) in JOURNEYS.items() if kind == "default"]
 
 
@@ -52,7 +59,13 @@ class Run:
         self.journey = journey
         self.steps = []
         self.child = None
-        self.meta = {"journey": journey, "pid": os.getpid(), "repo": str(REPO), "status": "running",
+        # Held for the life of this process: cleanup reads "lock free" as "this run's process is gone",
+        # and signals only the process that holds this file, has the recorded PID and the recorded start time.
+        self.lock = open(self.dir / "run.lock", "w")
+        fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.meta = {"journey": journey, "pid": os.getpid(), "process_start": process_start(os.getpid()),
+                     "flake_lock": lock_vs_head(),
+                     "run_dir": str(self.dir), "repo": str(REPO), "status": "running",
                      "commit": git("rev-parse", "HEAD").strip(), "started": stamp}
         self.save_meta()
 
@@ -64,10 +77,10 @@ class Run:
         with open(self.dir / "log.txt", "a") as f:
             f.write(text + "\n")
 
-    def sh(self, name, argv, timeout=1800, env=None):
-        """Run argv from the repository root; return (exit code, stdout, stderr). The command goes to commands.jsonl."""
+    def sh(self, name, argv, timeout=1800, env=None, cwd=None):
+        """Run argv from the repository root (or cwd); return (exit code, stdout, stderr). The command goes to commands.jsonl."""
         start = time.monotonic()
-        self.child = subprocess.Popen(argv, cwd=REPO, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        self.child = subprocess.Popen(argv, cwd=cwd or REPO, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                       env={**os.environ, **(env or {})})
         try:
             out, err = self.child.communicate(timeout=timeout)
@@ -81,7 +94,7 @@ class Run:
         (self.dir / f"{len(self.steps) + 1:02d}-{safe}.out").write_text(out)
         (self.dir / f"{len(self.steps) + 1:02d}-{safe}.err").write_text(err)
         with open(self.dir / "commands.jsonl", "a") as f:
-            f.write(json.dumps({"step": name, "argv": argv, "exit": code, "seconds": seconds}) + "\n")
+            f.write(json.dumps({"step": name, "argv": argv, "cwd": str(cwd or REPO), "exit": code, "seconds": seconds}) + "\n")
         return code, out, err, seconds
 
     def step(self, name, fn):
@@ -111,10 +124,40 @@ def git(*args):
     return subprocess.run(["git", *args], cwd=REPO, text=True, capture_output=True, check=True).stdout
 
 
-def tree_state():
-    """What a run must leave untouched: the lock file's bytes and the worktree's status, untracked files included."""
-    lock = hashlib.sha256((REPO / "flake.lock").read_bytes()).hexdigest()
-    return {"flake.lock": lock, "status": git("status", "--porcelain=v1", "-uall")}
+def process_start(pid):
+    """The process's start time as ps reports it, or None when there is no such process."""
+    out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], text=True, capture_output=True).stdout.strip()
+    return out or None
+
+
+def tree_state(root=REPO):
+    """Every file under root, ignored ones included, except git's own metadata directory: path -> mode and SHA-256.
+    A symlink is recorded by its target. In a linked worktree `.git` is a file and is included."""
+    state = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        if Path(dirpath) == Path(root) and ".git" in dirnames:
+            dirnames.remove(".git")
+        for name in filenames + [d for d in dirnames if os.path.islink(os.path.join(dirpath, d))]:
+            path = os.path.join(dirpath, name)
+            rel = os.path.relpath(path, root)
+            st = os.lstat(path)
+            if os.path.islink(path):
+                state[rel] = f"link {os.readlink(path)}"
+            else:
+                with open(path, "rb") as f:
+                    state[rel] = f"{st.st_mode:o} {hashlib.file_digest(f, 'sha256').hexdigest()}"
+    return state
+
+
+def tree_diff(before, after):
+    return ([f"+ {p}" for p in sorted(after.keys() - before.keys())] +
+            [f"- {p}" for p in sorted(before.keys() - after.keys())] +
+            [f"~ {p}" for p in sorted(before.keys() & after.keys()) if before[p] != after[p]])
+
+
+def lock_vs_head():
+    return "matches HEAD" if subprocess.run(["git", "diff", "--quiet", "HEAD", "--", "flake.lock"], cwd=REPO).returncode == 0 \
+        else "differs from HEAD (an edited lock is being verified, as it is on disk)"
 
 
 def nix_ok(run, name, argv, timeout=1800):
@@ -181,6 +224,31 @@ def j_flake_check(run):
     run.step("nix flake check", lambda: (nix_ok(run, "flake-check", [*NIX, "flake", "check", *LOCKED]), "")[1])
 
 
+def throwaway_copy(run):
+    """Copy the worktree's files (tracked, and untracked but not ignored) to a fresh directory outside it.
+    The repository's tests find the flake from their own path (scripts/..), so in the copy every Nix call they
+    make, locked or not, and every file they write land in the copy."""
+    scratch = Path(tempfile.mkdtemp(prefix=SCRATCH_PREFIX))
+    run.meta["scratch"] = str(scratch)
+    run.save_meta()
+    files = git("ls-files", "-z", "--cached", "--others", "--exclude-standard").split("\0")
+    for rel in filter(None, files):
+        src = REPO / rel
+        if not src.exists() and not src.is_symlink():
+            continue  # deleted in the worktree but not yet staged
+        dst = scratch / "repo" / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst, follow_symlinks=False)
+    return scratch / "repo"
+
+
+def remove_scratch(path):
+    """Remove a throwaway copy, and only that: a directory directly in the temporary directory with our prefix."""
+    p = Path(path).resolve()
+    if p.parent == Path(tempfile.gettempdir()).resolve() and p.name.startswith(SCRATCH_PREFIX):
+        shutil.rmtree(p, ignore_errors=True)
+
+
 def j_module_tests(run, names):
     tests = sorted((REPO / "scripts").glob("test_*.py"))
     if names:
@@ -189,10 +257,26 @@ def j_module_tests(run, names):
         if unknown:
             raise SystemExit(f"nix-verify: no scripts/test_<name>.py for {', '.join(sorted(unknown))}")
         tests = [t for t in tests if t.stem.removeprefix("test_") in wanted]
+
+    def the_set():
+        if not tests:
+            raise Failed("no scripts/test_*.py found: nothing would be verified")
+        if not names and len(tests) != EXPECTED_TESTS:
+            raise Failed(f"found {len(tests)} scripts/test_*.py, features/module-tests.md states {EXPECTED_TESTS}: "
+                         "update EXPECTED_TESTS and the feature file together")
+        return f"{len(tests)} test(s)"
+    if not run.step("test set", the_set):
+        return
+
+    copy = []
+    if not run.step("throwaway copy", lambda: copy.append(throwaway_copy(run)) or str(copy[0])):
+        return
+    copy = copy[0]
+    lock_before = tree_state(copy).get("flake.lock")
     for test in tests:
         def check(test=test):
             code, out, err, seconds = run.sh(test.stem, [sys.executable, str(test.relative_to(REPO))], timeout=3600,
-                                             env={"PYTHONDONTWRITEBYTECODE": "1"})
+                                             env={"PYTHONDONTWRITEBYTECODE": "1"}, cwd=copy)
             summary = (err.strip().splitlines() or ["(no output)"])[-1]
             if code != 0:
                 fails = [l for l in err.splitlines() if l.startswith(("FAIL:", "ERROR:"))]
@@ -200,16 +284,25 @@ def j_module_tests(run, names):
             return summary
         run.step(test.stem, check)
 
+    def copy_lock_unchanged():
+        if tree_state(copy).get("flake.lock") != lock_before:
+            raise Failed("a test changed flake.lock in the throwaway copy; the real one was not written")
+        return "the copy's flake.lock is unchanged too"
+    run.step("tests left flake.lock alone", copy_lock_unchanged)
+    remove_scratch(copy.parent)
+
 
 def run_journey(name, test_names):
     run = Run(name)
-    run.log(f"run {name}: {run.dir}\nrepo {REPO} at {run.meta['commit']}")
+    run.log(f"run {name}: {run.dir}\nrepo {REPO} at {run.meta['commit']}\nflake.lock {lock_vs_head()}")
     before = tree_state()
-    (run.dir / "tree-before.txt").write_text(json.dumps(before, indent=2))
+    (run.dir / "tree-before.txt").write_text(json.dumps(before, indent=2, sort_keys=True))
 
     def on_term(signum, frame):
         if run.child and run.child.poll() is None:
             run.child.terminate()
+        if run.meta.get("scratch"):
+            remove_scratch(run.meta["scratch"])
         run.log(f"signal {signum}: stopping")
         run.steps.append({"step": "interrupted", "ok": False, "seconds": 0, "error": f"signal {signum}"})
         run.finish()
@@ -228,14 +321,11 @@ def run_journey(name, test_names):
 
     def untouched():
         after = tree_state()
-        (run.dir / "tree-after.txt").write_text(json.dumps(after, indent=2))
-        if after["flake.lock"] != before["flake.lock"]:
-            raise Failed("flake.lock changed during the run")
-        if after["status"] != before["status"]:
-            old, new = set(before["status"].splitlines()), set(after["status"].splitlines())
-            raise Failed("the worktree changed during the run:\n" + "\n".join(
-                [f"+ {l}" for l in sorted(new - old)] + [f"- {l}" for l in sorted(old - new)]))
-        return "flake.lock and git status unchanged"
+        (run.dir / "tree-after.txt").write_text(json.dumps(after, indent=2, sort_keys=True))
+        diff = tree_diff(before, after)
+        if diff:
+            raise Failed("the worktree changed during the run:\n" + "\n".join(diff))
+        return f"all {len(after)} files unchanged, flake.lock and ignored files included"
     run.step("worktree untouched", untouched)
     return run.finish()
 
@@ -264,9 +354,8 @@ def doctor():
         report("ok" if linux else "info", "linux builder",
                "configured" if linux else "none: gnarbox (x86_64-linux) is evaluated, never built")
     report("ok" if (REPO / "flake.nix").exists() else "FAIL", "repo", str(REPO))
-    lock = subprocess.run(["git", "diff", "--quiet", "HEAD", "--", "flake.lock"], cwd=REPO).returncode
-    report("ok" if lock == 0 else "WARN", "flake.lock",
-           "matches HEAD" if lock == 0 else "differs from HEAD: runs verify the edited lock, not the committed one")
+    lock = lock_vs_head()
+    report("ok" if lock == "matches HEAD" else "WARN", "flake.lock", lock)
     untracked = [l[3:] for l in git("status", "--porcelain=v1", "-uall").splitlines()
                  if l.startswith("??") and l.endswith(".nix")]
     report("WARN" if untracked else "ok", "untracked .nix",
@@ -284,37 +373,95 @@ def doctor():
     for meta in EVIDENCE.glob("*/run.json"):
         m = json.loads(meta.read_text())
         if m.get("status") == "running":
-            alive = pid_is_ours(m["pid"])
+            alive = lock_held(meta.parent)
             running.append(f"{meta.parent.name} ({'in progress' if alive else 'abandoned: run cleanup'})")
             bad += not alive
     report("FAIL" if bad and running else ("info" if running else "ok"), "runs", ", ".join(running) or "none open")
     return 1 if bad else 0
 
 
-def pid_is_ours(pid):
-    ps = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], text=True, capture_output=True).stdout
-    return "skills/verify/scripts/nix-verify run" in ps
+def lock_held(run_dir):
+    """True while some process holds the run's run.lock. A run without one is not held."""
+    try:
+        with open(run_dir / "run.lock", "a") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(f, fcntl.LOCK_UN)
+            return False
+    except FileNotFoundError:
+        return False
+
+
+def holds(pid, path):
+    """True when process pid has path open, by lsof."""
+    out = subprocess.run(["lsof", "-a", "-p", str(pid), "-Fn"], text=True, capture_output=True).stdout
+    want = os.path.realpath(path)
+    return any(l[1:] and os.path.realpath(l[1:]) == want for l in out.splitlines() if l.startswith("n"))
+
+
+def the_runs_process(run_dir, m):
+    """The PID to signal for this run, or None with the reason: the recorded PID must be alive, started when
+    recorded, and hold this run directory's run.lock."""
+    pid = m.get("pid")
+    if not isinstance(pid, int) or not m.get("process_start"):
+        return None, "run.json records no PID and start time"
+    if process_start(pid) != m["process_start"]:
+        return None, f"process {pid} is not the one that started the run (start time differs or it is gone)"
+    if not holds(pid, run_dir / "run.lock"):
+        return None, f"process {pid} does not hold {run_dir / 'run.lock'}"
+    return pid, None
 
 
 def cleanup(target):
-    metas = [Path(target).resolve() / "run.json"] if target else sorted(EVIDENCE.glob("*/run.json"))
+    if target:
+        run_dir = Path(target).resolve()
+        try:
+            run_dir.relative_to(EVIDENCE)
+        except ValueError:
+            print(f"nix-verify: refusing {run_dir}: not under the evidence root {EVIDENCE}", file=sys.stderr)
+            return 2
+        try:
+            run_dir.relative_to(REPO)
+            print(f"nix-verify: refusing {run_dir}: inside the repository", file=sys.stderr)
+            return 2
+        except ValueError:
+            pass
+        metas = [run_dir / "run.json"]
+    else:
+        metas = sorted(EVIDENCE.glob("*/run.json"))
+    code = 0
     for meta in metas:
+        run_dir = meta.parent
         if not meta.exists():
-            print(f"no run at {meta.parent}")
+            print(f"no run at {run_dir}")
+            code = 1
             continue
         m = json.loads(meta.read_text())
         if m.get("status") != "running":
             continue
-        if pid_is_ours(m["pid"]):
+        if m.get("run_dir") and Path(m["run_dir"]).resolve() != run_dir.resolve():
+            print(f"{run_dir.name}: run.json names another run directory ({m['run_dir']}); left alone")
+            code = 1
+            continue
+        if lock_held(run_dir):
             if not target:
-                print(f"{meta.parent.name}: in progress; name its directory to stop it")
+                print(f"{run_dir.name}: in progress; name its directory to stop it")
                 continue
-            os.kill(m["pid"], signal.SIGTERM)
-            print(f"{meta.parent.name}: sent SIGTERM to its nix-verify process {m['pid']}")
+            pid, why = the_runs_process(run_dir, m)
+            if pid is None:
+                print(f"{run_dir.name}: not signalled: {why}")
+                code = 1
+                continue
+            os.kill(pid, signal.SIGTERM)
+            print(f"{run_dir.name}: sent SIGTERM to its nix-verify process {pid}")
+        if m.get("scratch"):
+            remove_scratch(m["scratch"])
         m.update(status="abandoned", cleaned=True)
         meta.write_text(json.dumps(m, indent=2) + "\n")
-        print(f"{meta.parent.name}: marked abandoned; evidence kept")
-    return 0
+        print(f"{run_dir.name}: marked abandoned; evidence kept")
+    return code
 
 
 def main(argv):
