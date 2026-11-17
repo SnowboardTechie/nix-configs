@@ -1,0 +1,355 @@
+#!/usr/bin/env python3
+"""nix-verify: prove this flake's outputs evaluate, build and pass their checks, without activating anything.
+
+Usage (from the repository root):
+  nix-verify doctor
+  nix-verify journeys
+  nix-verify run [journey ...] [-- test-name ...]   no journey: the default set
+  nix-verify cleanup [run directory]          no directory: only runs whose process is gone
+
+Every nix call passes --no-update-lock-file and builds with --no-link. Nothing here
+runs switch, activate, update-system, upgrade-system or `nix flake update`.
+"""
+import datetime
+import hashlib
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[4]
+EVIDENCE = Path(os.environ.get("NIX_VERIFY_EVIDENCE") or Path(os.environ.get("TMPDIR", "/tmp")) / "nix-verify").resolve()
+NIX = ["nix", "--extra-experimental-features", "nix-command flakes"]
+LOCKED = ["--no-update-lock-file"]
+FLAKE = "."
+
+JOURNEYS = {
+    "evaluate": ("default", "Every darwinConfigurations and nixosConfigurations host evaluates to a system derivation (~45 s)"),
+    "build-darwin": ("default", "Every darwin host's system builds (--no-link) and holds an activate script; never run (~40 s cached)"),
+    "flake-check": ("default", "nix flake check for this machine's system (~20 s)"),
+    "module-tests": ("opt-in", "Every scripts/test_*.py, or the ones named after --; ~11 min for all"),
+}
+DEFAULT = [name for name, (kind, _) in JOURNEYS.items() if kind == "default"]
+
+
+class Failed(Exception):
+    pass
+
+
+class Run:
+    def __init__(self, journey):
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        self.dir = EVIDENCE / f"{stamp}-{journey}"
+        n = 1
+        while self.dir.exists():
+            n += 1
+            self.dir = EVIDENCE / f"{stamp}-{journey}-{n}"
+        self.dir.mkdir(parents=True)
+        self.journey = journey
+        self.steps = []
+        self.child = None
+        self.meta = {"journey": journey, "pid": os.getpid(), "repo": str(REPO), "status": "running",
+                     "commit": git("rev-parse", "HEAD").strip(), "started": stamp}
+        self.save_meta()
+
+    def save_meta(self):
+        (self.dir / "run.json").write_text(json.dumps(self.meta, indent=2) + "\n")
+
+    def log(self, text):
+        print(text, flush=True)
+        with open(self.dir / "log.txt", "a") as f:
+            f.write(text + "\n")
+
+    def sh(self, name, argv, timeout=1800, env=None):
+        """Run argv from the repository root; return (exit code, stdout, stderr). The command goes to commands.jsonl."""
+        start = time.monotonic()
+        self.child = subprocess.Popen(argv, cwd=REPO, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      env={**os.environ, **(env or {})})
+        try:
+            out, err = self.child.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self.child.kill()
+            out, err = self.child.communicate()
+            err += f"\nnix-verify: killed after {timeout} s"
+        code, self.child = self.child.returncode, None
+        seconds = round(time.monotonic() - start, 1)
+        safe = name.replace("/", "_").replace(" ", "_")
+        (self.dir / f"{len(self.steps) + 1:02d}-{safe}.out").write_text(out)
+        (self.dir / f"{len(self.steps) + 1:02d}-{safe}.err").write_text(err)
+        with open(self.dir / "commands.jsonl", "a") as f:
+            f.write(json.dumps({"step": name, "argv": argv, "exit": code, "seconds": seconds}) + "\n")
+        return code, out, err, seconds
+
+    def step(self, name, fn):
+        start = time.monotonic()
+        try:
+            detail = fn()
+        except Failed as e:
+            seconds = round(time.monotonic() - start, 1)
+            self.steps.append({"step": name, "ok": False, "seconds": seconds, "error": str(e)})
+            self.log(f"step {name}: FAIL ({seconds} s)\n  {str(e)[-1500:].replace(chr(10), chr(10) + '  ')}")
+            return False
+        seconds = round(time.monotonic() - start, 1)
+        self.steps.append({"step": name, "ok": True, "seconds": seconds, "detail": detail})
+        self.log(f"step {name}: ok ({seconds} s){' ' + detail if detail else ''}")
+        return True
+
+    def finish(self):
+        ok = all(s["ok"] for s in self.steps)
+        (self.dir / "result.json").write_text(json.dumps({"journey": self.journey, "passed": ok, "steps": self.steps}, indent=2) + "\n")
+        self.meta.update(status="passed" if ok else "failed", cleaned=True)
+        self.save_meta()
+        self.log(f"{self.journey}: {'PASSED' if ok else 'FAILED'}  evidence {self.dir}")
+        return ok
+
+
+def git(*args):
+    return subprocess.run(["git", *args], cwd=REPO, text=True, capture_output=True, check=True).stdout
+
+
+def tree_state():
+    """What a run must leave untouched: the lock file's bytes and the worktree's status, untracked files included."""
+    lock = hashlib.sha256((REPO / "flake.lock").read_bytes()).hexdigest()
+    return {"flake.lock": lock, "status": git("status", "--porcelain=v1", "-uall")}
+
+
+def nix_ok(run, name, argv, timeout=1800):
+    code, out, err, seconds = run.sh(name, argv, timeout)
+    if code != 0:
+        tail = "\n".join(l for l in err.splitlines() if l.strip())[-1500:]
+        raise Failed(f"exit {code} after {seconds} s: {tail}")
+    return out
+
+
+def host_names(run, kind):
+    out = nix_ok(run, f"list {kind}", [*NIX, "eval", *LOCKED, "--json", f"{FLAKE}#{kind}", "--apply", "builtins.attrNames"])
+    names = json.loads(out)
+    if not names:
+        raise Failed(f"{kind} is empty")
+    return names
+
+
+def toplevel(kind, host):
+    return (f"{FLAKE}#darwinConfigurations.{host}.system" if kind == "darwinConfigurations"
+            else f"{FLAKE}#nixosConfigurations.{host}.config.system.build.toplevel")
+
+
+def j_evaluate(run):
+    found = {}
+    for kind in ("darwinConfigurations", "nixosConfigurations"):
+        hosts = []
+        if not run.step(f"list {kind}", lambda: hosts.extend(host_names(run, kind)) or ", ".join(hosts)):
+            continue
+        found.update(dict.fromkeys(hosts, kind))
+        for host in hosts:
+            def check(host=host, kind=kind):
+                drv = nix_ok(run, f"eval {host}", [*NIX, "eval", *LOCKED, "--raw", toplevel(kind, host) + ".drvPath"]).strip()
+                if not (drv.startswith("/nix/store/") and drv.endswith(".drv") and Path(drv).exists()):
+                    raise Failed(f"no system derivation: {drv!r}")
+                return drv
+            run.step(f"evaluate {host}", check)
+
+    def every_host_module_is_a_configuration():
+        expected = sorted(p.stem for p in (REPO / "modules" / "hosts").glob("*.nix") if not p.stem.startswith("_"))
+        missing = [h for h in expected if h not in found]
+        if missing:
+            raise Failed(f"modules/hosts/ has {', '.join(missing)} but the flake exports no configuration for it")
+        return ", ".join(f"{h} ({found[h]})" for h in expected)
+    run.step("every modules/hosts/*.nix is a configuration", every_host_module_is_a_configuration)
+
+
+def j_build_darwin(run):
+    hosts = []
+    if not run.step("list darwinConfigurations", lambda: hosts.extend(host_names(run, "darwinConfigurations")) or ", ".join(hosts)):
+        return
+    for host in hosts:
+        def check(host=host):
+            out = nix_ok(run, f"build {host}", [*NIX, "build", *LOCKED, "--no-link", "--print-out-paths",
+                                                toplevel("darwinConfigurations", host)], timeout=3600).strip()
+            missing = [p for p in ("activate", "sw/bin", "darwin-version.json") if not (Path(out) / p).exists()]
+            if missing:
+                raise Failed(f"{out} lacks {', '.join(missing)}")
+            return out
+        run.step(f"build {host}", check)
+
+
+def j_flake_check(run):
+    run.step("nix flake check", lambda: (nix_ok(run, "flake-check", [*NIX, "flake", "check", *LOCKED]), "")[1])
+
+
+def j_module_tests(run, names):
+    tests = sorted((REPO / "scripts").glob("test_*.py"))
+    if names:
+        wanted = {n.removeprefix("test_").removesuffix(".py") for n in names}
+        unknown = wanted - {t.stem.removeprefix("test_") for t in tests}
+        if unknown:
+            raise SystemExit(f"nix-verify: no scripts/test_<name>.py for {', '.join(sorted(unknown))}")
+        tests = [t for t in tests if t.stem.removeprefix("test_") in wanted]
+    for test in tests:
+        def check(test=test):
+            code, out, err, seconds = run.sh(test.stem, [sys.executable, str(test.relative_to(REPO))], timeout=3600,
+                                             env={"PYTHONDONTWRITEBYTECODE": "1"})
+            summary = (err.strip().splitlines() or ["(no output)"])[-1]
+            if code != 0:
+                fails = [l for l in err.splitlines() if l.startswith(("FAIL:", "ERROR:"))]
+                raise Failed(f"exit {code} after {seconds} s, {summary}\n" + "\n".join(fails))
+            return summary
+        run.step(test.stem, check)
+
+
+def run_journey(name, test_names):
+    run = Run(name)
+    run.log(f"run {name}: {run.dir}\nrepo {REPO} at {run.meta['commit']}")
+    before = tree_state()
+    (run.dir / "tree-before.txt").write_text(json.dumps(before, indent=2))
+
+    def on_term(signum, frame):
+        if run.child and run.child.poll() is None:
+            run.child.terminate()
+        run.log(f"signal {signum}: stopping")
+        run.steps.append({"step": "interrupted", "ok": False, "seconds": 0, "error": f"signal {signum}"})
+        run.finish()
+        sys.exit(1)
+    signal.signal(signal.SIGTERM, on_term)
+    signal.signal(signal.SIGINT, on_term)
+
+    if name == "evaluate":
+        j_evaluate(run)
+    elif name == "build-darwin":
+        j_build_darwin(run)
+    elif name == "flake-check":
+        j_flake_check(run)
+    elif name == "module-tests":
+        j_module_tests(run, test_names)
+
+    def untouched():
+        after = tree_state()
+        (run.dir / "tree-after.txt").write_text(json.dumps(after, indent=2))
+        if after["flake.lock"] != before["flake.lock"]:
+            raise Failed("flake.lock changed during the run")
+        if after["status"] != before["status"]:
+            old, new = set(before["status"].splitlines()), set(after["status"].splitlines())
+            raise Failed("the worktree changed during the run:\n" + "\n".join(
+                [f"+ {l}" for l in sorted(new - old)] + [f"- {l}" for l in sorted(old - new)]))
+        return "flake.lock and git status unchanged"
+    run.step("worktree untouched", untouched)
+    return run.finish()
+
+
+def doctor():
+    bad = 0
+
+    def report(level, name, text):
+        nonlocal bad
+        bad += level == "FAIL"
+        print(f"{level:4} {name}: {text}")
+
+    nix = shutil.which("nix")
+    if not nix:
+        report("FAIL", "nix", "not on PATH")
+    else:
+        v = subprocess.run(["nix", "--version"], text=True, capture_output=True).stdout.strip()
+        report("ok", "nix", f"{v} ({nix})")
+        system = subprocess.run([*NIX, "eval", "--impure", "--raw", "--expr", "builtins.currentSystem"],
+                                text=True, capture_output=True).stdout.strip()
+        report("ok" if system == "aarch64-darwin" else "WARN", "system",
+               system + ("" if system == "aarch64-darwin" else ": build-darwin needs aarch64-darwin"))
+        builders = subprocess.run([*NIX, "config", "show", "builders"], text=True, capture_output=True).stdout.strip()
+        machines = Path("/etc/nix/machines")
+        linux = "x86_64-linux" in builders or (machines.exists() and "x86_64-linux" in machines.read_text())
+        report("ok" if linux else "info", "linux builder",
+               "configured" if linux else "none: gnarbox (x86_64-linux) is evaluated, never built")
+    report("ok" if (REPO / "flake.nix").exists() else "FAIL", "repo", str(REPO))
+    lock = subprocess.run(["git", "diff", "--quiet", "HEAD", "--", "flake.lock"], cwd=REPO).returncode
+    report("ok" if lock == 0 else "WARN", "flake.lock",
+           "matches HEAD" if lock == 0 else "differs from HEAD: runs verify the edited lock, not the committed one")
+    untracked = [l[3:] for l in git("status", "--porcelain=v1", "-uall").splitlines()
+                 if l.startswith("??") and l.endswith(".nix")]
+    report("WARN" if untracked else "ok", "untracked .nix",
+           ("invisible to the git flake until `git add`: " + ", ".join(untracked)) if untracked else "none")
+    links = [p.name for p in REPO.glob("result*") if p.is_symlink()]
+    report("WARN" if links else "ok", "result links", ", ".join(links) or "none")
+    report("ok" if shutil.which("python3") else "WARN", "python3", shutil.which("python3") or "missing: module-tests cannot run")
+    try:
+        EVIDENCE.relative_to(REPO)
+        report("FAIL", "evidence", f"{EVIDENCE} is inside the repository")
+    except ValueError:
+        EVIDENCE.mkdir(parents=True, exist_ok=True)
+        report("ok" if os.access(EVIDENCE, os.W_OK) else "FAIL", "evidence", str(EVIDENCE))
+    running = []
+    for meta in EVIDENCE.glob("*/run.json"):
+        m = json.loads(meta.read_text())
+        if m.get("status") == "running":
+            alive = pid_is_ours(m["pid"])
+            running.append(f"{meta.parent.name} ({'in progress' if alive else 'abandoned: run cleanup'})")
+            bad += not alive
+    report("FAIL" if bad and running else ("info" if running else "ok"), "runs", ", ".join(running) or "none open")
+    return 1 if bad else 0
+
+
+def pid_is_ours(pid):
+    ps = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], text=True, capture_output=True).stdout
+    return "skills/verify/scripts/nix-verify run" in ps
+
+
+def cleanup(target):
+    metas = [Path(target).resolve() / "run.json"] if target else sorted(EVIDENCE.glob("*/run.json"))
+    for meta in metas:
+        if not meta.exists():
+            print(f"no run at {meta.parent}")
+            continue
+        m = json.loads(meta.read_text())
+        if m.get("status") != "running":
+            continue
+        if pid_is_ours(m["pid"]):
+            if not target:
+                print(f"{meta.parent.name}: in progress; name its directory to stop it")
+                continue
+            os.kill(m["pid"], signal.SIGTERM)
+            print(f"{meta.parent.name}: sent SIGTERM to its nix-verify process {m['pid']}")
+        m.update(status="abandoned", cleaned=True)
+        meta.write_text(json.dumps(m, indent=2) + "\n")
+        print(f"{meta.parent.name}: marked abandoned; evidence kept")
+    return 0
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0 if argv else 2
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "doctor":
+        return doctor()
+    if cmd == "journeys":
+        for name, (kind, text) in JOURNEYS.items():
+            print(f"{name:25} {kind:8} {text}")
+        return 0
+    if cmd == "cleanup":
+        return cleanup(rest[0] if rest else None)
+    if cmd == "run":
+        names, tests = (rest[:rest.index("--")], rest[rest.index("--") + 1:]) if "--" in rest else (rest, [])
+        names = names or DEFAULT
+        unknown = [n for n in names if n not in JOURNEYS]
+        if unknown:
+            print(f"nix-verify: unknown journey {', '.join(unknown)}; see `nix-verify journeys`", file=sys.stderr)
+            return 2
+        try:
+            EVIDENCE.relative_to(REPO)
+            print(f"nix-verify: evidence root {EVIDENCE} is inside the repository", file=sys.stderr)
+            return 2
+        except ValueError:
+            pass
+        results = [run_journey(n, tests) for n in names]
+        if len(names) > 1:
+            print("summary: " + ", ".join(f"{n} {'PASSED' if ok else 'FAILED'}" for n, ok in zip(names, results)))
+        return 0 if all(results) else 1
+    print(f"nix-verify: unknown command {cmd}", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -98,6 +98,18 @@ nix flake update
 nix develop '.#vets-website'              # or next-build, component-library, etc.
 ```
 
+## Verifying a change
+
+`.agents/skills/verify/` is the project skill for proving a Nix change works without activating it: a control command
+(`.agents/skills/verify/scripts/nix-verify doctor | run [journey] | cleanup`), four journeys and a feature map. The
+default `run` evaluates every host, builds each darwin system with `--no-link` and runs `nix flake check`, in about a
+minute; `run module-tests` adds `scripts/test_*.py`. Every Nix call passes `--no-update-lock-file`, and a run fails if
+the tree or `flake.lock` changed. It was generated with pstack's `create-verification-skill`; keep it current with
+`maintain-verification-skill`.
+
+- **A journey counts only once it has been seen to fail** on the break it exists to catch. The feature map lists them.
+- **It proves builds, not activation.** `update-system` stays Bryan's step, and gnarbox is evaluated, never built.
+
 ## Repository Delivery
 
 - **This repo is an explicit exception to the default wait-for-authorization rule.** Once requested work is complete and verified, commit the task-owned changes directly to `main` and push `origin main` without waiting for a separate commit or push request.
