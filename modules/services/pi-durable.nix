@@ -389,6 +389,7 @@
           };
         }
         {
+          alert = "PiDurableWorkspaceHeld";
           # Kept as PiDurableWorkspaceHeld (durable-pi-workspace's vault names
           # it). Set by a failed update and cleared only by `release`, so
           # halted updates never resume by themselves; 5 minutes only lets a
