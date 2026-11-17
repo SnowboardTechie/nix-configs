@@ -2120,21 +2120,21 @@ class NetAnchorRecoverySudo(unittest.TestCase):
 SUPERVISOR = f"{AGENTS}.pi-durable-supervisor.serviceConfig"
 SUPERVISOR_METRICS = f"{HOME}/.local/state/pi-durable/supervisor/metrics"
 SUPERVISOR_ALERTS = {"PiDurableWorkspaceVmDown": "critical", "PiDurableWorkspaceReconcileFailed": "warning",
-                     "PiDurableSupervisorSilent": "warning", "PiDurableWorkspaceHeld": "warning",
-                     "PiDurableWorkspaceHeldWorst": "critical", "PiDurableWorkspaceDiskHigh": "warning",
+                     "PiDurableVmSupervisorSilent": "warning", "PiDurableWorkspaceHeld": "warning",
+                     "PiDurableWorkspaceUpdatesHaltedWorst": "critical", "PiDurableWorkspaceDiskHigh": "warning",
                      "PiDurableWorkspaceExportFailing": "warning", "PiDurableWorkspaceExportStale": "warning"}
 SUPERVISOR_EXPRS = {
-    "PiDurableWorkspaceVmDown": "pi_durable_supervisor_vm_up == 0",
-    "PiDurableWorkspaceReconcileFailed": "pi_durable_supervisor_reconcile_ok == 0",
-    "PiDurableSupervisorSilent": "(time() - pi_durable_supervisor_last_reconcile_timestamp_seconds) > 900",
-    "PiDurableWorkspaceHeld": "pi_durable_supervisor_held == 1",
-    "PiDurableWorkspaceHeldWorst": "pi_durable_supervisor_held_worst == 1",
-    "PiDurableWorkspaceDiskHigh": "pi_durable_supervisor_disk_used_bytes / (pi_durable_supervisor_disk_budget_bytes > 0) > 0.8",
-    "PiDurableWorkspaceExportFailing": "pi_durable_supervisor_last_export_ok == 0",
-    "PiDurableWorkspaceExportStale": "(time() - (pi_durable_supervisor_last_export_timestamp_seconds > 0)) > 180000",
+    "PiDurableWorkspaceVmDown": "pi_durable_vm_supervisor_vm_up == 0",
+    "PiDurableWorkspaceReconcileFailed": "pi_durable_vm_supervisor_reconcile_ok == 0",
+    "PiDurableVmSupervisorSilent": "(time() - pi_durable_vm_supervisor_last_reconcile_timestamp_seconds) > 900",
+    "PiDurableWorkspaceHeld": "pi_durable_vm_supervisor_updates_halted == 1",
+    "PiDurableWorkspaceUpdatesHaltedWorst": "pi_durable_vm_supervisor_updates_halted_worst == 1",
+    "PiDurableWorkspaceDiskHigh": "pi_durable_vm_supervisor_disk_used_bytes / (pi_durable_vm_supervisor_disk_budget_bytes > 0) > 0.8",
+    "PiDurableWorkspaceExportFailing": "pi_durable_vm_supervisor_last_export_ok == 0",
+    "PiDurableWorkspaceExportStale": "(time() - (pi_durable_vm_supervisor_last_export_timestamp_seconds > 0)) > 180000",
 }
-SUPERVISOR_FOR = {"PiDurableWorkspaceVmDown": "5m", "PiDurableWorkspaceReconcileFailed": "10m", "PiDurableSupervisorSilent": "10m",
-                  "PiDurableWorkspaceHeld": "5m", "PiDurableWorkspaceHeldWorst": "5m", "PiDurableWorkspaceDiskHigh": "15m",
+SUPERVISOR_FOR = {"PiDurableWorkspaceVmDown": "5m", "PiDurableWorkspaceReconcileFailed": "10m", "PiDurableVmSupervisorSilent": "10m",
+                  "PiDurableWorkspaceHeld": "5m", "PiDurableWorkspaceUpdatesHaltedWorst": "5m", "PiDurableWorkspaceDiskHigh": "15m",
                   "PiDurableWorkspaceExportFailing": "2h", "PiDurableWorkspaceExportStale": "10m"}
 SUPERVISOR_OFF = "{ supervisor.enable = lib.mkForce false; }"
 
@@ -2438,7 +2438,7 @@ class VerifyCommitSignature(unittest.TestCase):
 
 
 GIB = 1024 ** 3
-EXPORT_METRICS = ("pi_durable_supervisor_last_export_ok", "pi_durable_supervisor_last_export_timestamp_seconds")
+EXPORT_METRICS = ("pi_durable_vm_supervisor_last_export_ok", "pi_durable_vm_supervisor_last_export_timestamp_seconds")
 
 
 class SupervisorAlerts(unittest.TestCase):
@@ -2453,18 +2453,18 @@ class SupervisorAlerts(unittest.TestCase):
 
     def healthy(self, minutes=120):
         # A reconcile stamps every 5 minutes; the stamp tracks time() in steps.
-        # Not held, half the disk budget used, and an export that succeeded at
+        # Updates not halted, half the disk budget used, and an export that succeeded at
         # the start (a day's exports would move it on; it never goes stale here).
         stamps = " ".join(str(60 * (m - m % 5)) for m in range(minutes))
-        return [self.series("pi_durable_supervisor_vm_up", f"1x{minutes}", vm=True),
-                self.series("pi_durable_supervisor_reconcile_ok", f"1x{minutes}"),
-                self.series("pi_durable_supervisor_last_reconcile_timestamp_seconds", stamps),
-                self.series("pi_durable_supervisor_held", f"0x{minutes}"),
-                self.series("pi_durable_supervisor_held_worst", f"0x{minutes}"),
-                self.series("pi_durable_supervisor_disk_used_bytes", f"{GIB}x{minutes}"),
-                self.series("pi_durable_supervisor_disk_budget_bytes", f"{2 * GIB}x{minutes}"),
-                self.series("pi_durable_supervisor_last_export_ok", f"1x{minutes}"),
-                self.series("pi_durable_supervisor_last_export_timestamp_seconds", f"60x{minutes}")]
+        return [self.series("pi_durable_vm_supervisor_vm_up", f"1x{minutes}", vm=True),
+                self.series("pi_durable_vm_supervisor_reconcile_ok", f"1x{minutes}"),
+                self.series("pi_durable_vm_supervisor_last_reconcile_timestamp_seconds", stamps),
+                self.series("pi_durable_vm_supervisor_updates_halted", f"0x{minutes}"),
+                self.series("pi_durable_vm_supervisor_updates_halted_worst", f"0x{minutes}"),
+                self.series("pi_durable_vm_supervisor_disk_used_bytes", f"{GIB}x{minutes}"),
+                self.series("pi_durable_vm_supervisor_disk_budget_bytes", f"{2 * GIB}x{minutes}"),
+                self.series("pi_durable_vm_supervisor_last_export_ok", f"1x{minutes}"),
+                self.series("pi_durable_vm_supervisor_last_export_timestamp_seconds", f"60x{minutes}")]
 
     def replaced(self, name, values):
         return [x for x in self.healthy() if not x["series"].startswith(name + "{")] + [self.series(name, values, vm=name.endswith("vm_up"))]
@@ -2506,28 +2506,28 @@ class SupervisorAlerts(unittest.TestCase):
                 self.assertIn("supervisor-main.js status", text)
         self.assertIn("{{ $labels.vm }}", by_name["PiDurableWorkspaceVmDown"]["annotations"]["summary"])
         self.assertIn("release", by_name["PiDurableWorkspaceHeld"]["annotations"]["description"])
-        self.assertIn("release", by_name["PiDurableWorkspaceHeldWorst"]["annotations"]["description"])
+        self.assertIn("release", by_name["PiDurableWorkspaceUpdatesHaltedWorst"]["annotations"]["description"])
         self.assertIn("{{ $value", by_name["PiDurableWorkspaceDiskHigh"]["annotations"]["summary"])
         # Every rule reading the supervisor's metrics is one of these.
         names = [r["alert"] for g in json.loads(Path(rule_file).read_text())["groups"] for r in g["rules"]
-                 if "pi_durable_supervisor_" in r["expr"]]
+                 if "pi_durable_vm_supervisor_" in r["expr"]]
         self.assertEqual(sorted(SUPERVISOR_ALERTS), sorted(names))
 
     def test_a_metrics_file_shaped_like_the_supervisors_passes_promtool(self):
-        # metricsText (durable-pi-workspace packages/foundation/src/supervisor/supervisor.ts, 67e31c4).
+        # metricsText (durable-pi-workspace packages/foundation/src/supervisor/supervisor.ts, e2a1b22).
         text = "\n".join([
-            "# HELP pi_durable_supervisor_vm_up 1 while the VM's page socket answered its last /metrics health check, else 0.",
-            "# TYPE pi_durable_supervisor_vm_up gauge",
-            'pi_durable_supervisor_vm_up{workspace="sampler",vm="pi-sampler-service"} 1',
-            "# HELP pi_durable_supervisor_vm_restarts_total Restarts of the VM by this supervisor process (failed health, found not running or absent).",
-            "# TYPE pi_durable_supervisor_vm_restarts_total counter",
-            'pi_durable_supervisor_vm_restarts_total{workspace="sampler",vm="pi-sampler-service"} 0',
-            "# HELP pi_durable_supervisor_reconcile_ok 1 when the last reconcile read the definition and brought every VM to it, else 0.",
-            "# TYPE pi_durable_supervisor_reconcile_ok gauge",
-            'pi_durable_supervisor_reconcile_ok{workspace="sampler"} 1',
-            "# HELP pi_durable_supervisor_last_reconcile_timestamp_seconds When the last complete reconcile ended (0: none yet).",
-            "# TYPE pi_durable_supervisor_last_reconcile_timestamp_seconds gauge",
-            'pi_durable_supervisor_last_reconcile_timestamp_seconds{workspace="sampler"} 1762900000',
+            "# HELP pi_durable_vm_supervisor_vm_up 1 while the VM's page socket answered its last /metrics health check, else 0.",
+            "# TYPE pi_durable_vm_supervisor_vm_up gauge",
+            'pi_durable_vm_supervisor_vm_up{workspace="sampler",vm="pi-sampler-service"} 1',
+            "# HELP pi_durable_vm_supervisor_vm_restarts_total Restarts of the VM by this VM supervisor process (failed health, found not running or absent).",
+            "# TYPE pi_durable_vm_supervisor_vm_restarts_total counter",
+            'pi_durable_vm_supervisor_vm_restarts_total{workspace="sampler",vm="pi-sampler-service"} 0',
+            "# HELP pi_durable_vm_supervisor_reconcile_ok 1 when the last reconcile read the definition and brought every VM to it, else 0.",
+            "# TYPE pi_durable_vm_supervisor_reconcile_ok gauge",
+            'pi_durable_vm_supervisor_reconcile_ok{workspace="sampler"} 1',
+            "# HELP pi_durable_vm_supervisor_last_reconcile_timestamp_seconds When the last complete reconcile ended (0: none yet).",
+            "# TYPE pi_durable_vm_supervisor_last_reconcile_timestamp_seconds gauge",
+            'pi_durable_vm_supervisor_last_reconcile_timestamp_seconds{workspace="sampler"} 1762900000',
         ]) + "\n"
         result = subprocess.run([NetAnchorAlerts.rules()[0], "check", "metrics"], input=text, text=True, capture_output=True)
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
@@ -2537,7 +2537,7 @@ class SupervisorAlerts(unittest.TestCase):
             self.promtool_test(self.healthy(), alert, ("110m", []))
 
     def test_a_vm_down_is_critical_after_5_minutes(self):
-        inputs = self.replaced("pi_durable_supervisor_vm_up", "1x10 0x30 1x79")
+        inputs = self.replaced("pi_durable_vm_supervisor_vm_up", "1x10 0x30 1x79")
         self.promtool_test(inputs, "PiDurableWorkspaceVmDown",
                            ("14m", []),
                            ("16m", self.firing("PiDurableWorkspaceVmDown", "0", vm=True)),
@@ -2545,9 +2545,9 @@ class SupervisorAlerts(unittest.TestCase):
 
     def test_a_failed_reconcile_warns_only_when_it_stays_failed(self):
         # One failed reconcile the next fixes: nothing.
-        self.promtool_test(self.replaced("pi_durable_supervisor_reconcile_ok", "1x10 0x5 1x104"),
+        self.promtool_test(self.replaced("pi_durable_vm_supervisor_reconcile_ok", "1x10 0x5 1x104"),
                            "PiDurableWorkspaceReconcileFailed", ("16m", []), ("30m", []))
-        inputs = self.replaced("pi_durable_supervisor_reconcile_ok", "1x10 0x40 1x69")
+        inputs = self.replaced("pi_durable_vm_supervisor_reconcile_ok", "1x10 0x40 1x69")
         self.promtool_test(inputs, "PiDurableWorkspaceReconcileFailed",
                            ("19m", []),
                            ("21m", self.firing("PiDurableWorkspaceReconcileFailed", "0")),
@@ -2556,61 +2556,61 @@ class SupervisorAlerts(unittest.TestCase):
     def test_a_supervisor_that_stops_reconciling_warns(self):
         # The stamp stops at 10m (600 s): stale past 25m (> 900 s), firing 10 minutes later.
         stamps = " ".join(str(60 * (m - m % 5)) if m <= 10 else "600" for m in range(120))
-        inputs = self.replaced("pi_durable_supervisor_last_reconcile_timestamp_seconds", stamps)
-        self.promtool_test(inputs, "PiDurableSupervisorSilent",
+        inputs = self.replaced("pi_durable_vm_supervisor_last_reconcile_timestamp_seconds", stamps)
+        self.promtool_test(inputs, "PiDurableVmSupervisorSilent",
                            ("30m", []),
-                           ("36m", self.firing("PiDurableSupervisorSilent", "1560")))
+                           ("36m", self.firing("PiDurableVmSupervisorSilent", "1560")))
 
-    def test_a_held_workspace_warns_and_the_worst_state_is_critical(self):
-        held = self.replaced("pi_durable_supervisor_held", "0x10 1x40 0x69")
-        self.promtool_test(held, "PiDurableWorkspaceHeld",
+    def test_halted_updates_warn_and_the_worst_state_is_critical(self):
+        halted = self.replaced("pi_durable_vm_supervisor_updates_halted", "0x10 1x40 0x69")
+        self.promtool_test(halted, "PiDurableWorkspaceHeld",
                            ("14m", []),
                            ("16m", self.firing("PiDurableWorkspaceHeld", "1")),
                            ("55m", []))
-        self.promtool_test(held, "PiDurableWorkspaceHeldWorst", ("16m", []), ("40m", []))
-        worst = [x for x in held if not x["series"].startswith("pi_durable_supervisor_held_worst{")] + [
-            self.series("pi_durable_supervisor_held_worst", "0x10 1x40 0x69")]
-        self.promtool_test(worst, "PiDurableWorkspaceHeldWorst",
+        self.promtool_test(halted, "PiDurableWorkspaceUpdatesHaltedWorst", ("16m", []), ("40m", []))
+        worst = [x for x in halted if not x["series"].startswith("pi_durable_vm_supervisor_updates_halted_worst{")] + [
+            self.series("pi_durable_vm_supervisor_updates_halted_worst", "0x10 1x40 0x69")]
+        self.promtool_test(worst, "PiDurableWorkspaceUpdatesHaltedWorst",
                            ("14m", []),
-                           ("16m", self.firing("PiDurableWorkspaceHeldWorst", "1")),
+                           ("16m", self.firing("PiDurableWorkspaceUpdatesHaltedWorst", "1")),
                            ("55m", []))
 
     def test_disk_over_80_percent_of_the_budget_warns(self):
         # 1.75 of 2 GiB: 87.5%.
-        inputs = self.replaced("pi_durable_supervisor_disk_used_bytes", f"{GIB}x10 {7 * GIB // 4}x40 {GIB}x69")
+        inputs = self.replaced("pi_durable_vm_supervisor_disk_used_bytes", f"{GIB}x10 {7 * GIB // 4}x40 {GIB}x69")
         self.promtool_test(inputs, "PiDurableWorkspaceDiskHigh",
                            ("24m", []),
                            ("26m", self.firing("PiDurableWorkspaceDiskHigh", "0.875", shown="87.5%")),
                            ("55m", []))
         # Exactly 80% is not over it.
-        self.promtool_test(self.replaced("pi_durable_supervisor_disk_used_bytes", f"{8 * GIB // 5}x119"),
+        self.promtool_test(self.replaced("pi_durable_vm_supervisor_disk_used_bytes", f"{8 * GIB // 5}x119"),
                            "PiDurableWorkspaceDiskHigh", ("60m", []))
 
     def test_disk_unmeasured_or_without_a_budget_raises_nothing(self):
         # -1: not measured. A budget of 0: no definition read yet.
-        self.promtool_test(self.replaced("pi_durable_supervisor_disk_used_bytes", "-1x119"), "PiDurableWorkspaceDiskHigh", ("60m", []))
-        self.promtool_test(self.replaced("pi_durable_supervisor_disk_budget_bytes", "0x119"), "PiDurableWorkspaceDiskHigh", ("60m", []))
+        self.promtool_test(self.replaced("pi_durable_vm_supervisor_disk_used_bytes", "-1x119"), "PiDurableWorkspaceDiskHigh", ("60m", []))
+        self.promtool_test(self.replaced("pi_durable_vm_supervisor_disk_budget_bytes", "0x119"), "PiDurableWorkspaceDiskHigh", ("60m", []))
 
     def test_a_failing_export_warns_after_two_hours(self):
         # One failure the hourly retry fixes: nothing.
-        self.promtool_test(self.replaced("pi_durable_supervisor_last_export_ok", "1x10 0x60 1x49"),
+        self.promtool_test(self.replaced("pi_durable_vm_supervisor_last_export_ok", "1x10 0x60 1x49"),
                            "PiDurableWorkspaceExportFailing", ("69m", []), ("100m", []))
-        inputs = self.replaced("pi_durable_supervisor_last_export_ok", "1x10 0x200")
+        inputs = self.replaced("pi_durable_vm_supervisor_last_export_ok", "1x10 0x200")
         self.promtool_test(inputs, "PiDurableWorkspaceExportFailing",
                            ("129m", []),
                            ("131m", self.firing("PiDurableWorkspaceExportFailing", "0")))
         # None yet (-1) is not a failure.
-        self.promtool_test(self.replaced("pi_durable_supervisor_last_export_ok", "-1x200"),
+        self.promtool_test(self.replaced("pi_durable_vm_supervisor_last_export_ok", "-1x200"),
                            "PiDurableWorkspaceExportFailing", ("190m", []))
 
     def test_an_export_over_50_hours_old_warns_only_once_there_has_been_one(self):
         # The last success at 60 s; 50 hours (180000 s) later it is stale, firing 10 minutes after.
-        inputs = self.replaced("pi_durable_supervisor_last_export_timestamp_seconds", "60x3100")
+        inputs = self.replaced("pi_durable_vm_supervisor_last_export_timestamp_seconds", "60x3100")
         self.promtool_test(inputs, "PiDurableWorkspaceExportStale",
                            ("3000m", []),
                            ("3012m", self.firing("PiDurableWorkspaceExportStale", "180660", shown="2d 2h 11m 0s")))
         # 0: none yet. However long, nothing (no export a day after the VM came up is not alerted).
-        self.promtool_test(self.replaced("pi_durable_supervisor_last_export_timestamp_seconds", "0x3100"),
+        self.promtool_test(self.replaced("pi_durable_vm_supervisor_last_export_timestamp_seconds", "0x3100"),
                            "PiDurableWorkspaceExportStale", ("3050m", []))
 
     def test_a_workspace_without_an_export_raises_no_export_alert(self):
@@ -2621,7 +2621,7 @@ class SupervisorAlerts(unittest.TestCase):
 
     def test_no_file_yet_raises_nothing(self):
         # Between update-system and supervisor.json there is no file: expected, not an alert.
-        inputs = [x for x in self.healthy() if "pi_durable_supervisor_" not in x["series"]]
+        inputs = [x for x in self.healthy() if "pi_durable_vm_supervisor_" not in x["series"]]
         for alert in SUPERVISOR_ALERTS:
             self.promtool_test(inputs + [{"series": "up{job=\"node_exporter\"}", "values": "1x60"}], alert, ("50m", []))
 

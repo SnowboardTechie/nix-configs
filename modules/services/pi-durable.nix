@@ -343,35 +343,35 @@
         }
       ];
 
-      # The workspace supervisor (proxies runbook §11): its metrics, one file
-      # per workspace, and the alerts on them. It reconciles every 5 minutes
-      # and checks each VM's health every 30 s, restarting it after 3 failures.
+      # The VM supervisor (proxies runbook §11): its metrics, one file per
+      # workspace, and the alerts on them. It reconciles every 5 minutes and
+      # checks each VM's health every 30 s, restarting it after 3 failures.
       supervisorRunbook = "`node ~/.local/share/pi-durable/sgg-deployment/dist/workspaces/proxies/src/supervisor-main.js status` shows each workspace's definition, its VMs and the newest event of each kind; events are in ~/.local/state/pi-durable/supervisor/events.jsonl, logs in /tmp/pi-durable-supervisor.log and .error.log. Runbook: durable-pi-workspace workspaces/proxies/OPERATIONS.md §11.";
       supervisorRules = [
         {
           alert = "PiDurableWorkspaceVmDown";
-          expr = "pi_durable_supervisor_vm_up == 0";
+          expr = "pi_durable_vm_supervisor_vm_up == 0";
           "for" = "5m";
           labels = { severity = "critical"; };
           annotations = {
             summary = "Workspace {{ $labels.workspace }}'s VM {{ $labels.vm }} is down";
-            description = "For 5 minutes VM {{ $labels.vm }} of workspace {{ $labels.workspace }} has not answered its health check (its page socket's /metrics), so its service and page are down. The supervisor restarts a VM after 3 failed checks and backs off between restarts, so it has not come back by itself: look at why it fails before restarting anything by hand. ${supervisorRunbook}";
+            description = "For 5 minutes VM {{ $labels.vm }} of workspace {{ $labels.workspace }} has not answered its health check (its page socket's /metrics), so its service and page are down. The VM supervisor restarts a VM after 3 failed checks and backs off between restarts, so it has not come back by itself: look at why it fails before restarting anything by hand. ${supervisorRunbook}";
           };
         }
         {
           alert = "PiDurableWorkspaceReconcileFailed";
           # Reconciles run every 5 minutes, so 10 is at least two more
           # failing after the first: one the next fixes never notifies.
-          expr = "pi_durable_supervisor_reconcile_ok == 0";
+          expr = "pi_durable_vm_supervisor_reconcile_ok == 0";
           "for" = "10m";
           labels = { severity = "warning"; };
           annotations = {
-            summary = "The supervisor can't bring workspace {{ $labels.workspace }} to its definition";
-            description = "For 10 minutes the supervisor's reconciles of workspace {{ $labels.workspace }} have failed: its definition was refused or couldn't be read, the VM list couldn't be read, or a VM couldn't be built, started or replaced. VMs already running are left running; nothing in the definition since then is applied. The events (definition-refused, vm-reconcile-failed, removal-unconfirmed) name the cause. ${supervisorRunbook}";
+            summary = "The VM supervisor can't bring workspace {{ $labels.workspace }} to its definition";
+            description = "For 10 minutes the VM supervisor's reconciles of workspace {{ $labels.workspace }} have failed: its definition was refused or couldn't be read, the VM list couldn't be read, or a VM couldn't be built, started or replaced. VMs already running are left running; nothing in the definition since then is applied. The events (definition-refused, vm-reconcile-failed, removal-unconfirmed) name the cause. ${supervisorRunbook}";
           };
         }
         {
-          alert = "PiDurableSupervisorSilent";
+          alert = "PiDurableVmSupervisorSilent";
           # Every 5 minutes a reconcile ends and stamps the time (0 until the
           # first); one stopped early (a refused definition, an unreadable VM
           # list) doesn't stamp it. Over 15 minutes is three missed, held 10
@@ -380,38 +380,39 @@
           # update-system and commissioning) there is no file, and that is
           # expected; its files persist, so a supervisor gone after a reboot
           # goes stale here.
-          expr = "(time() - pi_durable_supervisor_last_reconcile_timestamp_seconds) > 900";
+          expr = "(time() - pi_durable_vm_supervisor_last_reconcile_timestamp_seconds) > 900";
           "for" = "10m";
           labels = { severity = "warning"; };
           annotations = {
-            summary = "The workspace supervisor hasn't finished a reconcile of workspace {{ $labels.workspace }} for over 15 minutes";
-            description = "The supervisor reconciles each workspace every 5 minutes, and none of workspace {{ $labels.workspace }}'s has finished for over 15 minutes: the supervisor isn't running (no supervisor.json, another one holding the lock, or a crash), is stuck (an image build can hold it up to 30 minutes), or every reconcile stops early (a refused definition or an unreadable VM list, which also raises PiDurableWorkspaceReconcileFailed). Its VMs keep running, but nothing checks, restarts or renews their grants (a grant lasts 24 hours). A workspace dropped from supervisor.json leaves its file behind: remove pi-durable-supervisor-<workspace>.prom from the metrics directory. ${supervisorRunbook}";
+            summary = "The VM supervisor hasn't finished a reconcile of workspace {{ $labels.workspace }} for over 15 minutes";
+            description = "The VM supervisor reconciles each workspace every 5 minutes, and none of workspace {{ $labels.workspace }}'s has finished for over 15 minutes: the VM supervisor isn't running (no supervisor.json, another one holding the lock, or a crash), is stuck (an image build can hold it up to 30 minutes), or every reconcile stops early (a refused definition or an unreadable VM list, which also raises PiDurableWorkspaceReconcileFailed). Its VMs keep running, but nothing checks, restarts or renews their grants (a grant lasts 24 hours). A workspace dropped from supervisor.json leaves its file behind: remove pi-durable-supervisor-<workspace>.prom from the metrics directory. ${supervisorRunbook}";
           };
         }
         {
-          alert = "PiDurableWorkspaceHeld";
-          # Set by a failed update and cleared only by `release`, so a hold
-          # never ends by itself; 5 minutes only lets a release just made land
-          # in the next reconcile's file.
-          expr = "pi_durable_supervisor_held == 1";
+          # Kept as PiDurableWorkspaceHeld (durable-pi-workspace's vault names
+          # it). Set by a failed update and cleared only by `release`, so
+          # halted updates never resume by themselves; 5 minutes only lets a
+          # release just made land in the next reconcile's file.
+          expr = "pi_durable_vm_supervisor_updates_halted == 1";
           "for" = "5m";
           labels = { severity = "warning"; };
           annotations = {
-            summary = "Workspace {{ $labels.workspace }} is held after a failed update";
-            description = "A build applied to workspace {{ $labels.workspace }} failed probation or its VM couldn't be started, so the supervisor rolled it back and held the workspace: no apply is taken until `supervisor-main.js release {{ $labels.workspace }}`. Its grants are still renewed and its health watched. `status` gives why and since when, and the events (probation-failed, rolled-back, workspace-held) name the build; fix the cause, then release. If PiDurableWorkspaceHeldWorst fires too, no build was brought to pass. ${supervisorRunbook}";
+            summary = "Workspace {{ $labels.workspace }}'s updates are halted after a failed update";
+            description = "A build applied to workspace {{ $labels.workspace }} failed its post-deploy check or its VM couldn't be started, so the VM supervisor rolled it back and halted the workspace's updates: no apply is taken until `supervisor-main.js release {{ $labels.workspace }}`. Its grants are still renewed and its health watched. `status` gives why and since when, and the events (post-deploy-check-failed, rolled-back, updates-halted) name the build; fix the cause, then release. If PiDurableWorkspaceUpdatesHaltedWorst fires too, no build was brought to pass. ${supervisorRunbook}";
           };
         }
         {
-          alert = "PiDurableWorkspaceHeldWorst";
-          # The worst state: held with no build that passed (no last good
-          # build, or its rollback failed probation too). The VM is left as
-          # it is, so the page may or may not still answer.
-          expr = "pi_durable_supervisor_held_worst == 1";
+          alert = "PiDurableWorkspaceUpdatesHaltedWorst";
+          # The worst state: updates halted with no build that passed (no
+          # last good build, or its rollback failed the post-deploy check
+          # too). The VM is left as it is, so the page may or may not still
+          # answer.
+          expr = "pi_durable_vm_supervisor_updates_halted_worst == 1";
           "for" = "5m";
           labels = { severity = "critical"; };
           annotations = {
-            summary = "Workspace {{ $labels.workspace }} is held with no build that passes";
-            description = "An update of workspace {{ $labels.workspace }} failed and there was no last good build to roll back to, or the rollback failed its probation too. The workspace is held in the worst state with its VM left as it is, not stopped: it may still serve its page, or nothing. Nothing is retried until someone looks: `status` gives why, the events (probation-failed, workspace-held with worst) the builds. Fix the cause, then `supervisor-main.js release {{ $labels.workspace }}` and apply a build that passes. ${supervisorRunbook}";
+            summary = "Workspace {{ $labels.workspace }}'s updates are halted with no build that passes";
+            description = "An update of workspace {{ $labels.workspace }} failed and there was no last good build to roll back to, or the rollback failed its post-deploy check too. The workspace's updates are halted in the worst state with its VM left as it is, not stopped: it may still serve its page, or nothing. Nothing is retried until someone looks: `status` gives why, the events (post-deploy-check-failed, updates-halted with worst) the builds. Fix the cause, then `supervisor-main.js release {{ $labels.workspace }}` and apply a build that passes. ${supervisorRunbook}";
           };
         }
         {
@@ -419,12 +420,12 @@
           # used / budget, only where the budget is above 0 (0: no definition
           # read yet). Used is -1 when not measured, which never exceeds 0.8.
           # Measured every 5-minute reconcile; nothing is ever deleted.
-          expr = "pi_durable_supervisor_disk_used_bytes / (pi_durable_supervisor_disk_budget_bytes > 0) > 0.8";
+          expr = "pi_durable_vm_supervisor_disk_used_bytes / (pi_durable_vm_supervisor_disk_budget_bytes > 0) > 0.8";
           "for" = "15m";
           labels = { severity = "warning"; };
           annotations = {
             summary = "Workspace {{ $labels.workspace }}'s volumes use {{ $value | humanizePercentage }} of its disk budget";
-            description = "For 15 minutes the volumes of workspace {{ $labels.workspace }} have used over 80% of its definition's disk_budget_bytes, measured on the host with du. Nothing enforces the budget and the supervisor deletes nothing. `status` lists each volume's use and any unclaimed pi-{{ $labels.workspace }}-… volumes (pi_durable_supervisor_unclaimed_volumes counts them), which no VM uses and may be removed by hand once checked. Otherwise trim the service's records or raise the budget in the definition. ${supervisorRunbook}";
+            description = "For 15 minutes the volumes of workspace {{ $labels.workspace }} have used over 80% of its definition's disk_budget_bytes, measured on the host with du. Nothing enforces the budget and the VM supervisor deletes nothing. `status` lists each volume's use and any unclaimed pi-{{ $labels.workspace }}-… volumes (pi_durable_vm_supervisor_unclaimed_volumes counts them), which no VM uses and may be removed by hand once checked. Otherwise trim the service's records or raise the budget in the definition. ${supervisorRunbook}";
           };
         }
         {
@@ -433,12 +434,12 @@
           # is retried no sooner than an hour later, so 2 hours is at least
           # one retry failing too. A workspace with no `export` writes none
           # of the export metrics, and absence is never alerted.
-          expr = "pi_durable_supervisor_last_export_ok == 0";
+          expr = "pi_durable_vm_supervisor_last_export_ok == 0";
           "for" = "2h";
           labels = { severity = "warning"; };
           annotations = {
             summary = "Workspace {{ $labels.workspace }}'s record export has been failing for over 2 hours";
-            description = "The supervisor's last record export of workspace {{ $labels.workspace }} failed, and the hourly retries since have not succeeded for 2 hours. The records exist only on the VM's volume, which is in no backup, until an export succeeds; the last good copy is still in exports/{{ $labels.workspace }}/current. The export-failed event's why, and `status`'s export_failure, give the cause (the VM unhealthy, its export socket missing, a probation in progress, a bound passed, nothing exported). Run one by hand with `supervisor-main.js export {{ $labels.workspace }}` once fixed. Runbook §11.6. ${supervisorRunbook}";
+            description = "The VM supervisor's last record export of workspace {{ $labels.workspace }} failed, and the hourly retries since have not succeeded for 2 hours. The records exist only on the VM's volume, which is in no backup, until an export succeeds; the last good copy is still in exports/{{ $labels.workspace }}/current. The export-failed event's why, and `status`'s export_failure, give the cause (the VM unhealthy, its export socket missing, a post-deploy check in progress, a bound passed, nothing exported). Run one by hand with `supervisor-main.js export {{ $labels.workspace }}` once fixed. Runbook §11.6. ${supervisorRunbook}";
           };
         }
         {
@@ -450,12 +451,12 @@
           # Not alerted: no export yet a day after the workspace's VM came
           # up. Nothing in the metrics says when that was (the VM's start
           # isn't written), so a rule would be a guess; `status` shows it.
-          expr = "(time() - (pi_durable_supervisor_last_export_timestamp_seconds > 0)) > 180000";
+          expr = "(time() - (pi_durable_vm_supervisor_last_export_timestamp_seconds > 0)) > 180000";
           "for" = "10m";
           labels = { severity = "warning"; };
           annotations = {
             summary = "Workspace {{ $labels.workspace }}'s last successful record export is {{ $value | humanizeDuration }} old";
-            description = "No record export of workspace {{ $labels.workspace }} has succeeded for over 50 hours, though exports run every day by default (the definition's export.every_hours). Either they fail (PiDurableWorkspaceExportFailing fires too after 2 hours) or none is being attempted: the supervisor isn't reconciling (PiDurableSupervisorSilent), the VM isn't healthy, or a probation is recorded. Until one succeeds the newest records exist only on the VM's volume, which is in no backup. Runbook §11.6. ${supervisorRunbook}";
+            description = "No record export of workspace {{ $labels.workspace }} has succeeded for over 50 hours, though exports run every day by default (the definition's export.every_hours). Either they fail (PiDurableWorkspaceExportFailing fires too after 2 hours) or none is being attempted: the VM supervisor isn't reconciling (PiDurableVmSupervisorSilent), the VM isn't healthy, or a post-deploy check is recorded. Until one succeeds the newest records exist only on the VM's volume, which is in no backup. Runbook §11.6. ${supervisorRunbook}";
           };
         }
       ];
@@ -976,11 +977,11 @@
           })
 
           # The page's /metrics answers on loopback without its Tailscale
-          # login; a live service exports its intake cycle counter.
+          # login; a live service exports its PR polling cycle counter.
           (lib.optionalAttrs (options.services ? monitoring) {
             services.monitoring.blackbox.contentProbes."SGG pre-review" = {
               url = "http://127.0.0.1:${toString cfg.page.port}/metrics";
-              bodyMatches = "(?m)^sgg_intake_cycles_total";
+              bodyMatches = "(?m)^sgg_pr_polling_cycles_total";
             };
           })
         ]))

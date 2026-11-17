@@ -30,8 +30,8 @@ STUDIO_PROBES = {
     "Artifact Shelf": ("http://127.0.0.1:8092/",
                        '<!doctype html><html><head><meta name="generator" content="artifact-shelf"></head></html>'),
     "SGG pre-review": ("http://127.0.0.1:8790/metrics",
-                       "# HELP sgg_intake_enabled x\nsgg_intake_enabled 1\n"
-                       "# TYPE sgg_intake_cycles_total counter\nsgg_intake_cycles_total 42\n"),
+                       "# HELP sgg_pr_polling_enabled x\nsgg_pr_polling_enabled 1\n"
+                       "# TYPE sgg_pr_polling_cycles_total counter\nsgg_pr_polling_cycles_total 42\n"),
     "Claude usage": ("http://127.0.0.1:8791/metrics",
                      "# HELP pi_durable_claude_window_utilization x\n"
                      "pi_durable_sampler_readings_total{workspace=\"sgg\"} 7\n"),
@@ -63,7 +63,9 @@ WRONG_BODIES = {
     "Grafana Alloy": "Alloy is not ready",
     "Artifact Shelf": "<html><title>Artifact Shelf</title></html>",
     # Only HELP text naming the counter, not the sample itself.
-    "SGG pre-review": "# HELP sgg_intake_cycles_total x\nother_metric 1\n",
+    "SGG pre-review": "# HELP sgg_pr_polling_cycles_total x\nother_metric 1\n",
+    # The name before the rename to the glossary's words (2026-11-17) alone.
+    "SGG pre-review, old name only": "# TYPE sgg_intake_cycles_total counter\nsgg_intake_cycles_total 42\n",
     "Claude usage": "# HELP pi_durable_sampler_readings_total x\n",
     "Hermes Dashboard": '{"auth_required":false}',
     "Open WebUI": '{"status":false}',
