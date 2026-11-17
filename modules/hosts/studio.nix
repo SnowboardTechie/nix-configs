@@ -2,7 +2,7 @@
 #
 # Features: fonts, nix-settings, zsh, homebrew, editors, git, cli-tools, personal desktop
 # Services: Hermes (with a nightly NAS backup), the bot service's encrypted NAS
-# backup, NAS share mounts, ollama, open-webui, monitoring, fseventsd
+# backup, the voice service, NAS share mounts, ollama, open-webui, monitoring, fseventsd
 # watchdog, smb-mount, syncthing, iCloud backup, Dashy, Artifact Shelf, a Forgejo Actions
 # runner (durable-pi-workspace's gate)
 # (Pi Durable SGG pre-review enabled for commissioning 2026-10-16; now commissioned.)
@@ -39,6 +39,7 @@
       hermes-nas-backup
       pi-bots
       pi-bots-backup
+      pi-bots-voice
       dashy
       artifact-shelf
       summit-point-gallery
@@ -158,6 +159,16 @@
       alerts.sggPreviewWatchdog = true;
     };
 
+    # The voice service (bryan/pi-bots-voice), run from its checkout
+    # ~/code/pi-bots-voice on the venv's own interpreter, which activation
+    # allows through the application firewall (WebRTC audio is UDP). Loopback
+    # 7860 (its config's server.port), published tailnet-only over HTTPS on the
+    # same port; that Serve entry was made by hand on 2026-11-16.
+    services.pi-bots-voice = {
+      enable = true;
+      tailscaleHttpsPort = 7860;
+    };
+
     # Nightly encrypted (age) archive of the bot service's state and secrets on
     # the NAS. Only the public key is here; the identity stays in ~/.secrets on
     # the Studio, never on the NAS.
@@ -238,6 +249,13 @@
             url = "${tailnetUrl config.services.artifact-shelf.tailscaleHttpsPort}/";
             icon = "🗂️";
             statusName = "Artifact Shelf";
+          }
+          {
+            title = "Pi Bots Voice";
+            description = "Talk to a bot out loud (the test page)";
+            url = "${tailnetUrl config.services.pi-bots-voice.tailscaleHttpsPort}/client/";
+            icon = "🎙️";
+            statusName = "Pi Bots Voice";
           }
         ];
       };
