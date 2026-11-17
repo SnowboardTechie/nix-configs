@@ -1,6 +1,6 @@
 # The bot service (bryan/pi-bots): one long-running process that holds every
-# bot's Matrix account, bridges the bots' rooms to their Pis, runs the job
-# clock and keeps the `bots` Rex session (one tab per bot) alive.
+# bot's Matrix account, bridges the bots' rooms to their Pis, runs the
+# scheduler and keeps the `bots` Rex session (one tab per bot) alive.
 #
 # Like Pi Durable's agents it runs from a checkout, not the store: a code
 # change there needs a restart of this agent (`launchctl kickstart -k`), not a
@@ -15,7 +15,7 @@
 # Health: the service writes pi-bots.prom to `metricsDir` every 15 s and once
 # more as it stops. With the monitoring module on the host, node_exporter reads
 # it and the rules below alert on the service, its bots, their accounts,
-# unanswered messages, the job clock and failed jobs. With
+# unanswered messages, the scheduler and failed jobs. With
 # `alerts.sggPreviewWatchdog`, they also cover the SGG preview watchdog, a job
 # whose script writes sgg-preview-watchdog.prom into the same directory.
 #
@@ -103,27 +103,28 @@
         }
         {
           alert = "PiBotsMessagesWaiting";
-          expr = "pi_bots_bridge_messages{status=\"received\"} > 0 ${serviceUp}";
+          expr = "pi_bots_matrix_bridge_messages{status=\"received\"} > 0 ${serviceUp}";
           "for" = "30m";
           labels = { severity = "warning"; };
           annotations = {
             summary = "Messages to bot {{ $labels.bot }} are waiting";
-            description = "Messages from Bryan to bot {{ $labels.bot }} have been waiting for an answer for 30 minutes ({{ $value | printf \"%.0f\" }} waiting now). The bridge retries while the bot's Pi or the homeserver is down.";
+            description = "Messages from Bryan to bot {{ $labels.bot }} have been waiting for an answer for 30 minutes ({{ $value | printf \"%.0f\" }} waiting now). The Matrix bridge retries while the bot's Pi or the homeserver is down.";
           };
         }
 
-        # The job clock (pi-bots src/clock.ts) ticks every 10 s and records
-        # the time of its last good tick; the file is written every 15 s. A
-        # stale tick in a fresh file is a clock that has stopped while the
-        # rest of the service runs. 0 means no tick since the service started.
+        # The scheduler (pi-bots src/scheduler.ts) ticks every 10 s and
+        # records the time of its last good tick; the file is written every
+        # 15 s. A stale tick in a fresh file is a scheduler that has stopped
+        # while the rest of the service runs. 0 means no tick since the
+        # service started.
         {
-          alert = "PiBotsClockSilent";
-          expr = "time() - pi_bots_clock_last_tick_timestamp_seconds > 60 ${serviceUp}";
+          alert = "PiBotsSchedulerSilent";
+          expr = "time() - pi_bots_scheduler_last_tick_timestamp_seconds > 60 ${serviceUp}";
           "for" = "5m";
           labels = { severity = "warning"; };
           annotations = {
-            summary = "The bot service's job clock has stopped";
-            description = "The bot service runs, but its job clock has not completed a tick for over 6 minutes (it ticks every 10 s), so no scheduled job runs. See ${errorLog}.";
+            summary = "The bot service's scheduler has stopped";
+            description = "The bot service runs, but its scheduler has not completed a tick for over 6 minutes (it ticks every 10 s), so no scheduled job runs. See ${errorLog}.";
           };
         }
         {
@@ -154,12 +155,12 @@
         }
         {
           alert = "PiBotsJobFileUnusable";
-          expr = "pi_bots_clock_bad_job_files > 0 ${serviceUp}";
+          expr = "pi_bots_scheduler_bad_job_files > 0 ${serviceUp}";
           "for" = "15m";
           labels = { severity = "warning"; };
           annotations = {
             summary = "A job file cannot be used";
-            description = "The bot service's clock cannot use {{ $value | printf \"%.0f\" }} job file(s), so those jobs never run. `pi-bots job list` names them and why.";
+            description = "The bot service's scheduler cannot use {{ $value | printf \"%.0f\" }} job file(s), so those jobs never run. `pi-bots job list` names them and why.";
           };
         }
       ];
@@ -176,13 +177,13 @@
       watchdogRules = [
         {
           # One run may take up to about 14 minutes (the watchdog's own limit
-          # and the preview list's), and the clock skips a slot while it runs,
+          # and the preview list's), and the scheduler skips a run while it runs,
           # so run ends can be about 19 minutes apart; a gap of 20 minutes is
-          # a job that has stopped. A stopped service or clock has its own
+          # a job that has stopped. A stopped service or scheduler has its own
           # alert, so this holds only while the service reports itself up and
-          # the clock ticks.
+          # the scheduler ticks.
           alert = "SggPreviewWatchdogSilent";
-          expr = "((time() - ${watchdogMetric} > 1200 ${serviceUp}) or (absent(${watchdogMetric}) ${serviceUpAnywhere})) unless on () (time() - pi_bots_clock_last_tick_timestamp_seconds > 60)";
+          expr = "((time() - ${watchdogMetric} > 1200 ${serviceUp}) or (absent(${watchdogMetric}) ${serviceUpAnywhere})) unless on () (time() - pi_bots_scheduler_last_tick_timestamp_seconds > 60)";
           "for" = "5m";
           labels = { severity = "warning"; };
           annotations = {

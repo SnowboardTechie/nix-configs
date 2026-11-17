@@ -37,10 +37,10 @@ pi_bots_bot_up{bot="bob"} 1
 # HELP pi_bots_account_syncing Whether the account's last successful sync is recent.
 # TYPE pi_bots_account_syncing gauge
 pi_bots_account_syncing{bot="bob"} 1
-# HELP pi_bots_bridge_messages The bridge journal's messages by status.
-# TYPE pi_bots_bridge_messages gauge
-pi_bots_bridge_messages{bot="bob",status="received"} 0
-pi_bots_bridge_messages{bot="bob",status="answered"} 3
+# HELP pi_bots_matrix_bridge_messages The owner's messages in the bot's Matrix bridge journal, by status; received are still waiting.
+# TYPE pi_bots_matrix_bridge_messages gauge
+pi_bots_matrix_bridge_messages{bot="bob",status="received"} 0
+pi_bots_matrix_bridge_messages{bot="bob",status="answered"} 3
 """
 
 
@@ -98,18 +98,18 @@ def rules():
 
 ALERTS = {"PiBotsServiceDown", "PiBotsServiceSilent", "PiBotsBotDown", "PiBotsBotCrashLooping",
           "PiBotsAccountNotSyncing", "PiBotsMessagesWaiting",
-          "PiBotsClockSilent", "PiBotsJobFailed", "PiBotsJobWaiting", "PiBotsJobFileUnusable"}
+          "PiBotsSchedulerSilent", "PiBotsJobFailed", "PiBotsJobWaiting", "PiBotsJobFileUnusable"}
 WATCHDOG_ALERTS = {"SggPreviewWatchdogSilent", "SggPreviewWatchdogBlocked", "SggPreviewNeedsAttention"}
 
-# The clock's part of the health file (pi-bots src/health.ts) and the SGG
+# The scheduler's part of the health file (pi-bots src/health.ts) and the SGG
 # preview watchdog's file (pi-bots jobs/sgg-preview/watchdog.py), as written.
-CLOCK_AND_WATCHDOG_FILES = """\
-# HELP pi_bots_clock_last_tick_timestamp_seconds When the clock last read the job files and started what was due; 0 if not since the service started.
-# TYPE pi_bots_clock_last_tick_timestamp_seconds gauge
-pi_bots_clock_last_tick_timestamp_seconds 1794416565.213
-# HELP pi_bots_clock_bad_job_files Job files the clock could not use at its last tick.
-# TYPE pi_bots_clock_bad_job_files gauge
-pi_bots_clock_bad_job_files 0
+SCHEDULER_AND_WATCHDOG_FILES = """\
+# HELP pi_bots_scheduler_last_tick_timestamp_seconds When the scheduler last read the job files and started what was due; 0 if not since the service started.
+# TYPE pi_bots_scheduler_last_tick_timestamp_seconds gauge
+pi_bots_scheduler_last_tick_timestamp_seconds 1794416565.213
+# HELP pi_bots_scheduler_bad_job_files Job files the scheduler could not use at its last tick.
+# TYPE pi_bots_scheduler_bad_job_files gauge
+pi_bots_scheduler_bad_job_files 0
 # HELP pi_bots_job_waiting Whether the job waits, not run, because the service does not bridge its bot.
 # TYPE pi_bots_job_waiting gauge
 pi_bots_job_waiting{job_id="sgg-preview-watchdog"} 0
@@ -317,13 +317,13 @@ class Rules(unittest.TestCase):
     def up(self, values="1x120"):
         return self.series("pi_bots_service_up", values)
 
-    # A file written every minute of the test: the timestamp keeps up with the clock.
+    # A file written every minute of the test: the timestamp keeps up with the scheduler.
     def written(self, values="0+60x120"):
         return self.series("pi_bots_metrics_written_timestamp_seconds", values)
 
-    # The clock ticking every minute of the test.
+    # The scheduler ticking every minute of the test.
     def tick(self, values="0+60x120"):
-        return self.series("pi_bots_clock_last_tick_timestamp_seconds", values)
+        return self.series("pi_bots_scheduler_last_tick_timestamp_seconds", values)
 
     # The watchdog finishing a run every five minutes: a fresh timestamp each write.
     def watchdog_ran(self, values="0+60x120"):
@@ -337,7 +337,7 @@ class Rules(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_the_health_file_is_what_promtool_reads(self):
-        for text in (HEALTH_FILE, CLOCK_AND_WATCHDOG_FILES):
+        for text in (HEALTH_FILE, SCHEDULER_AND_WATCHDOG_FILES):
             result = subprocess.run([realised()["promtool"], "check", "metrics"], input=text,
                                     text=True, capture_output=True)
             self.assertEqual(0, result.returncode, result.stdout + result.stderr)
@@ -347,9 +347,9 @@ class Rules(unittest.TestCase):
                   self.series("pi_bots_bot_runner_up", "1x120", bot="bob"),
                   self.series("pi_bots_bot_up", "1x120", bot="bob"),
                   self.series("pi_bots_account_syncing", "1x120", bot="bob"),
-                  self.series("pi_bots_bridge_messages", "0x120", bot="bob", status="received"),
-                  self.series("pi_bots_bridge_messages", "3x120", bot="bob", status="answered")]
-        inputs += [self.tick(), self.series("pi_bots_clock_bad_job_files", "0x120"),
+                  self.series("pi_bots_matrix_bridge_messages", "0x120", bot="bob", status="received"),
+                  self.series("pi_bots_matrix_bridge_messages", "3x120", bot="bob", status="answered")]
+        inputs += [self.tick(), self.series("pi_bots_scheduler_bad_job_files", "0x120"),
                    self.series("pi_bots_job_waiting", "0x120", job_id="bob/evening"),
                    self.series("pi_bots_job_last_run_failed", "0x120", job_id="bob/evening")]
         for alert in sorted(ALERTS):
@@ -403,7 +403,7 @@ class Rules(unittest.TestCase):
                   self.series("pi_bots_bot_runner_up", "1x10 0x60", bot="bob"),
                   self.series("pi_bots_bot_up", "1x10 0x60", bot="bob"),
                   self.series("pi_bots_account_syncing", "1x10 0x60", bot="bob"),
-                  self.series("pi_bots_bridge_messages", "0x10 1x60", bot="bob", status="received")]
+                  self.series("pi_bots_matrix_bridge_messages", "0x10 1x60", bot="bob", status="received")]
         for alert in ("PiBotsBotDown", "PiBotsBotCrashLooping", "PiBotsAccountNotSyncing", "PiBotsMessagesWaiting"):
             with self.subTest(alert):
                 self.promtool_test(inputs, alert, ("60m", []))
@@ -449,40 +449,40 @@ class Rules(unittest.TestCase):
 
     def test_messages_waiting(self):
         inputs = [self.up(), self.written(),
-                  self.series("pi_bots_bridge_messages", "0x10 2x60", bot="bob", status="received"),
-                  self.series("pi_bots_bridge_messages", "5x70", bot="bob", status="answered")]
+                  self.series("pi_bots_matrix_bridge_messages", "0x10 2x60", bot="bob", status="received"),
+                  self.series("pi_bots_matrix_bridge_messages", "5x70", bot="bob", status="answered")]
         self.promtool_test(inputs, "PiBotsMessagesWaiting", ("39m", []),
                            ("41m", self.firing("PiBotsMessagesWaiting", value="2", bot="bob", status="received")))
 
     def test_a_message_answered_within_the_window_raises_nothing(self):
         inputs = [self.up(), self.written(),
-                  self.series("pi_bots_bridge_messages", "0x10 1x20 0x40", bot="bob", status="received")]
+                  self.series("pi_bots_matrix_bridge_messages", "0x10 1x20 0x40", bot="bob", status="received")]
         self.promtool_test(inputs, "PiBotsMessagesWaiting", ("31m", []), ("60m", []))
 
 
-    # --- The job clock and jobs (W32.4's metrics) ---
+    # --- The scheduler and jobs (W32.4's metrics) ---
 
-    def test_a_stopped_clock_in_a_running_service(self):
+    def test_a_stopped_scheduler_in_a_running_service(self):
         # The file stays fresh; the tick stops at minute 10.
         inputs = [self.up(), self.written(), self.tick("0+60x10 600x110")]
-        self.promtool_test(inputs, "PiBotsClockSilent", ("14m", []),
-                           ("17m", self.firing("PiBotsClockSilent")))
+        self.promtool_test(inputs, "PiBotsSchedulerSilent", ("14m", []),
+                           ("17m", self.firing("PiBotsSchedulerSilent")))
 
-    def test_a_clock_that_has_not_ticked_since_start(self):
+    def test_a_scheduler_that_has_not_ticked_since_start(self):
         inputs = [self.up(), self.written(), self.tick("0x120")]
-        self.promtool_test(inputs, "PiBotsClockSilent", ("3m", []),
-                           ("10m", self.firing("PiBotsClockSilent")))
+        self.promtool_test(inputs, "PiBotsSchedulerSilent", ("3m", []),
+                           ("10m", self.firing("PiBotsSchedulerSilent")))
 
-    def test_a_short_pause_of_the_clock_is_not_silent(self):
+    def test_a_short_pause_of_the_scheduler_is_not_silent(self):
         inputs = [self.up(), self.written(), self.tick("0+60x10 600x3 840+60x100")]
-        self.promtool_test(inputs, "PiBotsClockSilent", ("13m", []), ("16m", []), ("30m", []))
+        self.promtool_test(inputs, "PiBotsSchedulerSilent", ("13m", []), ("16m", []), ("30m", []))
 
-    def test_the_clock_is_not_reported_while_the_service_is_down(self):
+    def test_the_scheduler_is_not_reported_while_the_service_is_down(self):
         # A crash: everything freezes. A clean stop: service_up says 0.
         for up, written in (("1x120", "0+60x10 600x110"), ("1x10 0x110", "0+60x10 600x110")):
             with self.subTest(up=up):
                 inputs = [self.up(up), self.written(written), self.tick("0+60x10 600x110")]
-                self.promtool_test(inputs, "PiBotsClockSilent", ("30m", []), ("60m", []))
+                self.promtool_test(inputs, "PiBotsSchedulerSilent", ("30m", []), ("60m", []))
 
     def test_a_failed_job(self):
         inputs = [self.up(), self.written(),
@@ -511,7 +511,7 @@ class Rules(unittest.TestCase):
         for up, written in (("1x120", "0+60x5 300x115"), ("1x5 0x115", "0+60x5 300x115")):
             inputs = [self.up(up), self.written(written),
                       self.series("pi_bots_job_waiting", "1x120", job_id="steve/report"),
-                      self.series("pi_bots_clock_bad_job_files", "2x120")]
+                      self.series("pi_bots_scheduler_bad_job_files", "2x120")]
             for alert in ("PiBotsJobWaiting", "PiBotsJobFileUnusable"):
                 with self.subTest(alert, up=up):
                     self.promtool_test(inputs, alert, ("40m", []), ("100m", []))
@@ -526,7 +526,7 @@ class Rules(unittest.TestCase):
         self.promtool_test(inputs, "PiBotsJobWaiting", ("39m", []), ("41m", expected))
 
     def test_an_unusable_job_file(self):
-        inputs = [self.up(), self.written(), self.series("pi_bots_clock_bad_job_files", "0x10 2x110")]
+        inputs = [self.up(), self.written(), self.series("pi_bots_scheduler_bad_job_files", "0x10 2x110")]
         self.promtool_test(inputs, "PiBotsJobFileUnusable", ("24m", []),
                            ("26m", self.firing("PiBotsJobFileUnusable", value="2")))
 
@@ -580,24 +580,24 @@ class Rules(unittest.TestCase):
             with self.subTest(up=up, written=written, file="none"):
                 inputs = [self.up(up), self.written(written), self.tick(written)]
                 self.promtool_test(inputs, "SggPreviewWatchdogSilent", ("30m", []), ("59m", []))
-        # The service gate alone: a frozen file saying up, with the clock's
-        # series left fresh so the clock gate does not hide it.
+        # The service gate alone: a frozen file saying up, with the scheduler's
+        # series left fresh so the scheduler gate does not hide it.
         inputs = [self.up("1x60"), self.written("0+60x5 300x55"), self.tick()]
         self.promtool_test(inputs, "SggPreviewWatchdogSilent", ("30m", []), ("59m", []))
 
-    def test_a_stopped_clock_is_the_clocks_alert_not_the_watchdogs(self):
-        # The service writes its file but the clock stopped, so the job stopped too.
+    def test_a_stopped_scheduler_is_the_schedulers_alert_not_the_watchdogs(self):
+        # The service writes its file but the scheduler stopped, so the job stopped too.
         inputs = [self.up(), self.written(), self.tick("0+60x10 600x110"),
                   self.watchdog_ran("0+60x10 600x110")]
-        self.promtool_test(inputs, "PiBotsClockSilent", ("40m", self.firing("PiBotsClockSilent")))
+        self.promtool_test(inputs, "PiBotsSchedulerSilent", ("40m", self.firing("PiBotsSchedulerSilent")))
         self.promtool_test(inputs, "SggPreviewWatchdogSilent", ("40m", []), ("100m", []))
-        # The clock stopped at minute 28, after the watchdog went quiet at
-        # minute 10: from minute 31 the clock is over a minute stale, so the
+        # The scheduler stopped at minute 28, after the watchdog went quiet at
+        # minute 10: from minute 31 the scheduler is over a minute stale, so the
         # watchdog's own alert never fires.
         inputs = [self.up(), self.written(), self.tick("0+60x28 1680x92"),
                   self.watchdog_ran("0+60x10 600x110")]
         self.promtool_test(inputs, "SggPreviewWatchdogSilent", ("36m", []), ("40m", []), ("100m", []))
-        # A stopped clock and no watchdog file at all: the absent branch is hidden too.
+        # A stopped scheduler and no watchdog file at all: the absent branch is hidden too.
         inputs = [self.up(), self.written(), self.tick("0+60x10 600x110")]
         self.promtool_test(inputs, "SggPreviewWatchdogSilent", ("40m", []), ("100m", []))
 
