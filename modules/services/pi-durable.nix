@@ -346,7 +346,7 @@
       # The VM supervisor (proxies runbook §11): its metrics, one file per
       # workspace, and the alerts on them. It reconciles every 5 minutes and
       # checks each VM's health every 30 s, restarting it after 3 failures.
-      supervisorRunbook = "`node ~/.local/share/pi-durable/sgg-deployment/dist/workspaces/proxies/src/supervisor-main.js status` shows each workspace's definition, its VMs and the newest event of each kind; events are in ~/.local/state/pi-durable/supervisor/events.jsonl, logs in /tmp/pi-durable-supervisor.log and .error.log. Runbook: durable-pi-workspace workspaces/proxies/OPERATIONS.md §11.";
+      supervisorRunbook = "`node ~/.local/share/pi-durable/sgg-deployment/dist/workspaces/proxies/src/vm-supervisor-main.js status` shows each workspace's definition, its VMs and the newest event of each kind; events are in ~/.local/state/pi-durable/supervisor/events.jsonl, logs in /tmp/pi-durable-supervisor.log and .error.log. Runbook: durable-pi-workspace workspaces/proxies/OPERATIONS.md §11.";
       supervisorRules = [
         {
           alert = "PiDurableWorkspaceVmDown";
@@ -399,7 +399,7 @@
           labels = { severity = "warning"; };
           annotations = {
             summary = "Workspace {{ $labels.workspace }}'s updates are halted after a failed update";
-            description = "A build applied to workspace {{ $labels.workspace }} failed its post-deploy check or its VM couldn't be started, so the VM supervisor rolled it back and halted the workspace's updates: no apply is taken until `supervisor-main.js release {{ $labels.workspace }}`. Its grants are still renewed and its health watched. `status` gives why and since when, and the events (post-deploy-check-failed, rolled-back, updates-halted) name the build; fix the cause, then release. If PiDurableWorkspaceUpdatesHaltedWorst fires too, no build was brought to pass. ${supervisorRunbook}";
+            description = "A build applied to workspace {{ $labels.workspace }} failed its post-deploy check or its VM couldn't be started, so the VM supervisor rolled it back and halted the workspace's updates: no apply is taken until `vm-supervisor-main.js release {{ $labels.workspace }}`. Its grants are still renewed and its health watched. `status` gives why and since when, and the events (post-deploy-check-failed, rolled-back, updates-halted) name the build; fix the cause, then release. If PiDurableWorkspaceUpdatesHaltedWorst fires too, no build was brought to pass. ${supervisorRunbook}";
           };
         }
         {
@@ -413,7 +413,7 @@
           labels = { severity = "critical"; };
           annotations = {
             summary = "Workspace {{ $labels.workspace }}'s updates are halted with no build that passes";
-            description = "An update of workspace {{ $labels.workspace }} failed and there was no last good build to roll back to, or the rollback failed its post-deploy check too. The workspace's updates are halted in the worst state with its VM left as it is, not stopped: it may still serve its page, or nothing. Nothing is retried until someone looks: `status` gives why, the events (post-deploy-check-failed, updates-halted with worst) the builds. Fix the cause, then `supervisor-main.js release {{ $labels.workspace }}` and apply a build that passes. ${supervisorRunbook}";
+            description = "An update of workspace {{ $labels.workspace }} failed and there was no last good build to roll back to, or the rollback failed its post-deploy check too. The workspace's updates are halted in the worst state with its VM left as it is, not stopped: it may still serve its page, or nothing. Nothing is retried until someone looks: `status` gives why, the events (post-deploy-check-failed, updates-halted with worst) the builds. Fix the cause, then `vm-supervisor-main.js release {{ $labels.workspace }}` and apply a build that passes. ${supervisorRunbook}";
           };
         }
         {
@@ -440,7 +440,7 @@
           labels = { severity = "warning"; };
           annotations = {
             summary = "Workspace {{ $labels.workspace }}'s record export has been failing for over 2 hours";
-            description = "The VM supervisor's last record export of workspace {{ $labels.workspace }} failed, and the hourly retries since have not succeeded for 2 hours. The records exist only on the VM's volume, which is in no backup, until an export succeeds; the last good copy is still in exports/{{ $labels.workspace }}/current. The export-failed event's why, and `status`'s export_failure, give the cause (the VM unhealthy, its export socket missing, a post-deploy check in progress, a bound passed, nothing exported). Run one by hand with `supervisor-main.js export {{ $labels.workspace }}` once fixed. Runbook §11.6. ${supervisorRunbook}";
+            description = "The VM supervisor's last record export of workspace {{ $labels.workspace }} failed, and the hourly retries since have not succeeded for 2 hours. The records exist only on the VM's volume, which is in no backup, until an export succeeds; the last good copy is still in exports/{{ $labels.workspace }}/current. The export-failed event's why, and `status`'s export_failure, give the cause (the VM unhealthy, its export socket missing, a post-deploy check in progress, a bound passed, nothing exported). Run one by hand with `vm-supervisor-main.js export {{ $labels.workspace }}` once fixed. Runbook §11.6. ${supervisorRunbook}";
           };
         }
         {
@@ -1162,7 +1162,7 @@
           launchd.user.agents.pi-durable-forge-broker.serviceConfig = {
             ProgramArguments = [
               node
-              "${checkout}/dist/workspaces/proxies/src/forge-main.js"
+              "${checkout}/dist/workspaces/proxies/src/forgejo-proxy-main.js"
               "run"
               "--config"
               "${home}/.config/pi-durable/forge-broker.json"
@@ -1206,7 +1206,7 @@
           launchd.user.agents.pi-durable-vm-broker.serviceConfig = {
             ProgramArguments = [
               node
-              "${checkout}/dist/workspaces/proxies/src/vm-broker-main.js"
+              "${checkout}/dist/workspaces/proxies/src/planning-vm-supervisor-main.js"
               "run"
               "--config"
               "${home}/.config/pi-durable/vm-broker.json"
@@ -1319,7 +1319,7 @@
             launchd.user.agents.pi-durable-planning-relay.serviceConfig = {
               ProgramArguments = [
                 node
-                "${checkout}/dist/workspaces/proxies/src/relay-main.js"
+                "${checkout}/dist/workspaces/proxies/src/port-forwarder-main.js"
                 "run"
                 "--config"
                 "${home}/.config/pi-durable/planning-relay.json"
@@ -1387,7 +1387,7 @@
             launchd.user.agents.pi-durable-supervisor.serviceConfig = {
               ProgramArguments = [
                 node
-                "${checkout}/dist/workspaces/proxies/src/supervisor-main.js"
+                "${checkout}/dist/workspaces/proxies/src/vm-supervisor-main.js"
                 "run"
                 "--config"
                 "${home}/.config/pi-durable/supervisor.json"

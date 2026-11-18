@@ -713,7 +713,7 @@ class ForgeBroker(unittest.TestCase):
         node = studio("{ }", "builtins.head config.launchd.user.agents.pi-durable-model-proxy.serviceConfig.ProgramArguments")
         self.assertTrue(node.startswith("/nix/store/") and node.endswith("/bin/node"), node)
         self.assertEqual(
-            [node, f"{DEPLOYMENT}/dist/workspaces/proxies/src/forge-main.js", "run", "--config", f"{HOME}/.config/pi-durable/forge-broker.json"],
+            [node, f"{DEPLOYMENT}/dist/workspaces/proxies/src/forgejo-proxy-main.js", "run", "--config", f"{HOME}/.config/pi-durable/forge-broker.json"],
             agent["ProgramArguments"],
         )
         # HOME and PATH only, no secret; PATH exactly the write proxy's.
@@ -766,7 +766,7 @@ class VmBroker(unittest.TestCase):
         agent = studio("{ }", self.AGENT)
         node = studio("{ }", "builtins.head config.launchd.user.agents.pi-durable-model-proxy.serviceConfig.ProgramArguments")
         self.assertEqual(
-            [node, f"{DEPLOYMENT}/dist/workspaces/proxies/src/vm-broker-main.js", "run", "--config", f"{HOME}/.config/pi-durable/vm-broker.json"],
+            [node, f"{DEPLOYMENT}/dist/workspaces/proxies/src/planning-vm-supervisor-main.js", "run", "--config", f"{HOME}/.config/pi-durable/vm-broker.json"],
             agent["ProgramArguments"],
         )
         self.assertEqual({"HOME", "PATH"}, set(agent["EnvironmentVariables"]))
@@ -838,7 +838,7 @@ class Planning(unittest.TestCase):
         agent = studio("{ }", self.RELAY)
         node = studio("{ }", "builtins.head config.launchd.user.agents.pi-durable-model-proxy.serviceConfig.ProgramArguments")
         self.assertEqual(
-            [node, f"{DEPLOYMENT}/dist/workspaces/proxies/src/relay-main.js", "run", "--config", f"{HOME}/.config/pi-durable/planning-relay.json"],
+            [node, f"{DEPLOYMENT}/dist/workspaces/proxies/src/port-forwarder-main.js", "run", "--config", f"{HOME}/.config/pi-durable/planning-relay.json"],
             agent["ProgramArguments"],
         )
         self.assertEqual({"HOME": HOME}, agent["EnvironmentVariables"])
@@ -2148,7 +2148,7 @@ class Supervisor(unittest.TestCase):
         self.assertRegex(node, r"^/nix/store/[0-9a-z]{32}-nodejs-slim-24\.[0-9.]+/bin/node$")
         self.assertEqual("org.nixos.pi-durable-supervisor", agent["Label"])
         self.assertEqual(
-            [node, f"{DEPLOYMENT}/dist/workspaces/proxies/src/supervisor-main.js", "run", "--config", f"{HOME}/.config/pi-durable/supervisor.json"],
+            [node, f"{DEPLOYMENT}/dist/workspaces/proxies/src/vm-supervisor-main.js", "run", "--config", f"{HOME}/.config/pi-durable/supervisor.json"],
             agent["ProgramArguments"],
         )
         # HOME and PATH only, no secret. PATH: the same Node (load-image.sh's
@@ -2503,7 +2503,7 @@ class SupervisorAlerts(unittest.TestCase):
                 text = rule["annotations"]["summary"] + rule["annotations"]["description"]
                 self.assertIn("{{ $labels.workspace }}", text)
                 self.assertIn("OPERATIONS.md §11", text)
-                self.assertIn("supervisor-main.js status", text)
+                self.assertIn("vm-supervisor-main.js status", text)
         self.assertIn("{{ $labels.vm }}", by_name["PiDurableWorkspaceVmDown"]["annotations"]["summary"])
         self.assertIn("release", by_name["PiDurableWorkspaceHeld"]["annotations"]["description"])
         self.assertIn("release", by_name["PiDurableWorkspaceUpdatesHaltedWorst"]["annotations"]["description"])
