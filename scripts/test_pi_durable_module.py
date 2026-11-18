@@ -1729,8 +1729,8 @@ exec /bin/sleep "$@"
         environment = {**cls.setup(tmp, **kwargs), **(env or {})}
         return subprocess.run(cls.command(tmp, earlier), env=environment, text=True, capture_output=True, timeout=timeout)
 
-    def start_controlled(self, tmp, earlier=(), **kwargs):
-        env = {**self.setup(tmp, **kwargs), "PI_DURABLE_NET_ANCHOR_POLL_SECONDS": self.CONTROLLED}
+    def start_controlled(self, tmp, earlier=(), env=None, **kwargs):
+        env = {**self.setup(tmp, **kwargs), **(env or {}), "PI_DURABLE_NET_ANCHOR_POLL_SECONDS": self.CONTROLLED}
         # restore_signals resets only SIGPIPE, SIGXFZ and SIGXFSZ. A non-interactive shell starts its background jobs
         # with SIGINT and SIGQUIT ignored, and /bin/sh can't trap a signal that was ignored when it started, so the
         # agent would never see the test's SIGINT: these tests would then pass in the foreground and time out when
@@ -2059,6 +2059,105 @@ exec /bin/sleep "$@"
                 f'pi_durable_net_anchor_last_run_timestamp_seconds{self.LABEL} 1000\n')
             self.run_script(tmp)
             self.assertEqual(1, self.runs(tmp))
+
+    # The runtime stop marker: a file that says the container runtime was stopped on purpose, so that nothing starts
+    # it again. Written after the host booted, it holds the agent before `container system start` and before it starts
+    # an anchor VM; from before the boot it is ignored.
+    MARKER_LINE = "2026-11-18T12:00:00.000Z the container 1.7.1 upgrade (#534)"
+
+    def set_marker(self, path, before_boot=False):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self.MARKER_LINE + "\n")
+        if before_boot:
+            os.utime(path, (1000, 1000))
+        return path
+
+    def test_a_runtime_stopped_on_purpose_is_not_started_until_the_marker_goes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            marker = self.set_marker(tmp / "elsewhere" / "stopped")
+            proc = self.start_controlled(tmp, lists=["fail", "ok"], env={"PI_DURABLE_RUNTIME_STOP_MARKER": str(marker)})
+            self.await_pause(tmp, proc)
+            # The first list failed, and the marker holds it: no `system start`, up 0.
+            self.assertEqual([], self.calls(tmp, "system") + self.calls(tmp, "run"))
+            self.assertEqual(0, self.up(tmp))
+            self.step(tmp)
+            self.await_pause(tmp, proc)
+            self.assertEqual([], self.calls(tmp, "system"), "still waiting while the marker is set")
+            self.assertEqual(0, self.up(tmp))
+            marker.unlink()
+            self.step(tmp)
+            # The next pause is the watch's: started, listed again, then the VM.
+            self.await_pause(tmp, proc)
+            calls = self.calls(tmp)
+            self.assertEqual(["system start"], self.calls(tmp, "system"))
+            self.assertIn("list --quiet", calls[calls.index("system start"):])
+            self.assertEqual(1, len(self.calls(tmp, "run")))
+            self.assertEqual(1, self.up(tmp))
+            proc.terminate()
+            out, _ = proc.communicate(timeout=60)
+            waiting = f"the container runtime is stopped on purpose ({self.MARKER_LINE}); waiting"
+            self.assertEqual(1, out.count(waiting), out)
+            self.assertIn("the runtime stop marker is gone", out)
+
+    def test_no_anchor_vm_is_started_while_the_runtime_is_stopped_on_purpose(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            # The default path, under HOME (the stand-in's temporary directory).
+            marker = self.set_marker(tmp / ".local" / "state" / "pi-durable" / "container-runtime-stopped")
+            proc = self.start_controlled(tmp, lists=["ok", "ok", "ok"])
+            self.await_pause(tmp, proc)
+            self.assertEqual([], self.calls(tmp, "run") + self.calls(tmp, "system") + self.calls(tmp, "delete"))
+            self.assertEqual(0, self.up(tmp))
+            self.step(tmp)
+            self.await_pause(tmp, proc)
+            self.assertEqual([], self.calls(tmp, "run"), "still waiting while the marker is set")
+            marker.unlink()
+            listed = len(self.calls(tmp, "list"))
+            self.step(tmp)
+            self.await_pause(tmp, proc)
+            # Gone: it looks again (the lists may have changed while it waited), then starts one.
+            self.assertGreater(len(self.calls(tmp, "list")), listed)
+            self.assertEqual(1, len(self.calls(tmp, "run")))
+            self.assertEqual(1, self.up(tmp))
+            self.assertEqual(1, self.runs(tmp))
+            proc.terminate()
+            out, _ = proc.communicate(timeout=60)
+            self.assertIn(f"the container runtime is stopped on purpose ({self.MARKER_LINE}); waiting", out)
+
+    def test_a_marker_waited_on_before_a_start_waits_for_the_earlier_gateways_again(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            marker = self.set_marker(tmp / "stopped")
+            earlier = ("192.168.200.1",)
+            proc = self.start_controlled(tmp, earlier=earlier, lists=["ok", "ok", "ok"],
+                                         addresses=[self.GATEWAY, "192.168.200.1"],
+                                         env={"PI_DURABLE_RUNTIME_STOP_MARKER": str(marker)})
+            self.await_pause(tmp, proc)
+            self.assertEqual([], self.calls(tmp, "run"))
+            # The earlier gateway went with the runtime while it waited, and the marker is cleared.
+            (tmp / "state" / "addresses").write_text(f"{self.GATEWAY}\n")
+            marker.unlink()
+            self.step(tmp)
+            self.await_pause(tmp, proc)
+            self.assertEqual([], self.calls(tmp, "run"), "one network's first attach at a time")
+            (tmp / "state" / "addresses").write_text(f"{self.GATEWAY}\n192.168.200.1\n")
+            self.step(tmp)
+            self.await_pause(tmp, proc)
+            self.assertEqual(1, len(self.calls(tmp, "run")))
+            proc.terminate()
+            proc.communicate(timeout=60)
+
+    def test_a_marker_from_before_the_boot_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            marker = self.set_marker(tmp / "stopped", before_boot=True)
+            run = self.run_script(tmp, lists=["fail", "ok"], env={"PI_DURABLE_RUNTIME_STOP_MARKER": str(marker)})
+            self.assertEqual(["system start"], self.calls(tmp, "system"))
+            self.assertEqual(1, len(self.calls(tmp, "run")))
+            self.assertEqual(1, self.runs(tmp))
+            self.assertNotIn("stopped on purpose", run.stdout)
+            self.assertTrue(marker.exists(), "the agent never removes the marker")
 
     def test_wrong_arguments_start_nothing(self):
         for args in (["pi-durable-sgg"], ["pi-durable-sgg", NET_ANCHOR_IMAGE, "/tmp/x"]):

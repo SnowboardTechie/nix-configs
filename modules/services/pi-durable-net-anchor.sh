@@ -36,6 +36,17 @@
 # to repeat; SGG runs it at each start) and lists again, so the anchors don't
 # depend on SGG to bring the runtime up after a boot.
 #
+# The runtime stop marker (PI_DURABLE_RUNTIME_STOP_MARKER, default
+# ~/.local/state/pi-durable/container-runtime-stopped) says the container
+# runtime was stopped on purpose, so that nothing starts it again: an upgrade
+# sets it before `container system stop` and clears it once the new runtime
+# runs. While it is set, the agent runs neither `container system start` nor
+# starts (or removes) an anchor VM: it logs the marker's line once, writes
+# up 0 and looks again every poll, then carries on. A marker written before
+# the host booted is ignored, so one left behind can never keep the runtime
+# down after a reboot. The watch below doesn't read it: once it exits, the
+# restarted agent lands in the wait.
+#
 # Then it polls every PI_DURABLE_NET_ANCHOR_POLL_SECONDS (default 15). When the
 # VM is no longer running it writes up 0 and exits 1, so launchd's KeepAlive
 # starts the agent again and it starts a fresh VM. A poll whose `container
@@ -90,6 +101,7 @@ poll=${PI_DURABLE_NET_ANCHOR_POLL_SECONDS:-15}
 max_failures=${PI_DURABLE_NET_ANCHOR_LIST_FAILURES:-4}
 call_limit=${PI_DURABLE_NET_ANCHOR_CALL_SECONDS:-120}
 settle=${PI_DURABLE_NET_ANCHOR_SETTLE_SECONDS:-5}
+marker=${PI_DURABLE_RUNTIME_STOP_MARKER:-$HOME/.local/state/pi-durable/container-runtime-stopped}
 
 log() {
   printf '%s %s: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$name" "$*"
@@ -208,6 +220,32 @@ give_up() {
   exit 1
 }
 
+# Whether the runtime stop marker is set this boot; its first line in
+# $marker_line. One older than the boot is ignored. With the boot unknown it
+# counts, since its age can't be told.
+marker_line=
+stopped_on_purpose() {
+  [ -f "$marker" ] || return 1
+  written=$(stat -f %m "$marker" 2>/dev/null) || return 1
+  if [ -n "$boot" ] && [ "$written" -lt "$boot" ]; then
+    return 1
+  fi
+  marker_line=$(head -n 1 "$marker" 2>/dev/null)
+  [ -n "$marker_line" ] || marker_line="the marker is empty"
+}
+
+# Wait, up 0, while the runtime is stopped on purpose. Succeeds only if it
+# waited, so the caller can look again at what may have changed meanwhile.
+wait_while_stopped() {
+  stopped_on_purpose || return 1
+  log "the container runtime is stopped on purpose ($marker_line); waiting"
+  while stopped_on_purpose; do
+    record 0
+    pause "$poll"
+  done
+  log "the runtime stop marker is gone"
+}
+
 # `container list --quiet` prints the running containers' IDs and `--all`
 # adds the stopped ones; `--name` sets the ID.
 listed() {
@@ -227,6 +265,7 @@ read_lists() {
 record 0
 
 if ! read_lists; then
+  wait_while_stopped
   log "container list failed; running container system start"
   call system start || log "container system start failed"
   read_lists || give_up "container list failed after container system start"
@@ -235,25 +274,29 @@ fi
 if listed "$running"; then
   log "adopting the running anchor VM $name (network $network)"
 else
-  # One network's first attach at a time: wait for every earlier network's
-  # gateway before attaching this one.
-  waited=0
+  # Look again from the top after any wait on the runtime stop marker: the
+  # earlier gateways and the lists may have changed meanwhile.
   while :; do
-    missing=
-    for address in $earlier; do
-      on_host "$address" || missing="$missing $address"
+    # One network's first attach at a time: wait for every earlier network's
+    # gateway before attaching this one.
+    waited=0
+    while :; do
+      missing=
+      for address in $earlier; do
+        on_host "$address" || missing="$missing $address"
+      done
+      [ -z "$missing" ] && break
+      [ "$waited" -eq 0 ] && log "waiting for the earlier networks' gateways:$missing"
+      waited=1
+      record 0
+      pause "$poll"
     done
-    [ -z "$missing" ] && break
-    [ "$waited" -eq 0 ] && log "waiting for the earlier networks' gateways:$missing"
-    waited=1
-    record 0
-    pause "$poll"
-  done
-  [ "$waited" -eq 1 ] && log "the earlier networks' gateways are up"
-  read_lists || give_up "container list failed"
-  if listed "$running"; then
-    log "adopting the running anchor VM $name (network $network)"
-  else
+    [ "$waited" -eq 1 ] && log "the earlier networks' gateways are up"
+    read_lists || give_up "container list failed"
+    if listed "$running"; then
+      log "adopting the running anchor VM $name (network $network)"
+      break
+    fi
     if listed "$present"; then
       # Possibly still starting: look again before removing it.
       pause "$settle"
@@ -261,18 +304,21 @@ else
     fi
     if listed "$running"; then
       log "adopting the anchor VM $name, which was still starting"
-    else
-      if listed "$present"; then
-        log "removing the stopped leftover $name"
-        call delete --force "$name" || give_up "could not remove the stopped leftover $name"
-      fi
-      call run --detach --name "$name" --network "$network" --cpus 1 --memory 200M "$image" sleep infinity ||
-        give_up "could not start the anchor VM $name"
-      runs=$((runs + 1))
-      last_run=$(date +%s)
-      log "started anchor VM $name: run $runs this boot, network $network, image $image"
+      break
     fi
-  fi
+    # Nothing is removed or started into a runtime stopped on purpose.
+    wait_while_stopped && continue
+    if listed "$present"; then
+      log "removing the stopped leftover $name"
+      call delete --force "$name" || give_up "could not remove the stopped leftover $name"
+    fi
+    call run --detach --name "$name" --network "$network" --cpus 1 --memory 200M "$image" sleep infinity ||
+      give_up "could not start the anchor VM $name"
+    runs=$((runs + 1))
+    last_run=$(date +%s)
+    log "started anchor VM $name: run $runs this boot, network $network, image $image"
+    break
+  done
 fi
 record 1
 on_host "$gateway" || log "the anchor VM is attached but gateway $gateway is on no host interface; see the proxies runbook §9"
