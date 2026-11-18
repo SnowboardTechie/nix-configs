@@ -3,9 +3,9 @@
 # VM attached to the network, so its vmnet bridge, and with it the gateway the
 # proxies and brokers listen on, never goes down while the host runs.
 #
-# Apple `container` 1.5.0 gives a network a host bridge only while a VM is
-# attached, and can give two networks the same bridge unit; the second to come
-# up then destroys the first's gateway. An idle VM attached to each network
+# Apple `container` 1.5.0 and 1.7.1 give a network a host bridge only while a
+# VM is attached, and can give two networks the same bridge unit; the second to
+# come up then destroys the first's gateway. An idle VM attached to each network
 # before anything else uses it prevented that under every ordering probed
 # (durable-pi-workspace vault/2026-11-10-vm-network-bridges-plan.md). The
 # protection is that a network's bridge never goes down once its helper has
