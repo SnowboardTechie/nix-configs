@@ -80,10 +80,15 @@
           /bin/launchctl bootout "gui/$brew_agent_uid/$brew_agent_label" >/dev/null 2>&1 || true
 
           # bootout is asynchronous; bootstrapping while the old job is still
-          # leaving the domain fails with EBUSY. Wait for it to actually go.
-          for _ in 1 2 3 4 5 6 7 8 9 10; do
-            /bin/launchctl print "gui/$brew_agent_uid/$brew_agent_label" >/dev/null 2>&1 || break
-            /bin/sleep 0.2
+          # leaving the domain fails with EBUSY. Wait for it to actually go, for
+          # up to 70 s: an agent may take its whole ExitTimeOut to stop (the
+          # longest is 60 s). A 2 s wait left pi-durable-sgg unloaded on
+          # 2026-11-17, when it took 17 s to stop in the middle of a task.
+          brew_agent_waited=0
+          while /bin/launchctl print "gui/$brew_agent_uid/$brew_agent_label" >/dev/null 2>&1; do
+            [ "$brew_agent_waited" -ge 140 ] && break
+            /bin/sleep 0.5
+            brew_agent_waited=$((brew_agent_waited + 1))
           done
 
           if ! /bin/launchctl bootstrap "gui/$brew_agent_uid" "$brew_agent_plist"; then
