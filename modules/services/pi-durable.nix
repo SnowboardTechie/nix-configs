@@ -839,19 +839,9 @@
               `<state_dir>/metrics`, is this one).
             '';
           };
-          # The follower's two commands (proxies runbook §11.8), linked at
-          # /run/current-system/sw/bin/ for supervisor.json to name by path.
+          # The follower's signature verifier (proxies runbook §11.8), linked
+          # at /run/current-system/sw/bin/ for supervisor.json to name by path.
           follower = {
-            host = lib.mkOption {
-              type = lib.types.strMatching "[A-Za-z0-9][A-Za-z0-9.-]*";
-              default = "git.snowboardtechie.com";
-              description = "The tea login `pi-durable-commit-status` pins (`tea api --login`).";
-            };
-            repository = lib.mkOption {
-              type = lib.types.strMatching "[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+";
-              default = "bryan/durable-pi-workspace";
-              description = "The owner/name whose commit statuses `pi-durable-commit-status` reads.";
-            };
             keyring = lib.mkOption {
               type = lib.types.strMatching "/[^[:space:]]+";
               default = "${home}/.config/pi-durable/follower-keyring.gpg";
@@ -1414,40 +1404,13 @@
             };
           }
 
-          # The follower's commands (durable-pi-workspace#443 task 9; proxies
-          # runbook §11.8). Store scripts naming every tool by store path,
-          # linked into /run/current-system/sw/bin, a path that is stable
-          # across activations: supervisor.json names them there, so the
+          # The follower's signature verifier (durable-pi-workspace#443 task
+          # 9; proxies runbook §11.8). A store script naming every tool by
+          # store path, linked into /run/current-system/sw/bin, a path that is
+          # stable across activations: supervisor.json names it there, so the
           # agent's PATH stays as it is.
           {
             environment.systemPackages = [
-              # The forge's combined status of one commit, as JSON on stdout:
-              # exactly one full lower-case commit, else exit 2 and nothing
-              # run. tea runs from an empty directory made and removed here (no
-              # checkout's configuration), with only HOME (its login config)
-              # and a fixed PATH, the login and repository pinned.
-              (pkgs.writeShellScriptBin "pi-durable-commit-status" ''
-                if [ "$#" -ne 1 ] || [ "''${#1}" -ne 40 ]; then
-                  echo "usage: pi-durable-commit-status <40-character lower-case commit>" >&2
-                  exit 2
-                fi
-                case $1 in
-                  *[!0-9a-f]*)
-                    echo "usage: pi-durable-commit-status <40-character lower-case commit>" >&2
-                    exit 2
-                    ;;
-                esac
-                : "''${HOME:?pi-durable-commit-status: HOME is not set}"
-                dir=$(${pkgs.coreutils}/bin/mktemp -d) || exit 1
-                trap '${pkgs.coreutils}/bin/rm -rf -- "$dir"' EXIT
-                trap 'exit 129' HUP
-                trap 'exit 130' INT
-                trap 'exit 143' TERM
-                cd "$dir" || exit 1
-                ${pkgs.coreutils}/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin \
-                  ${pkgs.tea}/bin/tea api --login ${lib.escapeShellArg cfg.supervisor.follower.host} \
-                  "/repos/"${lib.escapeShellArg cfg.supervisor.follower.repository}"/commits/$1/status" </dev/null
-              '')
               # git's gpg.program for the follower: exactly git's verify
               # invocation, then gpgv against the one keyring (only its keys),
               # with an empty private GNUPGHOME removed after, so ~/.gnupg,

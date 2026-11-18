@@ -2208,21 +2208,20 @@ class Supervisor(unittest.TestCase):
         self.assertNotIn(f"--collector.textfile.directory={SUPERVISOR_METRICS}", moved)
 
 
-FOLLOWER_TOOLS = ("pi-durable-commit-status", "pi-durable-verify-commit-signature")
-SHA = "d81667134616d7d1958a9903476364ec93b110c5"
+FOLLOWER_TOOLS = ("pi-durable-verify-commit-signature",)
 VERIFY_ARGS = ("--keyid-format=long", "--status-fd=1", "--verify")
 
 
 @cache
 def follower_tool(name, settings="{ }"):
-    """Build one of the follower's commands as Studio declares it; its bin path."""
+    """Build the follower's command as Studio declares it; its bin path."""
     out = nix("build", "--impure", "--no-link", "--print-out-paths", "--expr", studio_expr(
         settings, f'builtins.head (builtins.filter (p: (p.name or "") == "{name}") config.environment.systemPackages)'))
     return Path(out.strip().splitlines()[-1]) / "bin" / name
 
 
 class SupervisorFollowerTools(unittest.TestCase):
-    """The follower's two commands (durable-pi-workspace#443 task 9): linked into the system path with the supervisor."""
+    """The follower's signature verifier (durable-pi-workspace#443 task 9): linked into the system path with the supervisor."""
 
     PACKAGES = 'map (p: p.name or "") config.environment.systemPackages'
 
@@ -2233,103 +2232,16 @@ class SupervisorFollowerTools(unittest.TestCase):
             self.assertNotIn(tool, studio(SUPERVISOR_OFF, self.PACKAGES))
         # The agent's own PATH is unchanged: the configuration names the tools by path.
         self.assertNotIn("/run/current-system/sw/bin", studio("{ }", SUPERVISOR)["EnvironmentVariables"]["PATH"])
-        self.assertEqual({"host": "git.snowboardtechie.com", "repository": "bryan/durable-pi-workspace",
-                          "keyring": f"{HOME}/.config/pi-durable/follower-keyring.gpg"},
+        # The commit-status command went with the CI (2026-11-17): the auto-deployer reads no status.
+        self.assertNotIn("pi-durable-commit-status", on)
+        self.assertEqual({"keyring": f"{HOME}/.config/pi-durable/follower-keyring.gpg"},
                          studio("{ }", "config.services.pi-durable.supervisor.follower"))
 
     def test_refuses_malformed_options(self):
-        for settings in ('{ supervisor.follower.host = lib.mkForce "git.example/x"; }',
-                         '{ supervisor.follower.repository = lib.mkForce "bryan"; }',
-                         '{ supervisor.follower.repository = lib.mkForce "bryan/x y"; }',
-                         '{ supervisor.follower.keyring = lib.mkForce "relative/keyring.gpg"; }',
+        for settings in ('{ supervisor.follower.keyring = lib.mkForce "relative/keyring.gpg"; }',
                          '{ supervisor.follower.keyring = lib.mkForce "/a b/keyring.gpg"; }'):
             with self.subTest(settings), self.assertRaisesRegex(AssertionError, "is not of type"):
                 studio(settings, "config.services.pi-durable.supervisor.follower")
-
-
-class CommitStatus(unittest.TestCase):
-    """`pi-durable-commit-status`, run with a stand-in `tea` in place of the store's (nothing reaches the forge)."""
-
-    # Records its arguments, directory, the directory's entries, environment and stdin outside that directory.
-    FAKE_TEA = """#!/bin/sh
-printf '%s\\n' "$@" > {record}/argv
-pwd -P > {record}/cwd
-ls -A > {record}/entries
-/usr/bin/env > {record}/env
-cat > {record}/stdin
-echo '{{"state":"success"}}'
-exit {status}
-"""
-    SHELL_OWN = ("PWD", "SHLVL", "_", "OLDPWD")
-
-    def record(self, tmp):
-        r = tmp / "record"
-        env = dict(line.split("=", 1) for line in (r / "env").read_text().splitlines())
-        return {"argv": (r / "argv").read_text().splitlines(), "cwd": (r / "cwd").read_text().strip(),
-                "entries": (r / "entries").read_text().splitlines(), "stdin": (r / "stdin").read_text(),
-                "env": {k: v for k, v in env.items() if k not in self.SHELL_OWN}}
-
-    def runnable(self, tmp, settings="{ }", status=0):
-        built = follower_tool("pi-durable-commit-status", settings)
-        tea = studio("{ }", "pkgs.tea.outPath") + "/bin/tea"
-        text = built.read_text()
-        self.assertEqual(1, text.count(tea), text)
-        fake = tmp / "tea"
-        (tmp / "record").mkdir(exist_ok=True)
-        fake.write_text(self.FAKE_TEA.format(record=str(tmp / "record"), status=status))
-        fake.chmod(0o755)
-        script = tmp / "pi-durable-commit-status"
-        script.write_text(text.replace(tea, str(fake)))
-        script.chmod(0o755)
-        return script
-
-    def run_it(self, tmp, script, *args, **env):
-        (tmp / "t").mkdir(exist_ok=True)
-        environment = {"HOME": str(tmp / "home"), "TMPDIR": str(tmp / "t"), "PATH": "/nonexistent", "SECRET": "x", **env}
-        return subprocess.run([str(script), *args], env=environment, text=True, capture_output=True, input="stdin", timeout=60)
-
-    def test_runs_tea_api_with_the_login_pinned_from_an_empty_directory_it_removes(self):
-        with tempfile.TemporaryDirectory() as directory:
-            tmp = Path(directory).resolve()
-            result = self.run_it(tmp, self.runnable(tmp), SHA)
-            self.assertEqual(0, result.returncode, result.stderr)
-            self.assertEqual('{"state":"success"}\n', result.stdout)
-            record = self.record(tmp)
-            self.assertEqual(["api", "--login", "git.snowboardtechie.com", f"/repos/bryan/durable-pi-workspace/commits/{SHA}/status"], record["argv"])
-            self.assertEqual({"HOME": str(tmp / "home"), "PATH": "/usr/bin:/bin"}, record["env"])
-            self.assertEqual([], record["entries"])
-            self.assertTrue(record["cwd"].startswith(str(tmp / "t") + "/"), record["cwd"])
-            self.assertEqual("", record["stdin"])
-            self.assertEqual([], os.listdir(tmp / "t"))
-
-    def test_teas_failure_is_its_exit_status(self):
-        with tempfile.TemporaryDirectory() as directory:
-            tmp = Path(directory).resolve()
-            result = self.run_it(tmp, self.runnable(tmp, status=3), SHA)
-            self.assertEqual(3, result.returncode)
-            self.assertEqual([], os.listdir(tmp / "t"))
-
-    def test_host_and_repository_follow_the_options(self):
-        settings = '{ supervisor.follower = { host = lib.mkForce "forge.example"; repository = lib.mkForce "someone/other"; }; }'
-        with tempfile.TemporaryDirectory() as directory:
-            tmp = Path(directory).resolve()
-            self.assertEqual(0, self.run_it(tmp, self.runnable(tmp, settings), SHA).returncode)
-            record = self.record(tmp)
-            self.assertEqual(["api", "--login", "forge.example", f"/repos/someone/other/commits/{SHA}/status"], record["argv"])
-
-    def test_refuses_anything_but_one_full_lower_case_commit_and_runs_nothing(self):
-        refused = [(), (SHA, SHA), (SHA[:39],), (SHA + "0",), (SHA.upper(),), ("g" + SHA[1:],), (SHA[:20] + " " + SHA[21:],),
-                   (SHA[:39] + "\n",), ("main",), ("",), ("--login",), ("../" + SHA[3:],)]
-        with tempfile.TemporaryDirectory() as directory:
-            tmp = Path(directory).resolve()
-            script = self.runnable(tmp)
-            for args in refused:
-                with self.subTest(args):
-                    result = self.run_it(tmp, script, *args)
-                    self.assertEqual(2, result.returncode)
-                    self.assertEqual("", result.stdout)
-                    self.assertEqual([], os.listdir(tmp / "record"))
-                    self.assertEqual([], os.listdir(tmp / "t"))
 
 
 class VerifyCommitSignature(unittest.TestCase):
