@@ -37,7 +37,7 @@ There is no server. Each `run` drives Nix against the checkout as it is on disk 
 ```sh
 $V run                          # the default set: evaluate, build-darwin, flake-check (~55 s warm, see timings)
 $V run evaluate                 # one journey
-$V run module-tests             # opt-in: every scripts/test_*.py, in a throwaway copy (~12 min)
+$V run module-tests             # opt-in: every scripts/test_*.py, in a throwaway copy (~10 min)
 $V run module-tests -- omlx_module pi_durable_module   # chosen tests, by the name after test_
 $V journeys                     # list journeys, default or opt-in, with timings
 ```
@@ -45,14 +45,14 @@ $V journeys                     # list journeys, default or opt-in, with timings
 Each run prints its evidence directory first, logs every step as `step <name>: ok|FAIL (<seconds> s)`, and ends with
 `<journey>: PASSED` or `FAILED`. Exit 0 means every journey passed, 1 that one failed, 2 a usage error.
 
-Timings on the Mac Studio (aarch64-darwin, 2026-11-16, store warm):
+Timings on the Mac Studio (aarch64-darwin, 2026-11-17, store warm):
 
 | Journey | Default | Time | What dominates |
 | --- | --- | --- | --- |
 | `evaluate` | yes | ~40 s | gnarbox's NixOS evaluation (~15 s), mbp and studio (~9 s each) |
 | `build-darwin` | yes | ~2 s cached; minutes after a nixpkgs change | Building what the store lacks |
 | `flake-check` | yes | ~15 s | Evaluating the eight dev shells and gnarbox |
-| `module-tests` | no | ~12 min for all 19 | `test_pi_durable_module.py` (~5 min), `test_forgejo_runner_module.py` and `test_hermes_updater.py` (~70 s each) |
+| `module-tests` | no | ~10 min for all 19 | `test_pi_durable_module.py` (~5 min), `test_hermes_updater.py` (~75 s) |
 
 A cold store after a `flake.lock` change can make `build-darwin` take far longer; that is downloading, not a hang.
 The step's `.err` file shows Nix's progress.
@@ -175,11 +175,17 @@ nothing roots them.
 - **`nix flake check --all-systems` fails on main** (2026-11-16, commit 21d51c1): the `x86_64-linux` dev shells pull
   `gtk+-2.24.33`, which the pinned nixpkgs marks broken (`modules/dev-envs/_nodeLib.nix`, `browserTestingDeps`). That is
   why `flake-check` checks this machine's system only. It is not a journey until the dev shells are fixed.
-- **Two module tests fail on main** (2026-11-16, commit 21d51c1), unrelated to any change being verified:
-  `test_dashy_status_api.py` (`test_a_pi_durable_link_follows_its_service`, turning planning off trips the
-  `planning.modelProxy` assertion) and `test_pi_bots_service.py` (`test_pi_durable_agents_find_it` expects the
-  `pi-durable-sampler` agent, which commit 21d51c1 turned off on Studio). So `$V run module-tests` fails on main.
-  Compare a branch's failures with main's, or run the tests for the modules you touched by name.
+- **Three module tests fail on main** (2026-11-17, commit 39befbc), unrelated to any change being verified:
+  - `test_dashy_status_api.py`: `test_a_pi_durable_link_follows_its_service` (turning planning off trips the
+    `planning.modelProxy` assertion) and `test_every_dot_names_a_probe_the_adapter_answers` (Studio's dashboard has a
+    `Pi Bots Voice` dot the test's list lacks).
+  - `test_monitoring_content_probes.py`: 11 failures, all in the `Wiring` class, because Studio now has a
+    `Pi Bots Voice` probe (commit d95306e) that the test's `STUDIO_PROBES` lacks.
+  - `test_pi_bots_service.py`: `test_pi_durable_agents_find_it` reads the `pi-durable-sampler` agent, which commit
+    21d51c1 turned off on Studio (`attribute 'pi-durable-sampler' missing`).
+
+  So `$V run module-tests` fails on main; the other 16 pass. Compare a branch's failures with main's, or run the tests
+  for the modules you touched by name.
 - **`nixpkgs-fmt --check .` fails on main**: 17 of 52 files would be reformatted (nixpkgs-fmt 1.3.0). Check only the
   files you changed: `nix run --no-update-lock-file --inputs-from . nixpkgs#nixpkgs-fmt -- --check <files>`.
 - **A break must hit what the host sets.** Studio sets `services.omlx.port` itself, so changing the option's default

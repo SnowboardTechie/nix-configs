@@ -34,12 +34,14 @@ H2 sections follow, in this order: `Sub-features`, `How to get to it (user POV)`
 
 | Feature | Journey | Default | Last proved |
 | --- | --- | --- | --- |
-| [Host configurations evaluate](./host-evaluation.md) | `evaluate` | yes | 2026-11-16 |
-| [Darwin systems build](./darwin-build.md) | `build-darwin` | yes | 2026-11-16 |
-| [The flake's own check](./flake-check.md) | `flake-check` | yes | 2026-11-16 |
-| [Module tests](./module-tests.md) | `module-tests` | no (~12 min) | 2026-11-16, on `omlx_module`; the full set fails on main (two tests) |
+| [Host configurations evaluate](./host-evaluation.md) | `evaluate` | yes | 2026-11-17 |
+| [Darwin systems build](./darwin-build.md) | `build-darwin` | yes | 2026-11-17 |
+| [The flake's own check](./flake-check.md) | `flake-check` | yes | 2026-11-17 |
+| [Module tests](./module-tests.md) | `module-tests` | no (~10 min) | 2026-11-17; the full set fails on main (three tests) |
 
-"Last proved" means the journey passed on commit 21d51c1 and failed on each break below, on that date.
+"Last proved" is the date the journey last ran: the three default journeys passed on commit 39befbc on 2026-11-17, and
+the full module set ran there with only main's three known failures (16 passed). Each break below was seen to fail on commit 21d51c1 on 2026-11-16 and has not
+been re-run since.
 
 ## Breaks each journey catches
 

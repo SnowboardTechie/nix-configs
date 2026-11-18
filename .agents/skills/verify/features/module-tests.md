@@ -8,7 +8,7 @@ test for each module.
 ## Sub-features
 
 - `one-module`: `$V run module-tests -- <name>` runs `scripts/test_<name>.py` for the module you touched.
-- `all-modules`: `$V run module-tests` runs all 19, about 12 minutes. The count is asserted (`EXPECTED_TESTS` in
+- `all-modules`: `$V run module-tests` runs all 19, about 10 minutes. The count is asserted (`EXPECTED_TESTS` in
   `../scripts/nix-verify`); a new or removed test changes it and this line together. An empty set fails.
 - `throwaway-copy`: the tests run in a copy of the worktree under `$TMPDIR`, because their own Nix calls are unlocked.
   The real `flake.lock` and tree cannot be written; a test that changes the copy's `flake.lock` fails the run.
@@ -26,15 +26,17 @@ Preconditions:
 
 - **One module.** Run `$V run module-tests -- omlx_module`. The step `test_omlx_module` is `ok` with `OK`, about 25 s.
 - **All.** Run `$V run module-tests`. Steps: `test set` (19 test(s)), `throwaway copy` (its path), one step per test,
-  `tests left flake.lock alone`, `worktree untouched`. On main (2026-11-16) two tests fail, see Gotchas.
+  `tests left flake.lock alone`, `worktree untouched`. On main (2026-11-17) three tests fail, see Gotchas.
 - **Proof.** Each test's `.err` file holds unittest's output; a failing step lists its `FAIL:` and `ERROR:` lines.
 
 ## Gotchas
 
-- On main (commit 21d51c1, 2026-11-16) `test_dashy_status_api` fails in `test_a_pi_durable_link_follows_its_service`
-  and `test_pi_bots_service` fails in `test_pi_durable_agents_find_it`. So the full set fails on main: compare a
-  branch's failures with main's.
+- On main (commit 39befbc, 2026-11-17) three tests fail: `test_dashy_status_api` (two tests),
+  `test_monitoring_content_probes` (the `Wiring` class: Studio's `Pi Bots Voice` probe is not in its list) and
+  `test_pi_bots_service` (`test_pi_durable_agents_find_it`: the `pi-durable-sampler` agent is off on Studio).
+  `../SKILL.md`'s Gotchas give each cause. So the full set fails on main: compare a branch's failures with main's.
 - `test_pi_durable_module` takes about 5 minutes alone.
+- `modules/services/AGENTS.md` names `scripts/test_matrix_send_forward.py`, which does not exist (2026-11-17).
 - The tests evaluate through a `path:` flake reference, so unlike `evaluate` they see untracked files. The copy
   holds tracked and untracked files but not ignored ones, so an ignored file a test needs is missing there.
-- The full set takes over ten minutes, so it is not in the default set.
+- The full set takes about ten minutes, so it is not in the default set.

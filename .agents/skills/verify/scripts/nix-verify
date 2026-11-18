@@ -35,7 +35,7 @@ JOURNEYS = {
     "evaluate": ("default", "Every darwinConfigurations and nixosConfigurations host evaluates to a system derivation (~45 s)"),
     "build-darwin": ("default", "Every darwin host's system builds (--no-link) and holds an activate script; never run (~40 s cached)"),
     "flake-check": ("default", "nix flake check for this machine's system (~20 s)"),
-    "module-tests": ("opt-in", "Every scripts/test_*.py, or the ones named after --, in a throwaway copy; ~12 min for all"),
+    "module-tests": ("opt-in", "Every scripts/test_*.py, or the ones named after --, in a throwaway copy; ~10 min for all"),
 }
 # The number of scripts/test_*.py that features/module-tests.md states. Change both together.
 EXPECTED_TESTS = 19
