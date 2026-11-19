@@ -1060,10 +1060,6 @@ class WorkspaceRelayPorts(unittest.TestCase):
 
 PLANNING_SANDBOX_PROXY = f"{AGENTS}.pi-durable-planning-sandbox-proxy.serviceConfig"
 PLANNING_SANDBOX_OFF = "{ planningSandbox.enable = lib.mkForce false; }"
-# What a sandbox container's installs need beyond the replay proxy's package hosts (durable-pi-workspace#535):
-# Playwright 1.64's Chrome for Testing downloads (cdn.playwright.dev, which redirects Chrome to
-# storage.googleapis.com) and its first mirror for ffmpeg (playwright.download.prss.microsoft.com).
-PLAYWRIGHT_HOSTS = ["cdn.playwright.dev", "playwright.download.prss.microsoft.com", "storage.googleapis.com"]
 
 
 def planning_sandbox(listen='"192.168.130.1"', clients='[ "192.168.130.0/24" ]', ipv6='"fd17:b92:207f:9aa0::/64"'):
@@ -1163,7 +1159,7 @@ class PlanningSandbox(unittest.TestCase):
         path = filter_line.split('"')[1]
         self.assertTrue(path.endswith("-pi-durable-planning-sandbox-proxy-allowlist"), path)
         hosts = studio("{ }", f'lib.splitString "\\n" (lib.removeSuffix "\\n" (builtins.readFile "{path}"))')
-        self.assertEqual(PACKAGE_HOSTS + PLAYWRIGHT_HOSTS, hosts)
+        self.assertEqual(PACKAGE_HOSTS, hosts)
         self.assertFalse([h for h in hosts if "github" in h])
 
     def test_one_firewall_exception_for_the_shared_tinyproxy(self):
@@ -2821,12 +2817,7 @@ class SupervisorAlerts(unittest.TestCase):
                 self.assertIn("OPERATIONS.md §11", text)
                 self.assertIn("vm-supervisor-main.js status", text)
         self.assertIn("{{ $labels.vm }}", by_name["PiDurableWorkspaceVmDown"]["annotations"]["summary"])
-        # Since durable-pi-workspace#469 (decision 4) a new commit on main ends halted updates: nothing waits on a
-        # release by hand, so the text no longer asks for one.
-        held = by_name["PiDurableWorkspaceHeld"]["annotations"]["description"]
-        self.assertNotIn("fix the cause, then release", held)
-        self.assertNotIn("until `vm-supervisor-main.js release", held)
-        self.assertIn("A new commit on main ends the halt", held)
+        self.assertIn("release", by_name["PiDurableWorkspaceHeld"]["annotations"]["description"])
         self.assertIn("release", by_name["PiDurableWorkspaceUpdatesHaltedWorst"]["annotations"]["description"])
         self.assertIn("{{ $value", by_name["PiDurableWorkspaceDiskHigh"]["annotations"]["summary"])
         # Every rule reading the supervisor's metrics is one of these.

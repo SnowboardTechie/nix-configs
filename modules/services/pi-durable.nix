@@ -432,16 +432,15 @@
         {
           alert = "PiDurableWorkspaceHeld";
           # Kept as PiDurableWorkspaceHeld (durable-pi-workspace's vault names
-          # it). Set by a failed update. Since durable-pi-workspace#469
-          # (decision 4) a new commit on main ends it and nothing is released
-          # by hand; `release` still clears it at once. 5 minutes only lets a
-          # halt just ended land in the next reconcile's file.
+          # it). Set by a failed update and cleared only by `release`, so
+          # halted updates never resume by themselves; 5 minutes only lets a
+          # release just made land in the next reconcile's file.
           expr = "pi_durable_vm_supervisor_updates_halted == 1";
           "for" = "5m";
           labels = { severity = "warning"; };
           annotations = {
             summary = "Workspace {{ $labels.workspace }}'s updates are halted after a failed update";
-            description = "A build applied to workspace {{ $labels.workspace }} failed its post-deploy check or its VM couldn't be started, so the VM supervisor rolled it back and halted the workspace's updates. A new commit on main ends the halt: the auto-deployer takes the next build-changing commit as usual, so a fix merged to main clears this, and nothing waits on a release by hand (`vm-supervisor-main.js release {{ $labels.workspace }}` still ends it at once). Its grants are still renewed and its health watched meanwhile. `status` gives why and since when, and the events (post-deploy-check-failed, rolled-back, updates-halted) name the build that failed. If PiDurableWorkspaceUpdatesHaltedWorst fires too, no build was brought to pass. ${supervisorRunbook}";
+            description = "A build applied to workspace {{ $labels.workspace }} failed its post-deploy check or its VM couldn't be started, so the VM supervisor rolled it back and halted the workspace's updates: no apply is taken until `vm-supervisor-main.js release {{ $labels.workspace }}`. Its grants are still renewed and its health watched. `status` gives why and since when, and the events (post-deploy-check-failed, rolled-back, updates-halted) name the build; fix the cause, then release. If PiDurableWorkspaceUpdatesHaltedWorst fires too, no build was brought to pass. ${supervisorRunbook}";
           };
         }
         {
@@ -942,19 +941,13 @@
             };
             allowedDomains = lib.mkOption {
               type = lib.types.listOf lib.types.str;
-              # The replay proxy's package hosts, then what Playwright 1.64
-              # fetches for Chrome for Testing on linux-arm64 (`playwright
-              # install chromium`): cdn.playwright.dev serves the browser by a
-              # 307 to storage.googleapis.com (chrome-for-testing-public), and
-              # ffmpeg from its first mirror, playwright.download.prss.microsoft.com
-              # (checked 2026-11-18). Never a GitHub host: an assertion refuses one.
+              # The replay proxy's package hosts; never a GitHub host (an
+              # assertion refuses one).
+              # Playwright's Chrome download would need cdn.playwright.dev, storage.googleapis.com and playwright.download.prss.microsoft.com; the session image carries Chrome instead.
               default = [
                 "registry.npmjs.org"
                 "pypi.org"
                 "files.pythonhosted.org"
-                "cdn.playwright.dev"
-                "playwright.download.prss.microsoft.com"
-                "storage.googleapis.com"
               ];
               description = "Exact lowercase hostnames planning's sandbox VMs may reach through their sandbox proxy, never a GitHub host; every other destination is refused.";
             };
