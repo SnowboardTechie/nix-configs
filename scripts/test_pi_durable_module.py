@@ -413,7 +413,7 @@ class ModelProxy(unittest.TestCase):
         self.assertNotRegex(activation, r"socketfilterfw --add /opt/homebrew/\S*node")
 
     def test_disabled_declares_no_agent_or_pf_port(self):
-        s = studio("{ modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; }", SUMMARY)
+        s = studio("{ modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; sggServiceNetwork.enable = lib.mkForce false; sggSandboxNetwork.enable = lib.mkForce false; }", SUMMARY)
         self.assertEqual([], s["failed"])
         self.assertNotIn("pi-durable-model-proxy", s["agents"])
         # The Node exception stays for the write proxy (GithubProxy covers it).
@@ -501,7 +501,7 @@ class GithubProxy(unittest.TestCase):
         self.assertNotIn(node, activation)
 
     def test_disabled_leaves_todays_anchor_byte_identical(self):
-        s = studio("{ githubProxy.enable = lib.mkForce false; }", SUMMARY)
+        s = studio("{ githubProxy.enable = lib.mkForce false; sggServiceNetwork.enable = lib.mkForce false; sggSandboxNetwork.enable = lib.mkForce false; }", SUMMARY)
         self.assertEqual([], s["failed"])
         self.assertNotIn("pi-durable-github-proxy", s["agents"])
         rules = studio("{ githubProxy.enable = lib.mkForce false; }", f"builtins.readFile {PF_RULES}")
@@ -518,7 +518,7 @@ class GithubProxy(unittest.TestCase):
     def test_refuses_without_the_sandbox_proxy_or_on_a_clashing_port(self):
         accepted, model_off_same_port, no_listen, disabled, tiny, model, page, sampler = failures(
             "{ }",
-            "{ modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; githubProxy.port = lib.mkForce 8892; }",
+            "{ modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; githubProxy.port = lib.mkForce 8892; sggServiceNetwork.enable = lib.mkForce false; sggSandboxNetwork.enable = lib.mkForce false; }",
             "{ proxy.listenAddress = lib.mkForce null; modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; }",
             "{ enable = lib.mkForce false; modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; }",
             "{ githubProxy.port = lib.mkForce 8888; }",
@@ -802,7 +802,7 @@ class ForgeBroker(unittest.TestCase):
                     8790: "pages' ports", 8791: "pages' ports", 8792: "pages' ports"}
         accepted, model_off_same_port, no_listen, disabled, *ports = failures(
             "{ }",
-            "{ modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; forgeBroker.port = lib.mkForce 8892; }",
+            "{ modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; forgeBroker.port = lib.mkForce 8892; sggServiceNetwork.enable = lib.mkForce false; sggSandboxNetwork.enable = lib.mkForce false; }",
             "{ proxy.listenAddress = lib.mkForce null; }",
             "{ enable = lib.mkForce false; }",
             *[f"{{ forgeBroker.port = lib.mkForce {port}; }}" for port in clashing],
@@ -3447,7 +3447,7 @@ class PlanningModelProxy(unittest.TestCase):
             "{ }",
             "{ modelProxy.enable = lib.mkForce false; }",
             f"{{ {NO_PLANNING.replace('planning.modelProxy = lib.mkForce false;', '')} }}",
-            "{ modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; }",
+            "{ modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; sggServiceNetwork.enable = lib.mkForce false; sggSandboxNetwork.enable = lib.mkForce false; }",
         )
         self.assertEqual([], accepted)
         self.assertEqual([], off_without)
