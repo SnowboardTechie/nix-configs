@@ -51,19 +51,34 @@ SANDBOX_PF_RULES_WITHOUT_PLANNING = STUDIO_PF_RULES.replace(FORGE_BROKER_PF_RULE
 # The planning service network's anchor (durable-pi-workspace#48): the network
 # reaches the forge broker (8894) and the VM broker (8895) on its gateway, then
 # the model proxy (8892, `planning.modelProxy`, durable-pi-workspace#443), then
-# the workspace relay leg's probe port (8896, durable-pi-workspace#421), and
-# nothing else.
+# the SSH port forwarders' ports (8896 and 8897, durable-pi-workspace#421 and
+# #535), and nothing else.
 PLANNING_PF_ANCHOR = "com.apple/101.pi-durable-planning"
 PLANNING_MODEL_PROXY_PF_RULE = "pass in quick inet proto tcp from { 192.168.129.0/24 } to 192.168.129.1 port 8892 flags S/SA keep state\n"
 WORKSPACE_RELAY_PF_RULE = "pass in quick inet proto tcp from { 192.168.129.0/24 } to 192.168.129.1 port 8896 flags S/SA keep state\n"
+SECOND_RELAY_PF_RULE = WORKSPACE_RELAY_PF_RULE.replace("port 8896 ", "port 8897 ")
+WORKSPACE_RELAY_PF_RULES = WORKSPACE_RELAY_PF_RULE + SECOND_RELAY_PF_RULE
 PLANNING_PF_RULES = (
     "# Pi Durable planning service network isolation: nix-configs modules/services/pi-durable.nix\n"
     "pass in quick inet proto tcp from { 192.168.129.0/24 } to 192.168.129.1 port 8894 flags S/SA keep state\n"
     "pass in quick inet proto tcp from { 192.168.129.0/24 } to 192.168.129.1 port 8895 flags S/SA keep state\n"
     + PLANNING_MODEL_PROXY_PF_RULE
-    + WORKSPACE_RELAY_PF_RULE +
+    + WORKSPACE_RELAY_PF_RULES +
     "block return in quick on ! lo0 inet from { 192.168.129.0/24 } to any\n"
     "block return in quick on ! lo0 inet6 from fdd2:4a0c:729f:fb6::/64 to any\n"
+    f"block return in quick on {{ {' '.join(BRIDGES)} }} inet6 proto {{ tcp udp }} from fe80::/10 to any\n"
+)
+# Planning's sandbox network's anchor (durable-pi-workspace#535): its sandbox
+# VMs reach their sandbox proxy (8888 on their own gateway) and the Forgejo
+# proxy (8894), and nothing else: not the model proxy, the old planning VM
+# supervisor (8895) or the SSH port forwarders (8896, 8897).
+PLANNING_SANDBOX_PF_ANCHOR = "com.apple/102.pi-durable-planning-sandbox"
+PLANNING_SANDBOX_PF_RULES = (
+    "# Pi Durable planning sandbox network isolation: nix-configs modules/services/pi-durable.nix\n"
+    "pass in quick inet proto tcp from { 192.168.130.0/24 } to 192.168.130.1 port 8888 flags S/SA keep state\n"
+    "pass in quick inet proto tcp from { 192.168.130.0/24 } to 192.168.130.1 port 8894 flags S/SA keep state\n"
+    "block return in quick on ! lo0 inet from { 192.168.130.0/24 } to any\n"
+    "block return in quick on ! lo0 inet6 from fd17:b92:207f:9aa0::/64 to any\n"
     f"block return in quick on {{ {' '.join(BRIDGES)} }} inet6 proto {{ tcp udp }} from fe80::/10 to any\n"
 )
 
@@ -112,8 +127,10 @@ PF_DAEMON = "config.launchd.daemons.pi-durable-pf.serviceConfig"
 PF_RULES = f'(builtins.head (builtins.filter (lib.hasSuffix "-pi-durable-sgg.pf") {PF_DAEMON}.ProgramArguments))'
 PLANNING_PF_DAEMON = "config.launchd.daemons.pi-durable-planning-pf.serviceConfig"
 PLANNING_PF_RULES_FILE = f'(builtins.head (builtins.filter (lib.hasSuffix "-pi-durable-planning.pf") {PLANNING_PF_DAEMON}.ProgramArguments))'
+PLANNING_SANDBOX_PF_DAEMON = "config.launchd.daemons.pi-durable-planning-sandbox-pf.serviceConfig"
+PLANNING_SANDBOX_PF_RULES_FILE = f'(builtins.head (builtins.filter (lib.hasSuffix "-pi-durable-planning-sandbox.pf") {PLANNING_SANDBOX_PF_DAEMON}.ProgramArguments))'
 # Planning on VMs off: the forge broker, the VM broker and the planning service.
-NO_PLANNING = "forgeBroker.enable = lib.mkForce false; vmBroker.enable = lib.mkForce false; planning.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false;"
+NO_PLANNING = "forgeBroker.enable = lib.mkForce false; vmBroker.enable = lib.mkForce false; planning.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; planningSandbox.enable = lib.mkForce false;"
 # Studio sets the commissioning inputs, so a scenario forces the ones it is about.
 ENABLED = (
     "{ enable = lib.mkForce true; proxy = { network = lib.mkForce null; listenAddress = lib.mkForce null; allowedClients = lib.mkForce [ ]; }; "
@@ -138,11 +155,14 @@ class StudioAsCommissioned(unittest.TestCase):
         self.assertIn("pi-durable-model-proxy", s["agents"])
         self.assertIn("pi-durable-github-proxy", s["agents"])
         self.assertIn("pi-durable-replay-proxy", s["agents"])
-        for agent in ("pi-durable-forge-broker", "pi-durable-vm-broker", "pi-durable-planning-service", "pi-durable-planning-relay"):
+        for agent in ("pi-durable-forge-broker", "pi-durable-vm-broker", "pi-durable-planning-service", "pi-durable-planning-relay",
+                      "pi-durable-planning-sandbox-proxy"):
             self.assertIn(agent, s["agents"])
         # The only root jobs: the boot-time pf loaders, one per anchor.
-        self.assertEqual(["pi-durable-pf", "pi-durable-planning-pf"], [name for name in s["system"] if "pi-durable" in name])
+        self.assertEqual(["pi-durable-pf", "pi-durable-planning-pf", "pi-durable-planning-sandbox-pf"],
+                         [name for name in s["system"] if "pi-durable" in name])
         self.assertIn(f"/sbin/pfctl {PLANNING_PF_ANCHOR} ", s["activation"])
+        self.assertIn(f"/sbin/pfctl {PLANNING_SANDBOX_PF_ANCHOR} ", s["activation"])
         self.assertIn("8792 http://127.0.0.1:8792", s["activation"])
         self.assertIn(f"/sbin/pfctl {PF_ANCHOR} ", s["activation"])
         # Apple container is installed by hand from its signed installer; nothing here installs it or tinyproxy.
@@ -159,6 +179,7 @@ class StudioAsCommissioned(unittest.TestCase):
         self.assertIn("Allow 192.168.128.0/24\n", proxy_config)
         self.assertEqual(STUDIO_PF_RULES, studio("{ }", f"builtins.readFile {PF_RULES}"))
         self.assertEqual(PLANNING_PF_RULES, studio("{ }", f"builtins.readFile {PLANNING_PF_RULES_FILE}"))
+        self.assertEqual(PLANNING_SANDBOX_PF_RULES, studio("{ }", f"builtins.readFile {PLANNING_SANDBOX_PF_RULES_FILE}"))
 
 
 class EnabledWithoutCommissioningInputs(unittest.TestCase):
@@ -684,7 +705,8 @@ class PlanningOff(unittest.TestCase):
     def test_disabled_leaves_the_sandbox_anchor_byte_identical_and_declares_nothing_new(self):
         s = studio(self.OFF, SUMMARY)
         self.assertEqual([], s["failed"])
-        for agent in ("pi-durable-forge-broker", "pi-durable-vm-broker", "pi-durable-planning-service", "pi-durable-planning-relay"):
+        for agent in ("pi-durable-forge-broker", "pi-durable-vm-broker", "pi-durable-planning-service", "pi-durable-planning-relay",
+                      "pi-durable-planning-sandbox-proxy"):
             self.assertNotIn(agent, s["agents"])
         self.assertEqual(["pi-durable-pf"], [name for name in s["system"] if "pi-durable" in name])
         self.assertEqual(SANDBOX_PF_RULES_WITHOUT_PLANNING, studio(self.OFF, f"builtins.readFile {PF_RULES}"))
@@ -863,13 +885,14 @@ class Planning(unittest.TestCase):
         vm = "pass in quick inet proto tcp from 192.168.129.0/24 to 192.168.129.1 port = 8895 flags S/SA keep state"
         model = "pass in quick inet proto tcp from 192.168.129.0/24 to 192.168.129.1 port = 8892 flags S/SA keep state"
         relay = "pass in quick inet proto tcp from 192.168.129.0/24 to 192.168.129.1 port = 8896 flags S/SA keep state"
+        second = relay.replace("8896", "8897")
         blocking = "block return in quick on ! lo0 inet from 192.168.129.0/24 to any"
         link_local = {
             f"block return in quick on {bridge} inet6 proto {proto} from fe80::/10 to any"
             for bridge in BRIDGES for proto in ("tcp", "udp")
         }
         self.assertEqual(
-            {forge, vm, model, relay, blocking, "block return in quick on ! lo0 inet6 from fdd2:4a0c:729f:fb6::/64 to any"} | link_local,
+            {forge, vm, model, relay, second, blocking, "block return in quick on ! lo0 inet6 from fdd2:4a0c:729f:fb6::/64 to any"} | link_local,
             set(lines),
         )
         self.assertEqual(len(lines), len(set(lines)))
@@ -877,6 +900,7 @@ class Planning(unittest.TestCase):
         self.assertLess(lines.index(vm), lines.index(blocking))
         self.assertLess(lines.index(model), lines.index(blocking))
         self.assertLess(lines.index(relay), lines.index(blocking))
+        self.assertLess(lines.index(second), lines.index(blocking))
 
     def test_activation_and_a_root_daemon_load_it_with_its_own_token(self):
         daemon = studio("{ }", PLANNING_PF_DAEMON)
@@ -978,33 +1002,36 @@ class Planning(unittest.TestCase):
 
 
 class WorkspaceRelayPorts(unittest.TestCase):
-    """Workspace relay ports (durable-pi-workspace#421): passed on the planning gateway, never the sandbox's."""
+    """Workspace relay ports (durable-pi-workspace#421, #535): passed on the planning gateway, never a sandbox network's."""
 
-    def test_studio_passes_its_probe_port_in_the_planning_anchor_alone(self):
-        self.assertEqual([8896], studio("{ }", "config.services.pi-durable.planning.workspaceRelayPorts"))
+    def test_studio_passes_both_ssh_port_forwarders_ports_in_the_planning_anchor_alone(self):
+        self.assertEqual([8896, 8897], studio("{ }", "config.services.pi-durable.planning.workspaceRelayPorts"))
         planning_rules = studio("{ }", f"builtins.readFile {PLANNING_PF_RULES_FILE}")
         self.assertEqual(1, planning_rules.count(WORKSPACE_RELAY_PF_RULE))
-        # After the brokers' passes, before every block.
+        self.assertEqual(1, planning_rules.count(SECOND_RELAY_PF_RULE))
+        # After the brokers' passes, in order, before every block.
         lines = planning_rules.splitlines(True)
-        self.assertEqual(WORKSPACE_RELAY_PF_RULE, lines[4])
-        self.assertTrue(lines[5].startswith("block return "))
-        sandbox_rules = studio("{ }", f"builtins.readFile {PF_RULES}")
-        self.assertEqual(STUDIO_PF_RULES, sandbox_rules)
-        self.assertNotIn("8896", sandbox_rules)
+        self.assertEqual([WORKSPACE_RELAY_PF_RULE, SECOND_RELAY_PF_RULE], lines[4:6])
+        self.assertTrue(lines[6].startswith("block return "))
+        for rules_file in (PF_RULES, PLANNING_SANDBOX_PF_RULES_FILE):
+            rules = studio("{ }", f"builtins.readFile {rules_file}")
+            self.assertNotIn("8896", rules)
+            self.assertNotIn("8897", rules)
+        self.assertEqual(STUDIO_PF_RULES, studio("{ }", f"builtins.readFile {PF_RULES}"))
 
     def test_empty_leaves_both_anchors_byte_identical_to_before(self):
         settings = "{ planning.workspaceRelayPorts = lib.mkForce [ ]; }"
         s = studio(settings, SUMMARY)
         self.assertEqual([], s["failed"])
-        self.assertEqual(PLANNING_PF_RULES.replace(WORKSPACE_RELAY_PF_RULE, ""), studio(settings, f"builtins.readFile {PLANNING_PF_RULES_FILE}"))
+        self.assertEqual(PLANNING_PF_RULES.replace(WORKSPACE_RELAY_PF_RULES, ""), studio(settings, f"builtins.readFile {PLANNING_PF_RULES_FILE}"))
         self.assertEqual(STUDIO_PF_RULES, studio(settings, f"builtins.readFile {PF_RULES}"))
-        self.assertNotIn("8896", PLANNING_PF_RULES.replace(WORKSPACE_RELAY_PF_RULE, ""))
+        self.assertNotIn("8896", PLANNING_PF_RULES.replace(WORKSPACE_RELAY_PF_RULES, ""))
 
     def test_each_port_follows_the_option_into_the_planning_anchor_in_order(self):
         settings = "{ planning.workspaceRelayPorts = lib.mkForce [ 9901 9900 ]; }"
         rule = WORKSPACE_RELAY_PF_RULE.replace
         self.assertEqual(
-            PLANNING_PF_RULES.replace(WORKSPACE_RELAY_PF_RULE, rule("port 8896 ", "port 9901 ") + rule("port 8896 ", "port 9900 ")),
+            PLANNING_PF_RULES.replace(WORKSPACE_RELAY_PF_RULES, rule("port 8896 ", "port 9901 ") + rule("port 8896 ", "port 9900 ")),
             studio(settings, f"builtins.readFile {PLANNING_PF_RULES_FILE}"),
         )
         self.assertEqual(STUDIO_PF_RULES, studio(settings, f"builtins.readFile {PF_RULES}"))
@@ -1029,6 +1056,248 @@ class WorkspaceRelayPorts(unittest.TestCase):
             with self.subTest(settings):
                 self.assertTrue(any(m.startswith(planning_message) for m in failed), failed)
                 self.assertFalse(any(m.startswith(sandbox_message) for m in failed), failed)
+
+
+PLANNING_SANDBOX_PROXY = f"{AGENTS}.pi-durable-planning-sandbox-proxy.serviceConfig"
+PLANNING_SANDBOX_OFF = "{ planningSandbox.enable = lib.mkForce false; }"
+# What a sandbox container's installs need beyond the replay proxy's package hosts (durable-pi-workspace#535):
+# Playwright 1.64's Chrome for Testing downloads (cdn.playwright.dev, which redirects Chrome to
+# storage.googleapis.com) and its first mirror for ffmpeg (playwright.download.prss.microsoft.com).
+PLAYWRIGHT_HOSTS = ["cdn.playwright.dev", "playwright.download.prss.microsoft.com", "storage.googleapis.com"]
+
+
+def planning_sandbox(listen='"192.168.130.1"', clients='[ "192.168.130.0/24" ]', ipv6='"fd17:b92:207f:9aa0::/64"'):
+    return (
+        f"{{ planningSandbox = {{ listenAddress = lib.mkForce {listen}; "
+        f"allowedClients = lib.mkForce {clients}; ipv6Subnet = lib.mkForce {ipv6}; }}; }}"
+    )
+
+
+def planning_sandbox_network(value):
+    """A sandbox-network address case moved onto planning's sandbox network's addresses."""
+    return value.replace("192.168.128", "192.168.130").replace("fd85:1c07:74fb:2dc7", "fd17:b92:207f:9aa0")
+
+
+class PlanningSandbox(unittest.TestCase):
+    """Planning's sandbox network (durable-pi-workspace#535): its pf anchor, its sandbox proxy and its anchor VM."""
+
+    def test_studio_names_the_network_the_orchestrator_created(self):
+        self.assertEqual(
+            {"enable": True, "network": "pi-durable-planning-sandbox", "listenAddress": "192.168.130.1",
+             "allowedClients": ["192.168.130.0/24"], "ipv6Subnet": "fd17:b92:207f:9aa0::/64"},
+            studio("{ }", "{ inherit (config.services.pi-durable.planningSandbox) enable network listenAddress allowedClients ipv6Subnet; }"),
+        )
+
+    def test_anchor_passes_its_sandbox_proxy_and_the_forgejo_proxy_and_nothing_else(self):
+        rules = studio("{ }", f"builtins.readFile {PLANNING_SANDBOX_PF_RULES_FILE}")
+        self.assertEqual(PLANNING_SANDBOX_PF_RULES, rules)
+        # Not the model proxy, the old planning VM supervisor or the SSH port forwarders.
+        for port in ("8892", "8893", "8889", "8895", "8896", "8897"):
+            self.assertNotIn(port, rules)
+        # And the other two anchors never pass this network.
+        for other in (PF_RULES, PLANNING_PF_RULES_FILE):
+            self.assertNotIn("192.168.130", studio("{ }", f"builtins.readFile {other}"))
+
+    def test_this_macs_pfctl_parses_it_as_intended(self):
+        rules = nix(
+            "build", "--impure", "--no-link", "--print-out-paths", "--expr",
+            studio_expr("{ }", f'pkgs.writeText "pi-durable-planning-sandbox.pf" (builtins.readFile {PLANNING_SANDBOX_PF_RULES_FILE})'),
+        ).strip().splitlines()[-1]
+        parsed = subprocess.run(["/sbin/pfctl", "-nvf", rules], text=True, capture_output=True)
+        self.assertEqual(0, parsed.returncode, parsed.stderr)
+        lines = parsed.stdout.splitlines()
+        proxy = "pass in quick inet proto tcp from 192.168.130.0/24 to 192.168.130.1 port = 8888 flags S/SA keep state"
+        forge = "pass in quick inet proto tcp from 192.168.130.0/24 to 192.168.130.1 port = 8894 flags S/SA keep state"
+        blocking = "block return in quick on ! lo0 inet from 192.168.130.0/24 to any"
+        link_local = {
+            f"block return in quick on {bridge} inet6 proto {proto} from fe80::/10 to any"
+            for bridge in BRIDGES for proto in ("tcp", "udp")
+        }
+        self.assertEqual(
+            {proxy, forge, blocking, "block return in quick on ! lo0 inet6 from fd17:b92:207f:9aa0::/64 to any"} | link_local,
+            set(lines),
+        )
+        self.assertEqual(len(lines), len(set(lines)))
+        self.assertLess(lines.index(proxy), lines.index(blocking))
+        self.assertLess(lines.index(forge), lines.index(blocking))
+
+    def test_activation_and_a_root_daemon_load_it_with_its_own_token(self):
+        daemon = studio("{ }", PLANNING_SANDBOX_PF_DAEMON)
+        sandbox = studio("{ }", PF_DAEMON)
+        args = daemon["ProgramArguments"]
+        self.assertEqual(sandbox["ProgramArguments"][:7], args[:7])
+        self.assertEqual(PLANNING_SANDBOX_PF_ANCHOR, args[7])
+        self.assertTrue(args[8].endswith("-pi-durable-planning-sandbox.pf"))
+        self.assertEqual("/var/run/pi-durable-planning-sandbox-pf.token", args[9])
+        self.assertEqual(10, len(args))
+        unshared = {"Label": None, "ProgramArguments": None, "StandardOutPath": None, "StandardErrorPath": None}
+        self.assertEqual({**sandbox, **unshared}, {**daemon, **unshared})
+        self.assertEqual("org.nixos.pi-durable-planning-sandbox-pf", daemon["Label"])
+        self.assertEqual("/var/log/pi-durable-planning-sandbox-pf.log", daemon["StandardOutPath"])
+        self.assertEqual("/var/log/pi-durable-planning-sandbox-pf.log", daemon["StandardErrorPath"])
+        activation = studio("{ }", "config.system.activationScripts.extraActivation.text")
+        self.assertIn(f"/sbin/pfctl {PLANNING_SANDBOX_PF_ANCHOR} ", activation)
+        self.assertIn("/var/run/pi-durable-planning-sandbox-pf.token", activation)
+        self.assertEqual(1, activation.count("# === pi-durable planning sandbox network isolation (pf) ==="))
+
+    def test_sandbox_proxy_is_tinyproxy_on_its_own_gateway_with_the_package_hosts_and_no_github(self):
+        agent = studio("{ }", PLANNING_SANDBOX_PROXY)
+        sgg = studio("{ }", f"{AGENTS}.pi-durable-proxy.serviceConfig")
+        self.assertEqual("org.nixos.pi-durable-planning-sandbox-proxy", agent["Label"])
+        self.assertEqual(sgg["ProgramArguments"][:3], agent["ProgramArguments"][:3])
+        self.assertTrue(agent["ProgramArguments"][3].endswith("-pi-durable-planning-sandbox-tinyproxy.conf"))
+        self.assertEqual(4, len(agent["ProgramArguments"]))
+        self.assertEqual(sgg.get("EnvironmentVariables"), agent.get("EnvironmentVariables"))
+        self.assertIs(True, agent["RunAtLoad"])
+        self.assertIs(True, agent["KeepAlive"])
+        self.assertEqual("/tmp/pi-durable-planning-sandbox-proxy.log", agent["StandardOutPath"])
+        self.assertEqual("/tmp/pi-durable-planning-sandbox-proxy.error.log", agent["StandardErrorPath"])
+        config = studio("{ }", f"builtins.readFile (builtins.elemAt {PLANNING_SANDBOX_PROXY}.ProgramArguments 3)")
+        directives = [line for line in config.splitlines() if line.strip()]
+        [filter_line] = [line for line in directives if line.startswith("Filter ")]
+        self.assertEqual(
+            ["Listen 192.168.130.1", "Port 8888", "Allow 192.168.130.0/24", "ConnectPort 443", "FilterType fnmatch",
+             "FilterDefaultDeny Yes", filter_line],
+            directives,
+        )
+        path = filter_line.split('"')[1]
+        self.assertTrue(path.endswith("-pi-durable-planning-sandbox-proxy-allowlist"), path)
+        hosts = studio("{ }", f'lib.splitString "\\n" (lib.removeSuffix "\\n" (builtins.readFile "{path}"))')
+        self.assertEqual(PACKAGE_HOSTS + PLAYWRIGHT_HOSTS, hosts)
+        self.assertFalse([h for h in hosts if "github" in h])
+
+    def test_one_firewall_exception_for_the_shared_tinyproxy(self):
+        tinyproxy = studio("{ }", f"builtins.head {PLANNING_SANDBOX_PROXY}.ProgramArguments")
+        activation = studio("{ }", "config.system.activationScripts.extraActivation.text")
+        self.assertEqual(1, activation.count(f"socketfilterfw --add {tinyproxy} "))
+
+    def test_the_forgejo_proxys_and_sandbox_proxys_ports_follow_the_options(self):
+        moved = studio("{ forgeBroker.port = lib.mkForce 9894; planningSandbox.sandboxProxy.port = lib.mkForce 9888; }",
+                       f"builtins.readFile {PLANNING_SANDBOX_PF_RULES_FILE}")
+        self.assertEqual(PLANNING_SANDBOX_PF_RULES.replace("port 8894 ", "port 9894 ").replace("port 8888 ", "port 9888 "), moved)
+        config = studio("{ planningSandbox.sandboxProxy.port = lib.mkForce 9888; }",
+                        f"builtins.readFile (builtins.elemAt {PLANNING_SANDBOX_PROXY}.ProgramArguments 3)")
+        self.assertIn("Port 9888\n", config)
+
+    def test_off_declares_nothing_and_leaves_the_other_anchors_as_they_were(self):
+        on, off = studio("{ }", SUMMARY), studio(PLANNING_SANDBOX_OFF, SUMMARY)
+        self.assertEqual([], off["failed"])
+        self.assertEqual(sorted(set(on["agents"]) - {"pi-durable-planning-sandbox-proxy", NET_ANCHORS["pi-durable-planning-sandbox"]}),
+                         sorted(off["agents"]))
+        self.assertEqual(["pi-durable-pf", "pi-durable-planning-pf"], [n for n in off["system"] if "pi-durable" in n])
+        self.assertNotIn(PLANNING_SANDBOX_PF_ANCHOR, off["activation"])
+        self.assertNotIn("192.168.130", off["activation"])
+        self.assertEqual(STUDIO_PF_RULES, studio(PLANNING_SANDBOX_OFF, f"builtins.readFile {PF_RULES}"))
+        self.assertEqual(PLANNING_PF_RULES, studio(PLANNING_SANDBOX_OFF, f"builtins.readFile {PLANNING_PF_RULES_FILE}"))
+
+    def test_addresses_take_the_sandbox_proxys_cases(self):
+        for field, accepted, refused in (
+            ("planningSandbox.listenAddress", [planning_sandbox()], [planning_sandbox(listen=planning_sandbox_network(v)) for v in LISTEN_REFUSED]),
+            ("planningSandbox.allowedClients", [planning_sandbox(clients=planning_sandbox_network(v)) for v in CLIENTS_ACCEPTED],
+             [planning_sandbox(clients=planning_sandbox_network(v)) for v in CLIENTS_REFUSED]),
+            ("planningSandbox.ipv6Subnet", [planning_sandbox(ipv6=planning_sandbox_network(v)) for v in IPV6_ACCEPTED],
+             [planning_sandbox(ipv6=planning_sandbox_network(v)) for v in IPV6_REFUSED]),
+        ):
+            results = failures(*accepted, *refused)
+            for settings, failed in zip(accepted, results):
+                with self.subTest(accepted=settings):
+                    self.assertEqual([], failed)
+            for settings, failed in zip(refused, results[len(accepted):]):
+                with self.subTest(refused=settings):
+                    self.assertTrue(any(f"services.pi-durable.{field} must" in m for m in failed), failed)
+
+    def test_refuses_the_other_networks_addresses(self):
+        cases = [
+            planning_sandbox(listen='"192.168.128.1"'),
+            planning_sandbox(listen='"192.168.129.1"'),
+            planning_sandbox(clients='[ "192.168.130.0/24" "192.168.128.0/24" ]'),
+            planning_sandbox(clients='[ "192.168.129.0/24" ]'),
+            planning_sandbox(ipv6='"fd85:1c07:74fb:2dc7::/64"'),
+            planning_sandbox(ipv6='"fdd2:4a0c:729f:fb6::/64"'),
+            '{ planningSandbox.network = lib.mkForce "pi-durable-planning"; }',
+            '{ planningSandbox.network = lib.mkForce "pi-durable-sgg"; }',
+        ]
+        results = failures(*cases)
+        for settings, failed in zip(cases[:6], results):
+            with self.subTest(settings):
+                self.assertTrue(any("must never equal the sandbox network's or the planning service network's" in m for m in failed), failed)
+        for settings, failed in zip(cases[6:], results[6:]):
+            with self.subTest(settings):
+                self.assertTrue(any("must differ from proxy.network" in m for m in failed), failed)
+
+    def test_refuses_without_planning_or_the_forgejo_proxy(self):
+        message = "services.pi-durable.planningSandbox requires services.pi-durable.enable, planning and forgeBroker"
+        accepted, no_planning, no_forge, disabled = failures(
+            "{ }",
+            "{ planning.enable = lib.mkForce false; vmBroker.enable = lib.mkForce false; }",
+            "{ forgeBroker.enable = lib.mkForce false; }",
+            "{ enable = lib.mkForce false; }",
+        )
+        self.assertEqual([], accepted)
+        for failed in (no_planning, no_forge, disabled):
+            self.assertTrue(any(m.startswith(message) for m in failed), failed)
+
+    def test_refuses_github_hosts_inexact_names_and_ports_it_must_never_pass(self):
+        github = ["github.com", "api.github.com", "raw.githubusercontent.com", "objects.githubusercontent.com"]
+        inexact = ["*.npmjs.org", "Registry.npmjs.org"]
+        # The Forgejo proxy's port, the model proxy's, the old planning VM supervisor's and the SSH port forwarders'.
+        never = [8894, 8892, 8895, 8896, 8897]
+        results = failures(
+            *[f'{{ planningSandbox.sandboxProxy.allowedDomains = lib.mkForce [ "registry.npmjs.org" "{d}" ]; }}' for d in github + inexact],
+            *[f"{{ planningSandbox.sandboxProxy.port = lib.mkForce {port}; }}" for port in never],
+        )
+        results = iter(results)
+        for domain in github:
+            with self.subTest(domain=domain):
+                failed = next(results)
+                self.assertTrue(any("planningSandbox.sandboxProxy.allowedDomains must hold no GitHub host" in m for m in failed), failed)
+        for domain in inexact:
+            with self.subTest(domain=domain):
+                failed = next(results)
+                self.assertTrue(any("planningSandbox.sandboxProxy.allowedDomains takes exact lowercase hostnames" in m for m in failed), failed)
+        for port in never:
+            with self.subTest(port=port):
+                failed = next(results)
+                self.assertTrue(any("planningSandbox.sandboxProxy.port must differ" in m for m in failed), failed)
+
+
+class PlanningLauncher(unittest.TestCase):
+    """`planning.launcher`: the old launcher and the old port forwarder on 8792 go together (durable-pi-workspace#535)."""
+
+    OFF = "{ planning.launcher = lib.mkForce false; }"
+    OLD = ("pi-durable-planning-service", "pi-durable-planning-relay")
+    PROBE = 'config.services.monitoring.blackbox.contentProbes.Planning'
+
+    def test_on_by_default_and_on_studio_until_the_cut_over(self):
+        self.assertIs(True, studio("{ }", "config.services.pi-durable.planning.launcher"))
+        self.assertIs(True, studio("{ }", '(builtins.getFlake "path:' + str(REPO) + '").darwinConfigurations.studio.options.services.pi-durable.planning.launcher.default'))
+        s = studio("{ }", SUMMARY)
+        for agent in self.OLD:
+            self.assertIn(agent, s["agents"])
+
+    def test_off_removes_both_and_keeps_the_network_brokers_route_and_probe(self):
+        on, off = studio("{ }", SUMMARY), studio(self.OFF, SUMMARY)
+        self.assertEqual([], off["failed"])
+        self.assertEqual(sorted(set(on["agents"]) - set(self.OLD)), sorted(off["agents"]))
+        for agent in ("pi-durable-forge-broker", "pi-durable-vm-broker", NET_ANCHORS["pi-durable-planning"]):
+            self.assertIn(agent, off["agents"])
+        self.assertEqual(on["system"], off["system"])
+        # Activation unchanged: the planning network's pf anchor and the Serve route to 8792 stay.
+        extra = "config.system.activationScripts.extraActivation.text"
+        self.assertEqual(studio("{ }", extra), studio(self.OFF, extra))
+        self.assertIn(" 8792 http://127.0.0.1:8792;", studio(self.OFF, extra))
+        self.assertEqual(PLANNING_PF_RULES, studio(self.OFF, f"builtins.readFile {PLANNING_PF_RULES_FILE}"))
+        self.assertEqual({"url": "http://127.0.0.1:8792/metrics", "bodyMatches": "(?m)^pi_planning_up 1$"}, studio(self.OFF, self.PROBE))
+        self.assertEqual(studio("{ }", self.PROBE), studio(self.OFF, self.PROBE))
+        # Nothing of Nix's is left to bind 127.0.0.1:8792: no agent names the old port forwarder's config.
+        programs = studio(self.OFF, f'lib.mapAttrsToList (_: a: toString (a.serviceConfig.ProgramArguments or [ ])) {AGENTS}')
+        self.assertFalse([p for p in programs if "planning-relay.json" in p or "service-vm.js" in p], programs)
+
+    def test_off_is_inert_without_planning(self):
+        s = studio(f"{{ {NO_PLANNING} planning.launcher = lib.mkForce false; }}", SUMMARY)
+        self.assertEqual([], s["failed"])
+        for agent in self.OLD:
+            self.assertNotIn(agent, s["agents"])
 
 
 class PlanningNodeFirewall(unittest.TestCase):
@@ -1294,6 +1563,13 @@ class ProxyAllowlist(unittest.TestCase):
     the live sandbox gate's question, not this test's.
     """
 
+    def proxy_settings(self):
+        return (
+            '{ enable = lib.mkForce true; proxy = { listenAddress = lib.mkForce "127.0.0.1"; port = %d; '
+            'allowedClients = lib.mkForce [ "127.0.0.1" ]; '
+            'allowedDomains = [ "localhost" "github.com" "pypi.org" ]; }; }' % self.port
+        ), "config.launchd.user.agents.pi-durable-proxy.serviceConfig.ProgramArguments"
+
     def setUp(self):
         class Ok(BaseHTTPRequestHandler):
             def do_GET(self):
@@ -1310,15 +1586,10 @@ class ProxyAllowlist(unittest.TestCase):
         self.addCleanup(self.upstream.shutdown)
 
         self.port = free_port()
-        settings = (
-            '{ enable = lib.mkForce true; proxy = { listenAddress = lib.mkForce "127.0.0.1"; port = %d; '
-            'allowedClients = lib.mkForce [ "127.0.0.1" ]; '
-            'allowedDomains = [ "localhost" "github.com" "pypi.org" ]; }; }' % self.port
-        )
+        settings, arguments = self.proxy_settings()
         built = nix(
             "build", "--impure", "--no-link", "--print-out-paths", "--expr",
-            studio_expr(settings, 'pkgs.writeText "proxy-args" (builtins.toJSON '
-                        "config.launchd.user.agents.pi-durable-proxy.serviceConfig.ProgramArguments)"),
+            studio_expr(settings, f'pkgs.writeText "proxy-args" (builtins.toJSON {arguments})'),
         ).strip().splitlines()[-1]
         args = json.loads(Path(built).read_text())
         self.proxy = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1354,16 +1625,44 @@ class ProxyAllowlist(unittest.TestCase):
         self.assertNotEqual(403, self.status("CONNECT localhost:443 HTTP/1.0\r\n\r\n"))
 
 
+class PlanningSandboxProxyAllowlist(unittest.TestCase):
+    """Planning's sandbox proxy's generated configuration, run by the pinned tinyproxy on loopback: only its allowlist."""
+
+    setUp = ProxyAllowlist.setUp
+    status = ProxyAllowlist.status
+
+    def proxy_settings(self):
+        return (
+            '{ planningSandbox = { listenAddress = lib.mkForce "127.0.0.1"; allowedClients = lib.mkForce [ "127.0.0.1" ]; '
+            'sandboxProxy = { port = lib.mkForce %d; allowedDomains = lib.mkForce [ "localhost" "registry.npmjs.org" ]; }; }; }' % self.port
+        ), "config.launchd.user.agents.pi-durable-planning-sandbox-proxy.serviceConfig.ProgramArguments"
+
+    def test_allowlisted_host_is_proxied(self):
+        port = self.upstream.server_address[1]
+        self.assertEqual(200, self.status(f"GET http://localhost:{port}/ HTTP/1.0\r\nHost: localhost:{port}\r\n\r\n"))
+
+    def test_github_and_other_hosts_are_refused(self):
+        for host in ("github.com", "api.github.com", "codeload.github.com", "example.com", "registry.npmjs.org.evil.example"):
+            with self.subTest(host=host):
+                self.assertEqual(403, self.status(f"CONNECT {host}:443 HTTP/1.0\r\n\r\n"))
+
+    def test_connect_only_to_443(self):
+        self.assertEqual(403, self.status("CONNECT localhost:22 HTTP/1.0\r\n\r\n"))
+        self.assertNotEqual(403, self.status("CONNECT localhost:443 HTTP/1.0\r\n\r\n"))
+
+
 NET_ANCHOR_SCRIPT = REPO / "modules" / "services" / "pi-durable-net-anchor.sh"
 NET_ANCHOR_IMAGE = "pi-durable-planning-agent:30bade4"
 NET_ANCHOR_METRICS = f"{HOME}/.local/state/pi-durable-net-anchors/metrics"
 NET_ANCHORS = {"pi-durable-sgg": "pi-durable-net-anchor-pi-durable-sgg",
-               "pi-durable-planning": "pi-durable-net-anchor-pi-durable-planning"}
+               "pi-durable-planning": "pi-durable-net-anchor-pi-durable-planning",
+               "pi-durable-planning-sandbox": "pi-durable-net-anchor-pi-durable-planning-sandbox"}
 NET_ANCHOR_ALERTS = {"PiDurableNetAnchorRestarted": "warning", "PiDurableNetAnchorDown": "critical",
                      "PiDurableNetAnchorGatewayMissing": "critical"}
 # Each network's own gateway, then the gateways of the networks before it (the
-# sandbox's first, then the planning network's).
-NET_ANCHOR_GATEWAYS = {"pi-durable-sgg": ["192.168.128.1"], "pi-durable-planning": ["192.168.129.1", "192.168.128.1"]}
+# sandbox's first, then the planning network's, then planning's sandbox network's).
+NET_ANCHOR_GATEWAYS = {"pi-durable-sgg": ["192.168.128.1"], "pi-durable-planning": ["192.168.129.1", "192.168.128.1"],
+                       "pi-durable-planning-sandbox": ["192.168.130.1", "192.168.128.1", "192.168.129.1"]}
 
 
 class NetAnchors(unittest.TestCase):
@@ -1414,10 +1713,11 @@ class NetAnchors(unittest.TestCase):
     def test_each_anchor_goes_with_its_networks_service(self):
         for name, settings, expected in (
             ("planning off", f"{{ {NO_PLANNING} planning.network = lib.mkForce null; }}", ["pi-durable-sgg"]),
-            ("planning off, its network still named", f"{{ {NO_PLANNING} }}", ["pi-durable-sgg"]),
-            ("no networks named", "{ proxy.network = lib.mkForce null; planning.network = lib.mkForce null; }", []),
+            ("planning off, its networks still named", f"{{ {NO_PLANNING} }}", ["pi-durable-sgg"]),
+            ("planning's sandbox network off", "{ planningSandbox.enable = lib.mkForce false; }", ["pi-durable-sgg", "pi-durable-planning"]),
+            ("no networks named", "{ proxy.network = lib.mkForce null; planning.network = lib.mkForce null; planningSandbox.network = lib.mkForce null; }", []),
             ("disabled", "{ enable = lib.mkForce false; }", []),
-            ("sandbox network only unnamed", "{ proxy.network = lib.mkForce null; }", ["pi-durable-planning"]),
+            ("sandbox network only unnamed", "{ proxy.network = lib.mkForce null; }", ["pi-durable-planning", "pi-durable-planning-sandbox"]),
         ):
             with self.subTest(name):
                 s = studio(settings, SUMMARY)
@@ -1457,7 +1757,7 @@ class NetAnchors(unittest.TestCase):
         )
         self.assertEqual([], accepted)
         self.assertTrue(any("proxy.network requires proxy.listenAddress" in m for m in no_listen), no_listen)
-        self.assertTrue(any("planning.network must differ from proxy.network" in m for m in same), same)
+        self.assertTrue(any("must differ from proxy.network" in m for m in same), same)
         for value, failed in zip(bad_names, results):
             with self.subTest(name=value):
                 self.assertTrue(any("must be container network names" in m for m in failed), failed)
@@ -1533,10 +1833,11 @@ class NetAnchorAlerts(unittest.TestCase):
         for alert in NET_ANCHOR_ALERTS:
             text = by_name[alert]["annotations"]["summary"] + by_name[alert]["annotations"]["description"]
             self.assertIn("bridge", text)
-            self.assertIn("may collide until both are checked", text)
+            self.assertIn("may collide until each is checked", text)
             self.assertIn("Never `launchctl kickstart`", text)
         self.assertIn('absent(pi_durable_net_anchor_up{network="pi-durable-sgg"})', by_name["PiDurableNetAnchorDown"]["expr"])
         self.assertIn('absent(pi_durable_net_anchor_up{network="pi-durable-planning"})', by_name["PiDurableNetAnchorDown"]["expr"])
+        self.assertIn('absent(pi_durable_net_anchor_up{network="pi-durable-planning-sandbox"})', by_name["PiDurableNetAnchorDown"]["expr"])
         self.assertIn("(time() - pi_durable_net_anchor_last_check_timestamp_seconds) > 300", by_name["PiDurableNetAnchorDown"]["expr"])
         self.assertEqual("pi_durable_net_anchor_up == 1 and pi_durable_net_anchor_gateway_present == 0",
                          by_name["PiDurableNetAnchorGatewayMissing"]["expr"])
@@ -1556,14 +1857,18 @@ class NetAnchorAlerts(unittest.TestCase):
         result = subprocess.run([self.rules()[0], "check", "metrics"], input=text, text=True, capture_output=True)
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
+    def others(self, *networks):
+        """Healthy series for every configured network but those named."""
+        return [x for n in NET_ANCHORS if n not in networks for x in self.healthy(n)]
+
     def test_healthy_anchors_raise_nothing(self):
-        inputs = self.healthy("pi-durable-sgg") + self.healthy("pi-durable-planning")
+        inputs = self.others()
         for alert in NET_ANCHOR_ALERTS:
             self.promtool_test(inputs, alert, ("170m", []))
 
     def test_a_restart_warns_for_an_hour_then_resolves(self):
         # Run 2 began at 30m (epoch seconds 1800).
-        inputs = self.healthy("pi-durable-planning") + [
+        inputs = self.others("pi-durable-sgg") + [
             x for x in self.healthy("pi-durable-sgg") if "_up{" not in x["series"] and "runs_since" not in x["series"] and "last_run" not in x["series"]
         ] + [
             self.series("pi_durable_net_anchor_up", "1x29 0 1x150", "pi-durable-sgg"),
@@ -1578,12 +1883,12 @@ class NetAnchorAlerts(unittest.TestCase):
         self.promtool_test(inputs, "PiDurableNetAnchorDown", ("40m", []))
 
     def test_an_anchor_that_isnt_running_is_critical_after_5_minutes(self):
-        inputs = self.healthy("pi-durable-sgg") + self.replaced("pi-durable-planning", "pi_durable_net_anchor_up", "1x10 0x60")
+        inputs = self.others("pi-durable-planning") + self.replaced("pi-durable-planning", "pi_durable_net_anchor_up", "1x10 0x60")
         self.promtool_test(inputs, "PiDurableNetAnchorDown",
                            ("14m", []),
                            ("17m", self.firing("PiDurableNetAnchorDown", "pi-durable-planning", "0")))
         # Not attached, its missing gateway is the Down alert's, not GatewayMissing's.
-        inputs = self.healthy("pi-durable-sgg") + [
+        inputs = self.others("pi-durable-planning") + [
             x for x in self.replaced("pi-durable-planning", "pi_durable_net_anchor_up", "1x10 0x60") if "gateway_present" not in x["series"]
         ] + [self.series("pi_durable_net_anchor_gateway_present", "1x10 0x60", "pi-durable-planning")]
         self.promtool_test(inputs, "PiDurableNetAnchorGatewayMissing", ("40m", []))
@@ -1591,15 +1896,15 @@ class NetAnchorAlerts(unittest.TestCase):
     def test_a_stale_check_is_down_even_when_the_file_says_up(self):
         # A hung agent, or a file left from before a reboot: up 1, but the
         # check stamp stops at 0. Stale from 6m (> 300 s), firing 5m later.
-        inputs = self.healthy("pi-durable-sgg") + self.replaced("pi-durable-planning", "pi_durable_net_anchor_last_check_timestamp_seconds", "0x60")
+        inputs = self.others("pi-durable-planning") + self.replaced("pi-durable-planning", "pi_durable_net_anchor_last_check_timestamp_seconds", "0x60")
         self.promtool_test(inputs, "PiDurableNetAnchorDown",
                            ("10m", []),
                            ("12m", self.firing("PiDurableNetAnchorDown", "pi-durable-planning", "720")))
         # A stamp that follows time() never fires.
-        self.promtool_test(self.healthy("pi-durable-sgg") + self.healthy("pi-durable-planning"), "PiDurableNetAnchorDown", ("170m", []))
+        self.promtool_test(self.others(), "PiDurableNetAnchorDown", ("170m", []))
 
     def test_an_attached_anchor_without_its_gateway_is_critical_after_3_minutes(self):
-        inputs = self.healthy("pi-durable-planning") + self.replaced("pi-durable-sgg", "pi_durable_net_anchor_gateway_present", "1x10 0x30 1x20")
+        inputs = self.others("pi-durable-sgg") + self.replaced("pi-durable-sgg", "pi_durable_net_anchor_gateway_present", "1x10 0x30 1x20")
         self.promtool_test(inputs, "PiDurableNetAnchorGatewayMissing",
                            ("13m", []),
                            ("15m", self.firing("PiDurableNetAnchorGatewayMissing", "pi-durable-sgg", "1")),
@@ -1607,7 +1912,7 @@ class NetAnchorAlerts(unittest.TestCase):
         self.promtool_test(inputs, "PiDurableNetAnchorDown", ("15m", []))
 
     def test_an_anchor_that_never_reported_is_critical(self):
-        inputs = self.healthy("pi-durable-sgg")
+        inputs = self.others("pi-durable-planning")
         self.promtool_test(inputs, "PiDurableNetAnchorDown",
                            ("4m", []),
                            ("6m", self.firing("PiDurableNetAnchorDown", "pi-durable-planning", "1", labels={})))
@@ -2516,7 +2821,12 @@ class SupervisorAlerts(unittest.TestCase):
                 self.assertIn("OPERATIONS.md §11", text)
                 self.assertIn("vm-supervisor-main.js status", text)
         self.assertIn("{{ $labels.vm }}", by_name["PiDurableWorkspaceVmDown"]["annotations"]["summary"])
-        self.assertIn("release", by_name["PiDurableWorkspaceHeld"]["annotations"]["description"])
+        # Since durable-pi-workspace#469 (decision 4) a new commit on main ends halted updates: nothing waits on a
+        # release by hand, so the text no longer asks for one.
+        held = by_name["PiDurableWorkspaceHeld"]["annotations"]["description"]
+        self.assertNotIn("fix the cause, then release", held)
+        self.assertNotIn("until `vm-supervisor-main.js release", held)
+        self.assertIn("A new commit on main ends the halt", held)
         self.assertIn("release", by_name["PiDurableWorkspaceUpdatesHaltedWorst"]["annotations"]["description"])
         self.assertIn("{{ $value", by_name["PiDurableWorkspaceDiskHigh"]["annotations"]["summary"])
         # Every rule reading the supervisor's metrics is one of these.

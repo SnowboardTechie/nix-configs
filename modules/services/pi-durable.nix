@@ -25,6 +25,10 @@
 # (the service VM's leg to a sandbox, through a relay on the host). Neither
 # the VM broker's port nor a relay port ever enters the sandbox's anchor, so
 # an agent VM cannot reach them.
+# And planning's sandbox network (durable-pi-workspace#535): a third VM network,
+# for planning's sandbox VMs alone, with a pf anchor that passes it to its own
+# sandbox proxy (a tinyproxy on its gateway) and the Forgejo proxy's port, and
+# nothing else.
 # And the VM networks' anchors (durable-pi-workspace#418): one agent per
 # network that keeps an idle, detached VM attached to it, so Apple `container`
 # never takes the network's bridge down and gives its unit to another network.
@@ -47,10 +51,11 @@
 # everything but the proxy. Neither is proof that the VM cannot bypass them:
 # that is the application's live sandbox gate.
 #
-# Not installed here: Apple `container`. The application targets 1.5.0, which
-# is a prerequisite candidate for the security review, not an approved install
-# (nixpkgs pins 1.1.0; Homebrew would float it at activation). Once approved,
-# the operator installs it and the service's config names it as `sandbox.cli`.
+# Not installed here: Apple `container`. Studio runs 1.7.1 (from 1.5.0 on
+# 2026-11-18), installed from Apple's signed installer and deliberately pinned:
+# nixpkgs pins 1.1.0, and Homebrew would float it at activation. An upgrade is a
+# deliberate install of the next signed package; the service's config names it
+# as `sandbox.cli`.
 { inputs, ... }:
 {
   flake.modules.darwin.pi-durable =
@@ -173,6 +178,20 @@
         || lib.hasSuffix ".github.com" domain
         || lib.hasSuffix "githubusercontent.com" domain;
 
+      # Planning's sandbox proxy (durable-pi-workspace#535): the sandbox
+      # proxy's shape on planning's sandbox network's gateway, with its own
+      # clients and allowlist (the package hosts a sandbox container's
+      # installs need; never GitHub).
+      planningSandboxProxyConfig = pkgs.writeText "pi-durable-planning-sandbox-tinyproxy.conf" ''
+        Listen ${toString cfg.planningSandbox.listenAddress}
+        Port ${toString cfg.planningSandbox.sandboxProxy.port}
+        ${lib.concatMapStrings (client: "Allow ${client}\n") cfg.planningSandbox.allowedClients}
+        ConnectPort 443
+        FilterType fnmatch
+        FilterDefaultDeny Yes
+        Filter "${pkgs.writeText "pi-durable-planning-sandbox-proxy-allowlist" (lib.concatLines cfg.planningSandbox.sandboxProxy.allowedDomains)}"
+      '';
+
       # The sandbox network reaches tinyproxy on its gateway and nothing else:
       # no service of this host on any address (gateway, LAN, tailnet), no
       # LAN, tailnet or internet. Without it, a VM on the network reached every
@@ -238,6 +257,24 @@
       });
       planningPfLoader = [ "${pkgs.bash}/bin/bash" "${./pi-durable-pf.sh}" "/sbin/pfctl" planningPfAnchor "${planningPfRules}" "/var/run/pi-durable-planning-pf.token" ];
 
+      # Planning's sandbox network (durable-pi-workspace#535), the same way in
+      # a third anchor: its sandbox VMs reach their sandbox proxy and the
+      # Forgejo proxy on their gateway, and nothing else. Never the model
+      # proxy, the VM broker or a workspace relay port (the SSH port
+      # forwarders): assertions refuse them. The SSH port forwarders' own
+      # connections to a sandbox VM's port 22 go out from this host, which no
+      # anchor's `in` rules match.
+      planningSandboxPfAnchor = "com.apple/102.pi-durable-planning-sandbox";
+      planningSandboxPorts = [ cfg.planningSandbox.sandboxProxy.port cfg.forgeBroker.port ];
+      planningSandboxPfRules = pkgs.writeText "pi-durable-planning-sandbox.pf" (confinement {
+        title = "Pi Durable planning sandbox network isolation";
+        clients = cfg.planningSandbox.allowedClients;
+        address = cfg.planningSandbox.listenAddress;
+        ports = planningSandboxPorts;
+        inherit (cfg.planningSandbox) ipv6Subnet;
+      });
+      planningSandboxPfLoader = [ "${pkgs.bash}/bin/bash" "${./pi-durable-pf.sh}" "/sbin/pfctl" planningSandboxPfAnchor "${planningSandboxPfRules}" "/var/run/pi-durable-planning-sandbox-pf.token" ];
+
       # pf rules do not survive a restart, and nix-darwin does not re-run
       # activation at boot. Retried until the anchor is loaded and checked.
       pfBootDaemon = loader: log: {
@@ -265,23 +302,27 @@
         ++ lib.optional cfg.planning.enable cfg.planning.relayPort;
 
       # The VM networks' anchors (durable-pi-workspace#418): one per network
-      # that is named, the sandbox's with the sandbox proxy and the planning
-      # service network's with `planning`. Each keeps an idle, detached VM
+      # that is named, the sandbox's with the sandbox proxy, the planning
+      # service network's with `planning` and planning's sandbox network's
+      # with `planningSandbox`. Each keeps an idle, detached VM
       # attached, so the network's vmnet bridge (and gateway) stays up from
       # before anything else uses it and its unit is never given to another
       # network. The agent only starts the VM when it isn't running and
       # watches it; it never stops it (pi-durable-net-anchor.sh).
-      netAnchorNetworks = lib.optional (cfg.enable && cfg.proxy.network != null) cfg.proxy.network
-        ++ lib.optional (cfg.enable && cfg.planning.enable && cfg.planning.network != null) cfg.planning.network;
-      netAnchorGateways = lib.optional (cfg.enable && cfg.proxy.network != null) cfg.proxy.listenAddress
-        ++ lib.optional (cfg.enable && cfg.planning.enable && cfg.planning.network != null) cfg.planning.listenAddress;
+      anchored = lib.filter (n: n.on && n.network != null) [
+        { on = cfg.enable; inherit (cfg.proxy) network listenAddress; }
+        { on = cfg.enable && cfg.planning.enable; inherit (cfg.planning) network listenAddress; }
+        { on = cfg.enable && cfg.planningSandbox.enable; inherit (cfg.planningSandbox) network listenAddress; }
+      ];
+      netAnchorNetworks = map (n: n.network) anchored;
+      netAnchorGateways = map (n: n.listenAddress) anchored;
       netAnchorAgent = network: "pi-durable-net-anchor-${network}";
       # Each network with its gateway and the gateways of the networks whose
-      # anchors come before it, in this fixed order: the sandbox's, then the
-      # planning network's. An anchor that has to start a VM waits for every
-      # earlier gateway first, so two networks' first attaches never happen at
-      # the same moment (never probed; at boot both agents would otherwise
-      # start together).
+      # anchors come before it, in this fixed order: the sandbox's, the
+      # planning network's, then planning's sandbox network's. An anchor that
+      # has to start a VM waits for every earlier gateway first, so two
+      # networks' first attaches never happen at the same moment (never
+      # probed; at boot every agent would otherwise start together).
       netAnchors = lib.imap0
         (i: network: {
           inherit network;
@@ -295,7 +336,7 @@
       # An image reference: name, optional tag or digest; no space or anything
       # a shell or launchd could read as another argument.
       isImageRef = s: builtins.match "[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(@sha256:[0-9a-f]{64})?" s != null;
-      netAnchorRunbook = "Check both networks before starting any VM: `container list` shows a net-anchor-<network> VM running for each, and each gateway (${lib.concatStringsSep ", " (map toString netAnchorGateways)}) appears on a host bridge in `ifconfig`. Never `launchctl kickstart` a com.apple.container.container-network-vmnet.* helper: that takes the bridge down and can hang `container exec` everywhere. Recovery: durable-pi-workspace workspaces/proxies/OPERATIONS.md §9. Logs: /tmp/pi-durable-net-anchor-<network>.log and .error.log.";
+      netAnchorRunbook = "Check every network before starting any VM: `container list` shows a net-anchor-<network> VM running for each, and each gateway (${lib.concatStringsSep ", " (map toString netAnchorGateways)}) appears on a host bridge in `ifconfig`. Never `launchctl kickstart` a com.apple.container.container-network-vmnet.* helper: that takes the bridge down and can hang `container exec` everywhere. Recovery: durable-pi-workspace workspaces/proxies/OPERATIONS.md §9. Logs: /tmp/pi-durable-net-anchor-<network>.log and .error.log.";
       netAnchorRules = [
         {
           alert = "PiDurableNetAnchorRestarted";
@@ -308,7 +349,7 @@
           labels = { severity = "warning"; };
           annotations = {
             summary = "VM network {{ $labels.network }}'s bridge went down: its anchor VM ended and a new one was started";
-            description = "The anchor VM that holds VM network {{ $labels.network }}'s bridge up ended, and its agent started a new one ({{ $value }} anchor VMs started since boot), so the bridge and its gateway were down in between. The VM networks may collide until both are checked: one network's bridge can take the other's gateway, cutting its VMs off from the proxies and brokers. ${netAnchorRunbook}";
+            description = "The anchor VM that holds VM network {{ $labels.network }}'s bridge up ended, and its agent started a new one ({{ $value }} anchor VMs started since boot), so the bridge and its gateway were down in between. The VM networks may collide until each is checked: one network's bridge can take another's gateway, cutting its VMs off from the proxies and brokers. ${netAnchorRunbook}";
           };
         }
         {
@@ -326,7 +367,7 @@
           labels = { severity = "critical"; };
           annotations = {
             summary = "VM network {{ $labels.network }}'s anchor VM isn't running, or its agent has stopped checking: its bridge may be down";
-            description = "For 5 minutes no anchor VM has been seen holding VM network {{ $labels.network }}'s bridge up: the anchor isn't running, is waiting for an earlier network's gateway, its agent has stopped writing its checks (hung, or gone since a reboot), or it has never reported. So the bridge and its gateway may be down or held only by whatever VM is on the network. The VM networks may collide until both are checked: the next network to come up can take this one's bridge unit, and with it a gateway. ${netAnchorRunbook}";
+            description = "For 5 minutes no anchor VM has been seen holding VM network {{ $labels.network }}'s bridge up: the anchor isn't running, is waiting for an earlier network's gateway, its agent has stopped writing its checks (hung, or gone since a reboot), or it has never reported. So the bridge and its gateway may be down or held only by whatever VM is on the network. The VM networks may collide until each is checked: the next network to come up can take this one's bridge unit, and with it a gateway. ${netAnchorRunbook}";
           };
         }
         {
@@ -338,7 +379,7 @@
           labels = { severity = "critical"; };
           annotations = {
             summary = "VM network {{ $labels.network }} has no gateway on the host, though its anchor VM is attached";
-            description = "For 3 minutes VM network {{ $labels.network }}'s anchor VM has been running and attached, but the network's gateway is on no host interface, so its VMs can't reach the proxies and brokers and nothing new starts on it. This is the bridge collision (another network's bridge took this one's unit) or a killed InternetSharing. It needs a person: follow the recovery in durable-pi-workspace workspaces/proxies/OPERATIONS.md §9 (nothing restarts it automatically). The VM networks may collide until both are checked. ${netAnchorRunbook}";
+            description = "For 3 minutes VM network {{ $labels.network }}'s anchor VM has been running and attached, but the network's gateway is on no host interface, so its VMs can't reach the proxies and brokers and nothing new starts on it. This is the bridge collision (another network's bridge took this one's unit) or a killed InternetSharing. It needs a person: follow the recovery in durable-pi-workspace workspaces/proxies/OPERATIONS.md §9 (nothing restarts it automatically). The VM networks may collide until each is checked. ${netAnchorRunbook}";
           };
         }
       ];
@@ -391,15 +432,16 @@
         {
           alert = "PiDurableWorkspaceHeld";
           # Kept as PiDurableWorkspaceHeld (durable-pi-workspace's vault names
-          # it). Set by a failed update and cleared only by `release`, so
-          # halted updates never resume by themselves; 5 minutes only lets a
-          # release just made land in the next reconcile's file.
+          # it). Set by a failed update. Since durable-pi-workspace#469
+          # (decision 4) a new commit on main ends it and nothing is released
+          # by hand; `release` still clears it at once. 5 minutes only lets a
+          # halt just ended land in the next reconcile's file.
           expr = "pi_durable_vm_supervisor_updates_halted == 1";
           "for" = "5m";
           labels = { severity = "warning"; };
           annotations = {
             summary = "Workspace {{ $labels.workspace }}'s updates are halted after a failed update";
-            description = "A build applied to workspace {{ $labels.workspace }} failed its post-deploy check or its VM couldn't be started, so the VM supervisor rolled it back and halted the workspace's updates: no apply is taken until `vm-supervisor-main.js release {{ $labels.workspace }}`. Its grants are still renewed and its health watched. `status` gives why and since when, and the events (post-deploy-check-failed, rolled-back, updates-halted) name the build; fix the cause, then release. If PiDurableWorkspaceUpdatesHaltedWorst fires too, no build was brought to pass. ${supervisorRunbook}";
+            description = "A build applied to workspace {{ $labels.workspace }} failed its post-deploy check or its VM couldn't be started, so the VM supervisor rolled it back and halted the workspace's updates. A new commit on main ends the halt: the auto-deployer takes the next build-changing commit as usual, so a fix merged to main clears this, and nothing waits on a release by hand (`vm-supervisor-main.js release {{ $labels.workspace }}` still ends it at once). Its grants are still renewed and its health watched meanwhile. `status` gives why and since when, and the events (post-deploy-check-failed, rolled-back, updates-halted) name the build that failed. If PiDurableWorkspaceUpdatesHaltedWorst fires too, no build was brought to pass. ${supervisorRunbook}";
           };
         }
         {
@@ -810,6 +852,22 @@
             this network reaches the proxy on this gateway. The proxy binds
             it once model-proxy.json's `listen` names this gateway. Requires
             `modelProxy.enable` and `planning.enable`'';
+          launcher = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = ''
+              Whether the host runs the old planning launcher
+              (`org.nixos.pi-durable-planning-service`) and the old port
+              forwarder on loopback `relayPort` (`org.nixos.pi-durable-planning-relay`),
+              together (durable-pi-workspace#535). False removes both agents
+              alone, so nothing of Nix's binds `127.0.0.1:relayPort` and the VM
+              supervisor's port forwarder for planning's page can bind it.
+              The planning network, its anchor VM, its pf anchor, the Forgejo
+              proxy, the old planning VM supervisor (`vmBroker`), the Serve
+              route and the `Planning` content probe all stay. With `enable`
+              off it changes nothing.
+            '';
+          };
           tailscaleHttpsPort = lib.mkOption {
             type = lib.types.nullOr lib.types.port;
             default = null;
@@ -818,6 +876,88 @@
               relay. Null: no route. Activation refuses a port that already
               serves another route.
             '';
+          };
+        };
+
+        planningSandbox = {
+          enable = lib.mkEnableOption ''
+            planning's sandbox network (durable-pi-workspace#535): its own
+            internal VM network for planning's sandbox VMs, kept apart from
+            SGG's sandbox network and the planning service network. Adds its
+            anchor VM (with `network`), its sandbox proxy on its gateway, and a
+            pf anchor that passes its clients to that sandbox proxy and the
+            Forgejo proxy (`forgeBroker.port`) on its gateway and refuses them
+            everything else. Requires `enable`, `planning` and `forgeBroker`;
+            the Forgejo proxy's `listen.hosts` in forge-broker.json must name
+            this gateway for it to bind there'';
+          network = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            example = "pi-durable-planning-sandbox";
+            description = ''
+              Name of planning's sandbox network, whose gateway is
+              `listenAddress`. Set: an agent keeps an idle, detached anchor VM
+              (`net-anchor-<network>`, `netAnchor.image`) attached to it, after
+              the other two networks' anchors, only with `enable`. Null: no
+              agent; a running VM is left running.
+            '';
+          };
+          listenAddress = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = ''
+              Gateway IPv4 address of planning's sandbox network (`container
+              network create --internal`), where its sandbox proxy and the
+              Forgejo proxy listen. Required with `enable`; never another
+              network's.
+            '';
+          };
+          allowedClients = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            description = ''
+              Addresses or CIDR ranges of planning's sandbox network: its
+              subnet. pf passes them to the sandbox proxy and the Forgejo proxy
+              and refuses them everything else.
+            '';
+          };
+          ipv6Subnet = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = ''
+              The network's IPv6 prefix (`container network inspect`:
+              `ipv6Subnet`); pf refuses it everything. Required with `enable`.
+            '';
+          };
+          sandboxProxy = {
+            port = lib.mkOption {
+              type = lib.types.port;
+              default = 8888;
+              description = ''
+                Port of planning's sandbox proxy (tinyproxy) on
+                `listenAddress`; a sandbox VM's proxy is
+                http://<listenAddress>:<port>. The same number as SGG's sandbox
+                proxy, on another address.
+              '';
+            };
+            allowedDomains = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              # The replay proxy's package hosts, then what Playwright 1.64
+              # fetches for Chrome for Testing on linux-arm64 (`playwright
+              # install chromium`): cdn.playwright.dev serves the browser by a
+              # 307 to storage.googleapis.com (chrome-for-testing-public), and
+              # ffmpeg from its first mirror, playwright.download.prss.microsoft.com
+              # (checked 2026-11-18). Never a GitHub host: an assertion refuses one.
+              default = [
+                "registry.npmjs.org"
+                "pypi.org"
+                "files.pythonhosted.org"
+                "cdn.playwright.dev"
+                "playwright.download.prss.microsoft.com"
+                "storage.googleapis.com"
+              ];
+              description = "Exact lowercase hostnames planning's sandbox VMs may reach through their sandbox proxy, never a GitHub host; every other destination is refused.";
+            };
           };
         };
 
@@ -1274,6 +1414,24 @@
               }
             ];
 
+            system.activationScripts.extraActivation.text = lib.mkAfter ''
+              # === pi-durable planning service network isolation (pf) ===
+              if ! ${lib.escapeShellArgs planningPfLoader}; then
+                echo "Failed to load the Pi Durable planning service network's pf anchor ${planningPfAnchor}" >&2
+                exit 1
+              fi
+            '';
+
+            launchd.daemons.pi-durable-planning-pf.serviceConfig =
+              pfBootDaemon planningPfLoader "/var/log/pi-durable-planning-pf.log";
+          }
+
+          # The old launcher and the old port forwarder on 8792, together
+          # (`planning.launcher`, durable-pi-workspace#535). Turning them off
+          # frees 127.0.0.1:relayPort for the VM supervisor's port forwarder
+          # and stops the old service VM (the launcher's SIGTERM removes it,
+          # its volume kept); everything else in this block stays.
+          (lib.mkIf cfg.planning.launcher {
             # Attached to the service VM: it ends when the VM does (exit 1,
             # for launchd to start a fresh one) and reconciles any VM and
             # grant left before starting anew. Without
@@ -1322,18 +1480,7 @@
               StandardOutPath = "/tmp/pi-durable-planning-relay.log";
               StandardErrorPath = "/tmp/pi-durable-planning-relay.error.log";
             };
-
-            system.activationScripts.extraActivation.text = lib.mkAfter ''
-              # === pi-durable planning service network isolation (pf) ===
-              if ! ${lib.escapeShellArgs planningPfLoader}; then
-                echo "Failed to load the Pi Durable planning service network's pf anchor ${planningPfAnchor}" >&2
-                exit 1
-              fi
-            '';
-
-            launchd.daemons.pi-durable-planning-pf.serviceConfig =
-              pfBootDaemon planningPfLoader "/var/log/pi-durable-planning-pf.log";
-          }
+          })
 
           # The relay's /metrics needs no login; a serving planning service
           # reports itself up.
@@ -1351,6 +1498,74 @@
               lib.mkOrder 1600 (pageRoute "planning page" cfg.planning.tailscaleHttpsPort cfg.planning.relayPort);
           })
         ]))
+
+        # Planning's sandbox network (durable-pi-workspace#535): its sandbox
+        # proxy and its pf anchor. Its anchor VM comes with the others, below.
+        (lib.mkIf cfg.planningSandbox.enable {
+          assertions = [
+            {
+              assertion = cfg.enable && cfg.planning.enable && cfg.forgeBroker.enable;
+              message = "services.pi-durable.planningSandbox requires services.pi-durable.enable, planning and forgeBroker: its sandbox VMs are planning's, and they push through the Forgejo proxy on this network's gateway";
+            }
+            {
+              assertion = cfg.planningSandbox.listenAddress != null && isAddress cfg.planningSandbox.listenAddress;
+              message = "services.pi-durable.planningSandbox.listenAddress must be planning's sandbox network's gateway as one canonical IPv4 address, not a wildcard, name or anything else";
+            }
+            {
+              assertion = cfg.planningSandbox.allowedClients != [ ] && lib.all isClient cfg.planningSandbox.allowedClients;
+              message = "services.pi-durable.planningSandbox.allowedClients must name planning's sandbox network's subnet as canonical IPv4 addresses or CIDR ranges with a /1 to /32 prefix";
+            }
+            {
+              assertion = cfg.planningSandbox.ipv6Subnet != null && isIpv6Subnet cfg.planningSandbox.ipv6Subnet;
+              message = "services.pi-durable.planningSandbox.ipv6Subnet must name planning's sandbox network's IPv6 prefix (`container network inspect`: ipv6Subnet) in lowercase hex with a /1 to /128 prefix, so pf can confine the network";
+            }
+            {
+              assertion = !lib.elem cfg.planningSandbox.listenAddress [ cfg.proxy.listenAddress cfg.planning.listenAddress ]
+                && !lib.any (client: lib.elem client (cfg.proxy.allowedClients ++ cfg.planning.allowedClients)) cfg.planningSandbox.allowedClients
+                && !lib.elem cfg.planningSandbox.ipv6Subnet [ cfg.proxy.ipv6Subnet cfg.planning.ipv6Subnet ];
+              message = "services.pi-durable.planningSandbox's listenAddress, allowedClients and ipv6Subnet must never equal the sandbox network's or the planning service network's (proxy.*, planning.*): planning's sandbox network is its own";
+            }
+            {
+              assertion = lib.all (domain: builtins.match "[a-z0-9.-]+" domain != null) cfg.planningSandbox.sandboxProxy.allowedDomains;
+              message = "services.pi-durable.planningSandbox.sandboxProxy.allowedDomains takes exact lowercase hostnames, no wildcards";
+            }
+            {
+              assertion = !lib.any isGithubHost cfg.planningSandbox.sandboxProxy.allowedDomains;
+              message = "services.pi-durable.planningSandbox.sandboxProxy.allowedDomains must hold no GitHub host (github.com, *.github.com, *githubusercontent.com): planning's sandbox VMs push through the Forgejo proxy and reach GitHub not at all";
+            }
+            {
+              # Its port is the anchor's only pass besides the Forgejo proxy's,
+              # so it must never be one this network must not reach.
+              assertion = !lib.elem cfg.planningSandbox.sandboxProxy.port ([ cfg.forgeBroker.port cfg.modelProxy.port cfg.vmBroker.port ]
+                ++ cfg.planning.workspaceRelayPorts);
+              message = "services.pi-durable.planningSandbox.sandboxProxy.port must differ from forgeBroker.port, modelProxy.port, vmBroker.port and planning.workspaceRelayPorts: the network reaches its sandbox proxy and the Forgejo proxy, and never the model proxy, the VM broker or a port forwarder";
+            }
+          ];
+
+          launchd.user.agents.pi-durable-planning-sandbox-proxy.serviceConfig = {
+            ProgramArguments = [ tinyproxy "-d" "-c" "${planningSandboxProxyConfig}" ];
+            RunAtLoad = true;
+            # As the sandbox proxy: until a VM brings the gateway up the bind
+            # fails, tinyproxy exits and launchd retries.
+            KeepAlive = true;
+            StandardOutPath = "/tmp/pi-durable-planning-sandbox-proxy.log";
+            StandardErrorPath = "/tmp/pi-durable-planning-sandbox-proxy.error.log";
+          };
+
+          # tinyproxy's firewall exception comes with the sandbox proxy's
+          # (`proxy.listenAddress`, which `forgeBroker` requires): per binary,
+          # so this second listener needs nothing more.
+          system.activationScripts.extraActivation.text = lib.mkAfter ''
+            # === pi-durable planning sandbox network isolation (pf) ===
+            if ! ${lib.escapeShellArgs planningSandboxPfLoader}; then
+              echo "Failed to load the Pi Durable planning sandbox network's pf anchor ${planningSandboxPfAnchor}" >&2
+              exit 1
+            fi
+          '';
+
+          launchd.daemons.pi-durable-planning-sandbox-pf.serviceConfig =
+            pfBootDaemon planningSandboxPfLoader "/var/log/pi-durable-planning-sandbox-pf.log";
+        })
 
         # The planning service network's pass to the model proxy: only with
         # the proxy running and the planning anchor loaded.
@@ -1475,11 +1690,11 @@
               }
               {
                 assertion = lib.all isNetworkName netAnchorNetworks;
-                message = "services.pi-durable.proxy.network and planning.network must be container network names: lowercase letters, digits and inner hyphens";
+                message = "services.pi-durable.proxy.network, planning.network and planningSandbox.network must be container network names: lowercase letters, digits and inner hyphens";
               }
               {
                 assertion = lib.length (lib.unique netAnchorNetworks) == lib.length netAnchorNetworks;
-                message = "services.pi-durable.planning.network must differ from proxy.network: each network has its own gateway and its own anchor";
+                message = "services.pi-durable.planning.network and planningSandbox.network must differ from proxy.network and each other: each network has its own gateway and its own anchor";
               }
               {
                 assertion = cfg.netAnchor.image != null && isImageRef cfg.netAnchor.image;

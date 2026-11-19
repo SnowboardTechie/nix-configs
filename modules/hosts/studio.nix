@@ -354,12 +354,35 @@
         allowedClients = [ "192.168.129.0/24" ];
         ipv6Subnet = "fdd2:4a0c:729f:fb6::/64";
         tailscaleHttpsPort = 8792;
-        # The relay leg's probe port for durable-pi-workspace#421.
-        workspaceRelayPorts = [ 8896 ];
+        # The SSH port forwarders' ports on the planning gateway, one per
+        # planning sandbox VM: 8896 (the relay leg's probe port for
+        # durable-pi-workspace#421, then pi-planning-work's) and 8897
+        # (pi-planning-judge's; durable-pi-workspace#535).
+        workspaceRelayPorts = [ 8896 8897 ];
         # The planning network reaches the model proxy (8892) on its gateway,
         # for the sampler's VM (durable-pi-workspace#443). The proxy binds it
         # once model-proxy.json's `listen` names 192.168.129.1.
         modelProxy = true;
+        # The old launcher and the old port forwarder on 8792 stay on until
+        # the cut-over (durable-pi-workspace#535), which sets this false so
+        # the VM supervisor's port forwarder can bind 8792. The network, its
+        # pf anchor, the brokers, the Serve route and the probe stay either way.
+        launcher = true;
+      };
+      # Planning's sandbox network (durable-pi-workspace#535): `container
+      # network create --internal --subnet 192.168.130.0/24
+      # pi-durable-planning-sandbox` (made 2026-11-18, no VM on it), for
+      # pi-planning-work and pi-planning-judge alone. Its anchor VM comes
+      # third, after the other two networks' gateways are up. pf passes it to
+      # its sandbox proxy (8888 on 192.168.130.1) and the Forgejo proxy
+      # (8894), which binds this gateway once forge-broker.json's
+      # `listen.hosts` names it, and nothing else.
+      planningSandbox = {
+        enable = true;
+        network = "pi-durable-planning-sandbox";
+        listenAddress = "192.168.130.1";
+        allowedClients = [ "192.168.130.0/24" ];
+        ipv6Subnet = "fd17:b92:207f:9aa0::/64";
       };
       # The workspace supervisor (durable-pi-workspace#443; the proxies
       # runbook §11): starts the sampler's VM from its definition and relays
