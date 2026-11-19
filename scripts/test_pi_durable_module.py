@@ -81,6 +81,32 @@ PLANNING_SANDBOX_PF_RULES = (
     "block return in quick on ! lo0 inet6 from fd17:b92:207f:9aa0::/64 to any\n"
     f"block return in quick on {{ {' '.join(BRIDGES)} }} inet6 proto {{ tcp udp }} from fe80::/10 to any\n"
 )
+# SGG's service network's anchor (durable-pi-workspace#555): its service VM
+# reaches the model proxy (8892), the GitHub proxy's service listener (8899),
+# the Forgejo proxy (8894) and the SSH port forwarders for SGG's sandbox VMs
+# (8896, 8897, 8898) on its own gateway, and nothing else.
+SGG_SERVICE_PF_ANCHOR = "com.apple/103.pi-durable-sgg-service"
+SGG_SERVICE_PF_RULES = (
+    "# Pi Durable SGG service network isolation: nix-configs modules/services/pi-durable.nix\n"
+    + "".join(f"pass in quick inet proto tcp from {{ 192.168.131.0/24 }} to 192.168.131.1 port {p} flags S/SA keep state\n"
+              for p in (8892, 8899, 8894, 8896, 8897, 8898)) +
+    "block return in quick on ! lo0 inet from { 192.168.131.0/24 } to any\n"
+    "block return in quick on ! lo0 inet6 from fdea:1c81:a6f0:ec26::/64 to any\n"
+    f"block return in quick on {{ {' '.join(BRIDGES)} }} inet6 proto {{ tcp udp }} from fe80::/10 to any\n"
+)
+# SGG's sandbox network's anchor: its sandbox VMs reach their sandbox proxy
+# (8888), the replay proxy (8889) and the Forgejo proxy (8894) on their own
+# gateway, and nothing else: never the GitHub proxy's read listener (8900),
+# which only the sandbox proxy on the host connects to.
+SGG_SANDBOX_PF_ANCHOR = "com.apple/104.pi-durable-sgg-sandbox"
+SGG_SANDBOX_PF_RULES = (
+    "# Pi Durable SGG sandbox network isolation: nix-configs modules/services/pi-durable.nix\n"
+    + "".join(f"pass in quick inet proto tcp from {{ 192.168.132.0/24 }} to 192.168.132.1 port {p} flags S/SA keep state\n"
+              for p in (8888, 8889, 8894)) +
+    "block return in quick on ! lo0 inet from { 192.168.132.0/24 } to any\n"
+    "block return in quick on ! lo0 inet6 from fd37:8205:5db:3582::/64 to any\n"
+    f"block return in quick on {{ {' '.join(BRIDGES)} }} inet6 proto {{ tcp udp }} from fe80::/10 to any\n"
+)
 
 
 def nix(*args):
@@ -130,7 +156,10 @@ PLANNING_PF_RULES_FILE = f'(builtins.head (builtins.filter (lib.hasSuffix "-pi-d
 PLANNING_SANDBOX_PF_DAEMON = "config.launchd.daemons.pi-durable-planning-sandbox-pf.serviceConfig"
 PLANNING_SANDBOX_PF_RULES_FILE = f'(builtins.head (builtins.filter (lib.hasSuffix "-pi-durable-planning-sandbox.pf") {PLANNING_SANDBOX_PF_DAEMON}.ProgramArguments))'
 # Planning on VMs off: the forge broker, the VM broker and the planning service.
-NO_PLANNING = "forgeBroker.enable = lib.mkForce false; vmBroker.enable = lib.mkForce false; planning.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; planningSandbox.enable = lib.mkForce false;"
+# SGG's service and sandbox networks (durable-pi-workspace#555) off too: they
+# are the newest, and the scenarios that turn the forge broker off predate them.
+NO_SGG_NETWORKS = "sggServiceNetwork.enable = lib.mkForce false; sggSandboxNetwork.enable = lib.mkForce false;"
+NO_PLANNING = f"forgeBroker.enable = lib.mkForce false; vmBroker.enable = lib.mkForce false; planning.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; planningSandbox.enable = lib.mkForce false; {NO_SGG_NETWORKS}"
 # Studio sets the commissioning inputs, so a scenario forces the ones it is about.
 ENABLED = (
     "{ enable = lib.mkForce true; proxy = { network = lib.mkForce null; listenAddress = lib.mkForce null; allowedClients = lib.mkForce [ ]; }; "
@@ -159,8 +188,13 @@ class StudioAsCommissioned(unittest.TestCase):
                       "pi-durable-planning-sandbox-proxy"):
             self.assertIn(agent, s["agents"])
         # The only root jobs: the boot-time pf loaders, one per anchor.
-        self.assertEqual(["pi-durable-pf", "pi-durable-planning-pf", "pi-durable-planning-sandbox-pf"],
+        self.assertEqual(["pi-durable-pf", "pi-durable-planning-pf", "pi-durable-planning-sandbox-pf", "pi-durable-sgg-sandbox-pf",
+                          "pi-durable-sgg-service-pf"],
                          [name for name in s["system"] if "pi-durable" in name])
+        for agent in ("pi-durable-sgg-sandbox-proxy", "pi-durable-sgg-sandbox-replay-proxy"):
+            self.assertIn(agent, s["agents"])
+        self.assertIn(f"/sbin/pfctl {SGG_SERVICE_PF_ANCHOR} ", s["activation"])
+        self.assertIn(f"/sbin/pfctl {SGG_SANDBOX_PF_ANCHOR} ", s["activation"])
         self.assertIn(f"/sbin/pfctl {PLANNING_PF_ANCHOR} ", s["activation"])
         self.assertIn(f"/sbin/pfctl {PLANNING_SANDBOX_PF_ANCHOR} ", s["activation"])
         self.assertIn("8792 http://127.0.0.1:8792", s["activation"])
@@ -180,6 +214,9 @@ class StudioAsCommissioned(unittest.TestCase):
         self.assertEqual(STUDIO_PF_RULES, studio("{ }", f"builtins.readFile {PF_RULES}"))
         self.assertEqual(PLANNING_PF_RULES, studio("{ }", f"builtins.readFile {PLANNING_PF_RULES_FILE}"))
         self.assertEqual(PLANNING_SANDBOX_PF_RULES, studio("{ }", f"builtins.readFile {PLANNING_SANDBOX_PF_RULES_FILE}"))
+        # The live host SGG service's anchor is unchanged (durable-pi-workspace#555 changes nothing of it).
+        self.assertNotIn("8899", STUDIO_PF_RULES)
+        self.assertNotIn("8900", STUDIO_PF_RULES)
 
 
 class EnabledWithoutCommissioningInputs(unittest.TestCase):
@@ -1180,7 +1217,8 @@ class PlanningSandbox(unittest.TestCase):
         self.assertEqual([], off["failed"])
         self.assertEqual(sorted(set(on["agents"]) - {"pi-durable-planning-sandbox-proxy", NET_ANCHORS["pi-durable-planning-sandbox"]}),
                          sorted(off["agents"]))
-        self.assertEqual(["pi-durable-pf", "pi-durable-planning-pf"], [n for n in off["system"] if "pi-durable" in n])
+        self.assertEqual(["pi-durable-pf", "pi-durable-planning-pf", "pi-durable-sgg-sandbox-pf", "pi-durable-sgg-service-pf"],
+                         [n for n in off["system"] if "pi-durable" in n])
         self.assertNotIn(PLANNING_SANDBOX_PF_ANCHOR, off["activation"])
         self.assertNotIn("192.168.130", off["activation"])
         self.assertEqual(STUDIO_PF_RULES, studio(PLANNING_SANDBOX_OFF, f"builtins.readFile {PF_RULES}"))
@@ -1255,6 +1293,320 @@ class PlanningSandbox(unittest.TestCase):
             with self.subTest(port=port):
                 failed = next(results)
                 self.assertTrue(any("planningSandbox.sandboxProxy.port must differ" in m for m in failed), failed)
+
+
+SGG_SERVICE_PF_DAEMON = "config.launchd.daemons.pi-durable-sgg-service-pf.serviceConfig"
+SGG_SERVICE_PF_RULES_FILE = f'(builtins.head (builtins.filter (lib.hasSuffix "-pi-durable-sgg-service.pf") {SGG_SERVICE_PF_DAEMON}.ProgramArguments))'
+SGG_SANDBOX_PF_DAEMON = "config.launchd.daemons.pi-durable-sgg-sandbox-pf.serviceConfig"
+SGG_SANDBOX_PF_RULES_FILE = f'(builtins.head (builtins.filter (lib.hasSuffix "-pi-durable-sgg-sandbox.pf") {SGG_SANDBOX_PF_DAEMON}.ProgramArguments))'
+SGG_SANDBOX_PROXY = f"{AGENTS}.pi-durable-sgg-sandbox-proxy.serviceConfig"
+SGG_SANDBOX_REPLAY_PROXY = f"{AGENTS}.pi-durable-sgg-sandbox-replay-proxy.serviceConfig"
+SGG_SERVICE_OFF = "{ sggServiceNetwork.enable = lib.mkForce false; }"
+SGG_SANDBOX_OFF = "{ sggSandboxNetwork.enable = lib.mkForce false; }"
+# The application contract's allowlist for SGG's task VMs (`proxy.allowedDomains`' default).
+SGG_TASK_HOSTS = [
+    "github.com", "api.github.com", "codeload.github.com", "objects.githubusercontent.com",
+    "registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "raw.githubusercontent.com",
+    "results-receiver.actions.githubusercontent.com", "release-assets.githubusercontent.com",
+]
+READ_HOSTNAME = "github-read.sgg.internal"
+# Every pf anchor the module loads, with its rules file expression.
+ALL_PF_RULES = {PF_ANCHOR: PF_RULES, PLANNING_PF_ANCHOR: PLANNING_PF_RULES_FILE,
+                PLANNING_SANDBOX_PF_ANCHOR: PLANNING_SANDBOX_PF_RULES_FILE}
+
+
+def sgg_network(option, listen, clients, ipv6):
+    return (
+        f"{{ {option} = {{ listenAddress = lib.mkForce {listen}; "
+        f"allowedClients = lib.mkForce {clients}; ipv6Subnet = lib.mkForce {ipv6}; }}; }}"
+    )
+
+
+def sgg_service(listen='"192.168.131.1"', clients='[ "192.168.131.0/24" ]', ipv6='"fdea:1c81:a6f0:ec26::/64"'):
+    return sgg_network("sggServiceNetwork", listen, clients, ipv6)
+
+
+def sgg_sandbox(listen='"192.168.132.1"', clients='[ "192.168.132.0/24" ]', ipv6='"fd37:8205:5db:3582::/64"'):
+    return sgg_network("sggSandboxNetwork", listen, clients, ipv6)
+
+
+def moved_to(prefix, ipv6):
+    """A sandbox-network address case moved onto another network's addresses."""
+    return lambda value: value.replace("192.168.128", prefix).replace("fd85:1c07:74fb:2dc7", ipv6)
+
+
+class SggNetworksCommon:
+    """What both of SGG's new networks share: Studio's settings, the anchor's text, pfctl's parse, the loader, the refusals."""
+
+    OPTION = ANCHOR = RULES = RULES_FILE = DAEMON = TITLE = OFF = None
+    SUBNET = GATEWAY = IPV6 = NETWORK = None
+    PORTS = ()
+
+    def test_studio_names_the_network_the_orchestrator_created(self):
+        self.assertEqual(
+            {"enable": True, "network": self.NETWORK, "listenAddress": self.GATEWAY,
+             "allowedClients": [self.SUBNET], "ipv6Subnet": self.IPV6},
+            studio("{ }", f"{{ inherit (config.services.pi-durable.{self.OPTION}) enable network listenAddress allowedClients ipv6Subnet; }}"),
+        )
+
+    def test_anchor_is_exactly_its_passes_then_the_blocks(self):
+        rules = studio("{ }", f"builtins.readFile {self.RULES_FILE}")
+        self.assertEqual(self.RULES, rules)
+        # No other anchor mentions this network.
+        for anchor, other in ALL_PF_RULES.items():
+            with self.subTest(anchor):
+                self.assertNotIn(self.GATEWAY.rsplit(".", 1)[0] + ".", studio("{ }", f"builtins.readFile {other}"))
+
+    def test_this_macs_pfctl_parses_it_as_intended(self):
+        rules = nix(
+            "build", "--impure", "--no-link", "--print-out-paths", "--expr",
+            studio_expr("{ }", f'pkgs.writeText "{self.NETWORK}.pf" (builtins.readFile {self.RULES_FILE})'),
+        ).strip().splitlines()[-1]
+        parsed = subprocess.run(["/sbin/pfctl", "-nvf", rules], text=True, capture_output=True)
+        self.assertEqual(0, parsed.returncode, parsed.stderr)
+        lines = parsed.stdout.splitlines()
+        passes = [f"pass in quick inet proto tcp from {self.SUBNET} to {self.GATEWAY} port = {p} flags S/SA keep state" for p in self.PORTS]
+        blocking = f"block return in quick on ! lo0 inet from {self.SUBNET} to any"
+        link_local = {
+            f"block return in quick on {bridge} inet6 proto {proto} from fe80::/10 to any"
+            for bridge in BRIDGES for proto in ("tcp", "udp")
+        }
+        self.assertEqual(set(passes) | {blocking, f"block return in quick on ! lo0 inet6 from {self.IPV6} to any"} | link_local, set(lines))
+        self.assertEqual(len(lines), len(set(lines)))
+        for line in passes:
+            self.assertLess(lines.index(line), lines.index(blocking))
+
+    def test_activation_and_a_root_daemon_load_it_with_its_own_token(self):
+        daemon = studio("{ }", self.DAEMON)
+        sandbox = studio("{ }", PF_DAEMON)
+        args = daemon["ProgramArguments"]
+        self.assertEqual(sandbox["ProgramArguments"][:7], args[:7])
+        self.assertEqual(self.ANCHOR, args[7])
+        self.assertTrue(args[8].endswith(f"-{self.NETWORK}.pf"))
+        self.assertEqual(f"/var/run/{self.NETWORK}-pf.token", args[9])
+        self.assertEqual(10, len(args))
+        unshared = {"Label": None, "ProgramArguments": None, "StandardOutPath": None, "StandardErrorPath": None}
+        self.assertEqual({**sandbox, **unshared}, {**daemon, **unshared})
+        self.assertEqual(f"org.nixos.{self.NETWORK}-pf", daemon["Label"])
+        self.assertEqual(f"/var/log/{self.NETWORK}-pf.log", daemon["StandardOutPath"])
+        self.assertEqual(f"/var/log/{self.NETWORK}-pf.log", daemon["StandardErrorPath"])
+        activation = studio("{ }", "config.system.activationScripts.extraActivation.text")
+        self.assertIn(f"/sbin/pfctl {self.ANCHOR} ", activation)
+        self.assertIn(f"/var/run/{self.NETWORK}-pf.token", activation)
+        self.assertEqual(1, activation.count(f"# === pi-durable {self.TITLE} network isolation (pf) ==="))
+
+    def test_off_leaves_every_other_anchor_and_agent_as_it_was(self):
+        on, off = studio("{ }", SUMMARY), studio(self.OFF, SUMMARY)
+        self.assertEqual([], off["failed"])
+        self.assertEqual(sorted(set(on["agents"]) - set(self.AGENTS_ADDED) - {NET_ANCHORS[self.NETWORK]}), sorted(off["agents"]))
+        self.assertEqual(sorted(set(on["system"]) - {f"{self.NETWORK}-pf"}), sorted(off["system"]))
+        self.assertNotIn(self.ANCHOR, off["activation"])
+        self.assertNotIn(self.GATEWAY, off["activation"])
+        self.assertEqual(STUDIO_PF_RULES, studio(self.OFF, f"builtins.readFile {PF_RULES}"))
+        self.assertEqual(PLANNING_PF_RULES, studio(self.OFF, f"builtins.readFile {PLANNING_PF_RULES_FILE}"))
+        self.assertEqual(PLANNING_SANDBOX_PF_RULES, studio(self.OFF, f"builtins.readFile {PLANNING_SANDBOX_PF_RULES_FILE}"))
+
+    def test_addresses_take_the_sandbox_proxys_cases(self):
+        make, move = self.make, moved_to(self.GATEWAY.rsplit(".", 1)[0], self.IPV6.split("::")[0])
+        for field, accepted, refused in (
+            (f"{self.OPTION}.listenAddress", [make()], [make(listen=move(v)) for v in LISTEN_REFUSED]),
+            (f"{self.OPTION}.allowedClients", [make(clients=move(v)) for v in CLIENTS_ACCEPTED], [make(clients=move(v)) for v in CLIENTS_REFUSED]),
+            (f"{self.OPTION}.ipv6Subnet", [make(ipv6=move(v)) for v in IPV6_ACCEPTED], [make(ipv6=move(v)) for v in IPV6_REFUSED]),
+        ):
+            results = failures(*accepted, *refused)
+            for settings, failed in zip(accepted, results):
+                with self.subTest(accepted=settings):
+                    self.assertEqual([], failed)
+            for settings, failed in zip(refused, results[len(accepted):]):
+                with self.subTest(refused=settings):
+                    self.assertTrue(any(f"services.pi-durable.{field} must" in m for m in failed), failed)
+
+    def test_refuses_every_other_networks_addresses(self):
+        others = [("192.168.128", "fd85:1c07:74fb:2dc7"), ("192.168.129", "fdd2:4a0c:729f:fb6"),
+                  ("192.168.130", "fd17:b92:207f:9aa0"), self.OTHER_SGG]
+        cases = []
+        for prefix, ipv6 in others:
+            cases += [self.make(listen=f'"{prefix}.1"'), self.make(clients=f'[ "{self.SUBNET}" "{prefix}.0/24" ]'),
+                      self.make(ipv6=f'"{ipv6}::/64"')]
+        names = [f'{{ {self.OPTION}.network = lib.mkForce "{n}"; }}' for n in
+                 ("pi-durable-sgg", "pi-durable-planning", "pi-durable-planning-sandbox", self.OTHER_NETWORK)]
+        results = failures(*cases, *names)
+        for settings, failed in zip(cases, results):
+            with self.subTest(settings):
+                self.assertTrue(any(f"services.pi-durable.{self.OPTION}'s listenAddress, allowedClients and ipv6Subnet must never equal another VM network's" in m
+                                    for m in failed), failed)
+        for settings, failed in zip(names, results[len(cases):]):
+            with self.subTest(settings):
+                self.assertTrue(any("must differ from proxy.network and each other" in m for m in failed), failed)
+
+
+class SggServiceNetwork(SggNetworksCommon, unittest.TestCase):
+    """SGG's service network (durable-pi-workspace#555): its pf anchor and its anchor VM; no proxy of its own."""
+
+    OPTION, NETWORK, TITLE = "sggServiceNetwork", "pi-durable-sgg-service", "SGG service"
+    ANCHOR, RULES, RULES_FILE, DAEMON = SGG_SERVICE_PF_ANCHOR, SGG_SERVICE_PF_RULES, SGG_SERVICE_PF_RULES_FILE, SGG_SERVICE_PF_DAEMON
+    SUBNET, GATEWAY, IPV6 = "192.168.131.0/24", "192.168.131.1", "fdea:1c81:a6f0:ec26::/64"
+    PORTS = (8892, 8899, 8894, 8896, 8897, 8898)
+    OFF, AGENTS_ADDED = SGG_SERVICE_OFF, ()
+    OTHER_SGG, OTHER_NETWORK = ("192.168.132", "fd37:8205:5db:3582"), "pi-durable-sgg-sandbox"
+    make = staticmethod(sgg_service)
+
+    def test_passes_the_host_proxies_and_port_forwarders_and_never_a_sandbox_listener(self):
+        self.assertEqual([8896, 8897, 8898], studio("{ }", "config.services.pi-durable.sggServiceNetwork.portForwarderPorts"))
+        rules = studio("{ }", f"builtins.readFile {SGG_SERVICE_PF_RULES_FILE}")
+        # No sandbox proxy, replay proxy, push route, read listener or old planning VM supervisor.
+        for port in ("8888", "8889", "8893", "8900", "8895"):
+            self.assertNotIn(f"port {port} ", rules)
+
+    def test_ports_follow_the_options(self):
+        settings = ("{ modelProxy.port = lib.mkForce 9892; githubProxy.serviceListener.port = lib.mkForce 9899; "
+                    "forgeBroker.port = lib.mkForce 9894; sggServiceNetwork.portForwarderPorts = lib.mkForce [ 9901 9900 ]; }")
+        expected = SGG_SERVICE_PF_RULES
+        for old, new in (("8892", "9892"), ("8899", "9899"), ("8894", "9894"), ("8896", "9901"), ("8897", "9900")):
+            expected = expected.replace(f"port {old} ", f"port {new} ")
+        expected = expected.replace("pass in quick inet proto tcp from { 192.168.131.0/24 } to 192.168.131.1 port 8898 flags S/SA keep state\n", "")
+        self.assertEqual(expected, studio(settings, f"builtins.readFile {SGG_SERVICE_PF_RULES_FILE}"))
+
+    def test_refuses_without_its_host_proxies(self):
+        message = "services.pi-durable.sggServiceNetwork requires services.pi-durable.enable, modelProxy, githubProxy and forgeBroker"
+        results = failures(
+            "{ }",
+            "{ modelProxy.enable = lib.mkForce false; planning.modelProxy = lib.mkForce false; }",
+            "{ githubProxy.enable = lib.mkForce false; sggSandboxNetwork.enable = lib.mkForce false; }",
+            "{ forgeBroker.enable = lib.mkForce false; }",
+            "{ enable = lib.mkForce false; }",
+        )
+        self.assertEqual([], results[0])
+        for failed in results[1:]:
+            self.assertTrue(any(m.startswith(message) for m in failed), failed)
+
+    def test_refuses_a_port_listed_twice_or_a_listener_it_must_never_pass(self):
+        message = "services.pi-durable.sggServiceNetwork passes modelProxy.port, githubProxy.serviceListener.port, forgeBroker.port and portForwarderPorts, each once"
+        cases = [f"{{ sggServiceNetwork.portForwarderPorts = lib.mkForce [ 8896 {p} ]; }}" for p in (8896, 8892, 8899, 8894, 8888, 8889, 8893, 8900, 8895)]
+        cases += ["{ githubProxy.serviceListener.port = lib.mkForce 8900; }", "{ githubProxy.serviceListener.port = lib.mkForce 8893; }"]
+        for settings, failed in zip(cases, failures(*cases)):
+            with self.subTest(settings):
+                self.assertTrue(any(m.startswith(message) for m in failed), failed)
+
+
+class SggSandboxNetwork(SggNetworksCommon, unittest.TestCase):
+    """SGG's sandbox network (durable-pi-workspace#555): its pf anchor, its sandbox proxy with the read upstream, its replay proxy."""
+
+    OPTION, NETWORK, TITLE = "sggSandboxNetwork", "pi-durable-sgg-sandbox", "SGG sandbox"
+    ANCHOR, RULES, RULES_FILE, DAEMON = SGG_SANDBOX_PF_ANCHOR, SGG_SANDBOX_PF_RULES, SGG_SANDBOX_PF_RULES_FILE, SGG_SANDBOX_PF_DAEMON
+    SUBNET, GATEWAY, IPV6 = "192.168.132.0/24", "192.168.132.1", "fd37:8205:5db:3582::/64"
+    PORTS = (8888, 8889, 8894)
+    OFF, AGENTS_ADDED = SGG_SANDBOX_OFF, ("pi-durable-sgg-sandbox-proxy", "pi-durable-sgg-sandbox-replay-proxy")
+    OTHER_SGG, OTHER_NETWORK = ("192.168.131", "fdea:1c81:a6f0:ec26"), "pi-durable-sgg-service"
+    make = staticmethod(sgg_sandbox)
+
+    def test_never_the_read_listener_or_another_host_listener(self):
+        rules = studio("{ }", f"builtins.readFile {SGG_SANDBOX_PF_RULES_FILE}")
+        for port in ("8900", "8899", "8892", "8893", "8895", "8896", "8897", "8898"):
+            self.assertNotIn(f"port {port} ", rules)
+
+    def config(self, agent, settings="{ }"):
+        return studio(settings, f"builtins.readFile (builtins.elemAt {agent}.ProgramArguments 3)")
+
+    def hosts(self, filter_line):
+        path = filter_line.split('"')[1]
+        return path, studio("{ }", f'lib.splitString "\\n" (lib.removeSuffix "\\n" (builtins.readFile "{path}"))')
+
+    def assert_tinyproxy_agent(self, agent, name):
+        config = studio("{ }", agent)
+        sgg = studio("{ }", f"{AGENTS}.pi-durable-proxy.serviceConfig")
+        self.assertEqual(f"org.nixos.{name}", config["Label"])
+        self.assertEqual(sgg["ProgramArguments"][:3], config["ProgramArguments"][:3])
+        self.assertTrue(config["ProgramArguments"][3].endswith("-" + name.replace("-proxy", "-tinyproxy.conf")), config["ProgramArguments"][3])
+        self.assertEqual(4, len(config["ProgramArguments"]))
+        self.assertEqual(sgg.get("EnvironmentVariables"), config.get("EnvironmentVariables"))
+        self.assertIs(True, config["RunAtLoad"])
+        self.assertIs(True, config["KeepAlive"])
+        self.assertEqual(f"/tmp/{name}.log", config["StandardOutPath"])
+        self.assertEqual(f"/tmp/{name}.error.log", config["StandardErrorPath"])
+
+    def test_sandbox_proxy_has_todays_allowlist_and_the_read_hostnames_upstream(self):
+        self.assert_tinyproxy_agent(SGG_SANDBOX_PROXY, "pi-durable-sgg-sandbox-proxy")
+        directives = [line for line in self.config(SGG_SANDBOX_PROXY).splitlines() if line.strip()]
+        [filter_line] = [line for line in directives if line.startswith("Filter ")]
+        self.assertEqual(
+            ["Listen 192.168.132.1", "Port 8888", "Allow 192.168.132.0/24", "ConnectPort 443", "FilterType fnmatch",
+             "FilterDefaultDeny Yes", filter_line, f'Upstream http 192.168.132.1:8900 "{READ_HOSTNAME}"'],
+            directives,
+        )
+        path, hosts = self.hosts(filter_line)
+        self.assertTrue(path.endswith("-pi-durable-sgg-sandbox-proxy-allowlist"), path)
+        self.assertEqual(SGG_TASK_HOSTS + [READ_HOSTNAME], hosts)
+        # Today's allowlist is the sandbox proxy's, unchanged.
+        self.assertEqual(SGG_TASK_HOSTS, studio("{ }", "config.services.pi-durable.proxy.allowedDomains"))
+
+    def test_replay_proxy_has_the_package_hosts_alone(self):
+        self.assert_tinyproxy_agent(SGG_SANDBOX_REPLAY_PROXY, "pi-durable-sgg-sandbox-replay-proxy")
+        directives = [line for line in self.config(SGG_SANDBOX_REPLAY_PROXY).splitlines() if line.strip()]
+        [filter_line] = [line for line in directives if line.startswith("Filter ")]
+        self.assertEqual(
+            ["Listen 192.168.132.1", "Port 8889", "Allow 192.168.132.0/24", "ConnectPort 443", "FilterType fnmatch",
+             "FilterDefaultDeny Yes", filter_line],
+            directives,
+        )
+        path, hosts = self.hosts(filter_line)
+        self.assertTrue(path.endswith("-pi-durable-sgg-sandbox-replay-proxy-allowlist"), path)
+        self.assertEqual(PACKAGE_HOSTS, hosts)
+
+    def test_one_firewall_exception_for_the_shared_tinyproxy(self):
+        activation = studio("{ }", "config.system.activationScripts.extraActivation.text")
+        for agent in (SGG_SANDBOX_PROXY, SGG_SANDBOX_REPLAY_PROXY):
+            tinyproxy = studio("{ }", f"builtins.head {agent}.ProgramArguments")
+            self.assertEqual(1, activation.count(f"socketfilterfw --add {tinyproxy} "))
+
+    def test_ports_and_the_upstream_follow_the_options(self):
+        settings = ("{ forgeBroker.port = lib.mkForce 9894; sggSandboxNetwork.sandboxProxy.port = lib.mkForce 9888; "
+                    "sggSandboxNetwork.replayProxy.port = lib.mkForce 9889; githubProxy.readListener.port = lib.mkForce 9900; "
+                    'sggSandboxNetwork.sandboxProxy.readHostname = lib.mkForce "read.example.internal"; }')
+        expected = SGG_SANDBOX_PF_RULES
+        for old, new in (("8888", "9888"), ("8889", "9889"), ("8894", "9894")):
+            expected = expected.replace(f"port {old} ", f"port {new} ")
+        self.assertEqual(expected, studio(settings, f"builtins.readFile {SGG_SANDBOX_PF_RULES_FILE}"))
+        config = self.config(SGG_SANDBOX_PROXY, settings)
+        self.assertIn("Port 9888\n", config)
+        self.assertIn('Upstream http 192.168.132.1:9900 "read.example.internal"\n', config)
+        self.assertIn("Port 9889\n", self.config(SGG_SANDBOX_REPLAY_PROXY, settings))
+
+    def test_refuses_without_the_github_or_forgejo_proxy(self):
+        message = "services.pi-durable.sggSandboxNetwork requires services.pi-durable.enable, githubProxy and forgeBroker"
+        results = failures(
+            "{ }",
+            "{ githubProxy.enable = lib.mkForce false; sggServiceNetwork.enable = lib.mkForce false; }",
+            "{ forgeBroker.enable = lib.mkForce false; }",
+            "{ enable = lib.mkForce false; }",
+        )
+        self.assertEqual([], results[0])
+        for failed in results[1:]:
+            self.assertTrue(any(m.startswith(message) for m in failed), failed)
+
+    def test_refuses_inexact_names_github_in_the_replay_proxy_and_ports_it_must_never_pass(self):
+        cases = {
+            "exact lowercase hostnames, no wildcards": [
+                '{ sggSandboxNetwork.sandboxProxy.allowedDomains = lib.mkForce [ "*.github.com" ]; }',
+                '{ sggSandboxNetwork.sandboxProxy.allowedDomains = lib.mkForce [ "GitHub.com" ]; }',
+                '{ sggSandboxNetwork.sandboxProxy.readHostname = lib.mkForce "read host"; }',
+                '{ sggSandboxNetwork.replayProxy.allowedDomains = lib.mkForce [ "*.npmjs.org" ]; }',
+            ],
+            "readHostname must not be a GitHub host": [
+                '{ sggSandboxNetwork.sandboxProxy.readHostname = lib.mkForce "api.github.com"; }',
+            ],
+            "replayProxy.allowedDomains must hold no GitHub host": [
+                f'{{ sggSandboxNetwork.replayProxy.allowedDomains = lib.mkForce [ "registry.npmjs.org" "{d}" ]; }}'
+                for d in ("github.com", "api.github.com", "raw.githubusercontent.com", READ_HOSTNAME)
+            ],
+            "must differ from each other and from modelProxy.port": [
+                f"{{ sggSandboxNetwork.sandboxProxy.port = lib.mkForce {p}; }}" for p in (8889, 8894, 8892, 8893, 8899, 8900, 8895, 8896, 8897, 8898)
+            ] + ["{ sggSandboxNetwork.replayProxy.port = lib.mkForce 8900; }", "{ githubProxy.readListener.port = lib.mkForce 8889; }"],
+        }
+        flat = [(words, settings) for words, settings_list in cases.items() for settings in settings_list]
+        for (words, settings), failed in zip(flat, failures(*(s for _, s in flat))):
+            with self.subTest(settings):
+                self.assertTrue(any(words in m for m in failed), failed)
 
 
 class PlanningLauncher(unittest.TestCase):
@@ -1647,18 +1999,121 @@ class PlanningSandboxProxyAllowlist(unittest.TestCase):
         self.assertNotEqual(403, self.status("CONNECT localhost:443 HTTP/1.0\r\n\r\n"))
 
 
+class SggSandboxProxyUpstream(unittest.TestCase):
+    """SGG's sandbox proxy, built as Studio's and run by the pinned tinyproxy on loopback, with a stand-in read listener.
+
+    Proves what tinyproxy does with the read hostname: it passes the filter
+    without any DNS entry (the name resolves nowhere), and `CONNECT
+    <hostname>:443` reaches the upstream unchanged, as the read listener
+    expects; other allowed hosts are not sent there, and refused hosts are
+    refused before any upstream.
+    """
+
+    status = ProxyAllowlist.status
+
+    def setUp(self):
+        self.seen = []
+        upstream = socket.socket()
+        upstream.bind(("127.0.0.1", 0))
+        upstream.listen(8)
+        self.addCleanup(upstream.close)
+        self.upstream_port = upstream.getsockname()[1]
+
+        def serve():
+            while True:
+                try:
+                    conn, _ = upstream.accept()
+                except OSError:
+                    return
+                with conn:
+                    data = b""
+                    while b"\r\n\r\n" not in data:
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            break
+                        data += chunk
+                    self.seen.append(data.split(b"\r\n", 1)[0].decode())
+                    conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+
+        threading.Thread(target=serve, daemon=True).start()
+        self.port = free_port()
+        settings = (
+            '{ sggSandboxNetwork = { listenAddress = lib.mkForce "127.0.0.1"; allowedClients = lib.mkForce [ "127.0.0.1" ]; '
+            'sandboxProxy = { port = lib.mkForce %d; allowedDomains = lib.mkForce [ "localhost" ]; }; }; '
+            "githubProxy.readListener.port = lib.mkForce %d; }" % (self.port, self.upstream_port)
+        )
+        built = nix(
+            "build", "--impure", "--no-link", "--print-out-paths", "--expr",
+            studio_expr(settings, f'pkgs.writeText "proxy-args" (builtins.toJSON {SGG_SANDBOX_PROXY}.ProgramArguments)'),
+        ).strip().splitlines()[-1]
+        args = json.loads(Path(built).read_text())
+        self.assertIn(f'Upstream http 127.0.0.1:{self.upstream_port} "{READ_HOSTNAME}"', Path(args[3]).read_text())
+        self.proxy = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(self.proxy.wait)
+        self.addCleanup(self.proxy.terminate)
+        for _ in range(50):
+            try:
+                socket.create_connection(("127.0.0.1", self.port), timeout=0.2).close()
+                return
+            except OSError:
+                time.sleep(0.1)
+        self.fail(f"tinyproxy did not listen on {self.port} (exit {self.proxy.poll()})")
+
+    def test_the_read_hostname_needs_no_dns_and_reaches_the_upstream_as_connect_host_443(self):
+        with self.assertRaises(socket.gaierror):
+            socket.getaddrinfo(READ_HOSTNAME, 443)
+        self.assertEqual(200, self.status(f"CONNECT {READ_HOSTNAME}:443 HTTP/1.1\r\nHost: {READ_HOSTNAME}:443\r\n\r\n"))
+        self.assertEqual([f"CONNECT {READ_HOSTNAME}:443 HTTP/1.1"], self.seen)
+
+    def test_other_hosts_never_reach_the_upstream(self):
+        for host in ("github-read.sgg.internal.evil.example", "x.github-read.sgg.internal", "example.com"):
+            with self.subTest(host=host):
+                self.assertEqual(403, self.status(f"CONNECT {host}:443 HTTP/1.0\r\n\r\n"))
+        self.assertEqual(403, self.status(f"CONNECT {READ_HOSTNAME}:22 HTTP/1.0\r\n\r\n"))
+        # An allowed host without an upstream is fetched directly: nothing listens on localhost:443, so not 200, not 403.
+        self.assertNotIn(self.status("CONNECT localhost:443 HTTP/1.0\r\n\r\n"), (200, 403))
+        self.assertEqual([], self.seen)
+
+
+class SggSandboxReplayProxyAllowlist(unittest.TestCase):
+    """SGG's sandbox network's replay proxy, run by the pinned tinyproxy on loopback: GitHub and the read hostname refused."""
+
+    setUp = ProxyAllowlist.setUp
+    status = ProxyAllowlist.status
+
+    def proxy_settings(self):
+        return (
+            '{ sggSandboxNetwork = { listenAddress = lib.mkForce "127.0.0.1"; allowedClients = lib.mkForce [ "127.0.0.1" ]; '
+            'replayProxy = { port = lib.mkForce %d; allowedDomains = lib.mkForce [ "localhost" "registry.npmjs.org" ]; }; }; }' % self.port
+        ), f"{SGG_SANDBOX_REPLAY_PROXY}.ProgramArguments"
+
+    def test_allowlisted_host_is_proxied(self):
+        port = self.upstream.server_address[1]
+        self.assertEqual(200, self.status(f"GET http://localhost:{port}/ HTTP/1.0\r\nHost: localhost:{port}\r\n\r\n"))
+
+    def test_github_and_the_read_hostname_are_refused(self):
+        for host in ("github.com", "api.github.com", "codeload.github.com", READ_HOSTNAME, "example.com"):
+            with self.subTest(host=host):
+                self.assertEqual(403, self.status(f"CONNECT {host}:443 HTTP/1.0\r\n\r\n"))
+
+
 NET_ANCHOR_SCRIPT = REPO / "modules" / "services" / "pi-durable-net-anchor.sh"
 NET_ANCHOR_IMAGE = "pi-durable-planning-agent:30bade4"
 NET_ANCHOR_METRICS = f"{HOME}/.local/state/pi-durable-net-anchors/metrics"
 NET_ANCHORS = {"pi-durable-sgg": "pi-durable-net-anchor-pi-durable-sgg",
                "pi-durable-planning": "pi-durable-net-anchor-pi-durable-planning",
-               "pi-durable-planning-sandbox": "pi-durable-net-anchor-pi-durable-planning-sandbox"}
+               "pi-durable-planning-sandbox": "pi-durable-net-anchor-pi-durable-planning-sandbox",
+               "pi-durable-sgg-service": "pi-durable-net-anchor-pi-durable-sgg-service",
+               "pi-durable-sgg-sandbox": "pi-durable-net-anchor-pi-durable-sgg-sandbox"}
 NET_ANCHOR_ALERTS = {"PiDurableNetAnchorRestarted": "warning", "PiDurableNetAnchorDown": "critical",
                      "PiDurableNetAnchorGatewayMissing": "critical"}
 # Each network's own gateway, then the gateways of the networks before it (the
-# sandbox's first, then the planning network's, then planning's sandbox network's).
+# sandbox's first, then the planning network's, planning's sandbox network's,
+# SGG's service network's and SGG's sandbox network's: the order they were made).
 NET_ANCHOR_GATEWAYS = {"pi-durable-sgg": ["192.168.128.1"], "pi-durable-planning": ["192.168.129.1", "192.168.128.1"],
-                       "pi-durable-planning-sandbox": ["192.168.130.1", "192.168.128.1", "192.168.129.1"]}
+                       "pi-durable-planning-sandbox": ["192.168.130.1", "192.168.128.1", "192.168.129.1"],
+                       "pi-durable-sgg-service": ["192.168.131.1", "192.168.128.1", "192.168.129.1", "192.168.130.1"],
+                       "pi-durable-sgg-sandbox": ["192.168.132.1", "192.168.128.1", "192.168.129.1", "192.168.130.1", "192.168.131.1"]}
 
 
 class NetAnchors(unittest.TestCase):
@@ -1710,10 +2165,17 @@ class NetAnchors(unittest.TestCase):
         for name, settings, expected in (
             ("planning off", f"{{ {NO_PLANNING} planning.network = lib.mkForce null; }}", ["pi-durable-sgg"]),
             ("planning off, its networks still named", f"{{ {NO_PLANNING} }}", ["pi-durable-sgg"]),
-            ("planning's sandbox network off", "{ planningSandbox.enable = lib.mkForce false; }", ["pi-durable-sgg", "pi-durable-planning"]),
-            ("no networks named", "{ proxy.network = lib.mkForce null; planning.network = lib.mkForce null; planningSandbox.network = lib.mkForce null; }", []),
+            ("planning's sandbox network off", "{ planningSandbox.enable = lib.mkForce false; }",
+             ["pi-durable-sgg", "pi-durable-planning", "pi-durable-sgg-service", "pi-durable-sgg-sandbox"]),
+            ("SGG's service network off", "{ sggServiceNetwork.enable = lib.mkForce false; }",
+             ["pi-durable-sgg", "pi-durable-planning", "pi-durable-planning-sandbox", "pi-durable-sgg-sandbox"]),
+            ("SGG's sandbox network off", "{ sggSandboxNetwork.enable = lib.mkForce false; }",
+             ["pi-durable-sgg", "pi-durable-planning", "pi-durable-planning-sandbox", "pi-durable-sgg-service"]),
+            ("no networks named", "{ proxy.network = lib.mkForce null; planning.network = lib.mkForce null; planningSandbox.network = lib.mkForce null; "
+             "sggServiceNetwork.network = lib.mkForce null; sggSandboxNetwork.network = lib.mkForce null; }", []),
             ("disabled", "{ enable = lib.mkForce false; }", []),
-            ("sandbox network only unnamed", "{ proxy.network = lib.mkForce null; }", ["pi-durable-planning", "pi-durable-planning-sandbox"]),
+            ("sandbox network only unnamed", "{ proxy.network = lib.mkForce null; }",
+             ["pi-durable-planning", "pi-durable-planning-sandbox", "pi-durable-sgg-service", "pi-durable-sgg-sandbox"]),
         ):
             with self.subTest(name):
                 s = studio(settings, SUMMARY)
@@ -1834,6 +2296,8 @@ class NetAnchorAlerts(unittest.TestCase):
         self.assertIn('absent(pi_durable_net_anchor_up{network="pi-durable-sgg"})', by_name["PiDurableNetAnchorDown"]["expr"])
         self.assertIn('absent(pi_durable_net_anchor_up{network="pi-durable-planning"})', by_name["PiDurableNetAnchorDown"]["expr"])
         self.assertIn('absent(pi_durable_net_anchor_up{network="pi-durable-planning-sandbox"})', by_name["PiDurableNetAnchorDown"]["expr"])
+        self.assertIn('absent(pi_durable_net_anchor_up{network="pi-durable-sgg-service"})', by_name["PiDurableNetAnchorDown"]["expr"])
+        self.assertIn('absent(pi_durable_net_anchor_up{network="pi-durable-sgg-sandbox"})', by_name["PiDurableNetAnchorDown"]["expr"])
         self.assertIn("(time() - pi_durable_net_anchor_last_check_timestamp_seconds) > 300", by_name["PiDurableNetAnchorDown"]["expr"])
         self.assertEqual("pi_durable_net_anchor_up == 1 and pi_durable_net_anchor_gateway_present == 0",
                          by_name["PiDurableNetAnchorGatewayMissing"]["expr"])

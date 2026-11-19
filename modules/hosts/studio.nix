@@ -384,6 +384,40 @@
         allowedClients = [ "192.168.130.0/24" ];
         ipv6Subnet = "fd17:b92:207f:9aa0::/64";
       };
+      # SGG's service network (durable-pi-workspace#555): `container network
+      # create --internal --subnet 192.168.131.0/24 pi-durable-sgg-service`
+      # (made 2026-11-19, no VM on it), for SGG's service VM `pi-sgg-vm`. Its
+      # anchor VM comes fourth. pf passes it to the model proxy (8892), the
+      # GitHub proxy's service listener (8899), the Forgejo proxy (8894) and the
+      # SSH port forwarders for SGG's sandbox VMs (8896 pi-sgg-work, 8897
+      # pi-sgg-judge, 8898 pi-sgg-replay for its window), and nothing else.
+      # Each host proxy binds 192.168.131.1 once its config's `listen` names
+      # it. The existing `pi-durable-sgg` network is the host SGG service's
+      # and stays as it is until the cut-over.
+      sggServiceNetwork = {
+        enable = true;
+        network = "pi-durable-sgg-service";
+        listenAddress = "192.168.131.1";
+        allowedClients = [ "192.168.131.0/24" ];
+        ipv6Subnet = "fdea:1c81:a6f0:ec26::/64";
+        portForwarderPorts = [ 8896 8897 8898 ];
+      };
+      # SGG's sandbox network (durable-pi-workspace#555): `container network
+      # create --internal --subnet 192.168.132.0/24 pi-durable-sgg-sandbox`
+      # (made 2026-11-19, no VM on it), for pi-sgg-work, pi-sgg-judge and
+      # pi-sgg-replay. Its anchor VM comes fifth. Its sandbox proxy
+      # (192.168.132.1:8888) has today's allowlist and forwards
+      # github-read.sgg.internal to the GitHub proxy's read listener
+      # (192.168.132.1:8900); its replay proxy (8889) has the package hosts
+      # alone. pf passes it to those two and the Forgejo proxy (8894), never
+      # the read listener.
+      sggSandboxNetwork = {
+        enable = true;
+        network = "pi-durable-sgg-sandbox";
+        listenAddress = "192.168.132.1";
+        allowedClients = [ "192.168.132.0/24" ];
+        ipv6Subnet = "fd37:8205:5db:3582::/64";
+      };
       # The workspace supervisor (durable-pi-workspace#443; the proxies
       # runbook §11): starts the sampler's VM from its definition and relays
       # its page. It exits 1 until ~/.config/pi-durable/supervisor.json exists;

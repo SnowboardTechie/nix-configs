@@ -177,6 +177,24 @@
         domain == "github.com"
         || lib.hasSuffix ".github.com" domain
         || lib.hasSuffix "githubusercontent.com" domain;
+      # The application contract's allowlist for SGG's task VMs: the default of
+      # the sandbox proxy (`proxy.allowedDomains`) and of SGG's sandbox
+      # network's sandbox proxy. The last three (durable-pi-workspace#174) are
+      # read-only GitHub content hosts: raw files, Actions logs behind `gh run
+      # view --log`, and release downloads. The live sandbox gate re-attests
+      # the list after any change.
+      sggAllowedDomains = [
+        "github.com"
+        "api.github.com"
+        "codeload.github.com"
+        "objects.githubusercontent.com"
+        "registry.npmjs.org"
+        "pypi.org"
+        "files.pythonhosted.org"
+        "raw.githubusercontent.com"
+        "results-receiver.actions.githubusercontent.com"
+        "release-assets.githubusercontent.com"
+      ];
 
       # Planning's sandbox proxy (durable-pi-workspace#535): the sandbox
       # proxy's shape on planning's sandbox network's gateway, with its own
@@ -190,6 +208,42 @@
         FilterType fnmatch
         FilterDefaultDeny Yes
         Filter "${pkgs.writeText "pi-durable-planning-sandbox-proxy-allowlist" (lib.concatLines cfg.planningSandbox.sandboxProxy.allowedDomains)}"
+      '';
+
+      # SGG's sandbox network (durable-pi-workspace#555): its sandbox proxy,
+      # the sandbox proxy's shape on that network's gateway with today's
+      # allowlist for SGG's task VMs, plus one hostname, the GitHub proxy's
+      # read hostname, sent to the read listener on the same gateway as an
+      # HTTP upstream. tinyproxy 1.11.3 (reqs.c) filters the request's host
+      # name as a string (fnmatch, no lookup) before it picks an upstream, so
+      # the hostname must be on the allowlist; with an upstream it opens a
+      # socket to the upstream's address alone and never resolves the
+      # hostname, so no DNS entry is needed; and it sends `CONNECT
+      # <hostname>:443` to the upstream unchanged, which the read listener
+      # expects. The upstream is matched by exact name (hostspec.c's
+      # string_match: no leading dot, so no subdomain), and no other host has
+      # one, so every other allowed host is fetched directly as today.
+      sggSandboxProxyConfig = pkgs.writeText "pi-durable-sgg-sandbox-tinyproxy.conf" ''
+        Listen ${toString cfg.sggSandboxNetwork.listenAddress}
+        Port ${toString cfg.sggSandboxNetwork.sandboxProxy.port}
+        ${lib.concatMapStrings (client: "Allow ${client}\n") cfg.sggSandboxNetwork.allowedClients}
+        ConnectPort 443
+        FilterType fnmatch
+        FilterDefaultDeny Yes
+        Filter "${pkgs.writeText "pi-durable-sgg-sandbox-proxy-allowlist" (lib.concatLines sggSandboxAllowlist)}"
+        Upstream http ${toString cfg.sggSandboxNetwork.listenAddress}:${toString cfg.githubProxy.readListener.port} "${cfg.sggSandboxNetwork.sandboxProxy.readHostname}"
+      '';
+      sggSandboxAllowlist = lib.unique (cfg.sggSandboxNetwork.sandboxProxy.allowedDomains ++ [ cfg.sggSandboxNetwork.sandboxProxy.readHostname ]);
+      # Its replay proxy, for `pi-sgg-replay`: the replay proxy's shape on the
+      # same gateway, package hosts only, never GitHub or the read hostname.
+      sggSandboxReplayProxyConfig = pkgs.writeText "pi-durable-sgg-sandbox-replay-tinyproxy.conf" ''
+        Listen ${toString cfg.sggSandboxNetwork.listenAddress}
+        Port ${toString cfg.sggSandboxNetwork.replayProxy.port}
+        ${lib.concatMapStrings (client: "Allow ${client}\n") cfg.sggSandboxNetwork.allowedClients}
+        ConnectPort 443
+        FilterType fnmatch
+        FilterDefaultDeny Yes
+        Filter "${pkgs.writeText "pi-durable-sgg-sandbox-replay-proxy-allowlist" (lib.concatLines cfg.sggSandboxNetwork.replayProxy.allowedDomains)}"
       '';
 
       # The sandbox network reaches tinyproxy on its gateway and nothing else:
@@ -275,6 +329,47 @@
       });
       planningSandboxPfLoader = [ "${pkgs.bash}/bin/bash" "${./pi-durable-pf.sh}" "/sbin/pfctl" planningSandboxPfAnchor "${planningSandboxPfRules}" "/var/run/pi-durable-planning-sandbox-pf.token" ];
 
+      # SGG's service network (durable-pi-workspace#555), a fourth anchor: its
+      # service VM reaches the model proxy, the GitHub proxy's service
+      # listener, the Forgejo proxy and the SSH port forwarders for SGG's
+      # sandbox VMs on its gateway, and nothing else. No sandbox proxy: a
+      # service VM reaches nothing outside the host proxies.
+      sggServicePfAnchor = "com.apple/103.pi-durable-sgg-service";
+      sggServicePorts = [ cfg.modelProxy.port cfg.githubProxy.serviceListener.port cfg.forgeBroker.port ]
+        ++ cfg.sggServiceNetwork.portForwarderPorts;
+      sggServicePfRules = pkgs.writeText "pi-durable-sgg-service.pf" (confinement {
+        title = "Pi Durable SGG service network isolation";
+        clients = cfg.sggServiceNetwork.allowedClients;
+        address = cfg.sggServiceNetwork.listenAddress;
+        ports = sggServicePorts;
+        inherit (cfg.sggServiceNetwork) ipv6Subnet;
+      });
+      sggServicePfLoader = [ "${pkgs.bash}/bin/bash" "${./pi-durable-pf.sh}" "/sbin/pfctl" sggServicePfAnchor "${sggServicePfRules}" "/var/run/pi-durable-sgg-service-pf.token" ];
+
+      # SGG's sandbox network (durable-pi-workspace#555), a fifth anchor: its
+      # sandbox VMs reach their sandbox proxy, the replay proxy (for
+      # `pi-sgg-replay`) and the Forgejo proxy on their gateway, and nothing
+      # else. Never the GitHub proxy's read listener: only the sandbox proxy,
+      # on the host, connects to it (from the gateway address over lo0, which
+      # no anchor filters), so a sandbox VM reaches the read route only
+      # through the sandbox proxy's upstream. Never the model proxy, the push
+      # route, the service listener or a port forwarder: assertions refuse
+      # them. The SSH port forwarders' connections to a sandbox VM's port 22
+      # go out from this host, which no anchor's `in` rules match.
+      sggSandboxPfAnchor = "com.apple/104.pi-durable-sgg-sandbox";
+      sggSandboxPorts = [ cfg.sggSandboxNetwork.sandboxProxy.port cfg.sggSandboxNetwork.replayProxy.port cfg.forgeBroker.port ];
+      sggSandboxPfRules = pkgs.writeText "pi-durable-sgg-sandbox.pf" (confinement {
+        title = "Pi Durable SGG sandbox network isolation";
+        clients = cfg.sggSandboxNetwork.allowedClients;
+        address = cfg.sggSandboxNetwork.listenAddress;
+        ports = sggSandboxPorts;
+        inherit (cfg.sggSandboxNetwork) ipv6Subnet;
+      });
+      sggSandboxPfLoader = [ "${pkgs.bash}/bin/bash" "${./pi-durable-pf.sh}" "/sbin/pfctl" sggSandboxPfAnchor "${sggSandboxPfRules}" "/var/run/pi-durable-sgg-sandbox-pf.token" ];
+      # Ports SGG's sandbox network must never reach on its gateway.
+      sggSandboxNever = [ cfg.modelProxy.port cfg.githubProxy.port cfg.githubProxy.serviceListener.port cfg.githubProxy.readListener.port cfg.vmBroker.port ]
+        ++ cfg.sggServiceNetwork.portForwarderPorts;
+
       # pf rules do not survive a restart, and nix-darwin does not re-run
       # activation at boot. Retried until the anchor is loaded and checked.
       pfBootDaemon = loader: log: {
@@ -303,8 +398,9 @@
 
       # The VM networks' anchors (durable-pi-workspace#418): one per network
       # that is named, the sandbox's with the sandbox proxy, the planning
-      # service network's with `planning` and planning's sandbox network's
-      # with `planningSandbox`. Each keeps an idle, detached VM
+      # service network's with `planning`, planning's sandbox network's
+      # with `planningSandbox`, and SGG's service and sandbox networks' with
+      # `sggServiceNetwork` and `sggSandboxNetwork`. Each keeps an idle, detached VM
       # attached, so the network's vmnet bridge (and gateway) stays up from
       # before anything else uses it and its unit is never given to another
       # network. The agent only starts the VM when it isn't running and
@@ -313,13 +409,18 @@
         { on = cfg.enable; inherit (cfg.proxy) network listenAddress; }
         { on = cfg.enable && cfg.planning.enable; inherit (cfg.planning) network listenAddress; }
         { on = cfg.enable && cfg.planningSandbox.enable; inherit (cfg.planningSandbox) network listenAddress; }
+        { on = cfg.enable && cfg.sggServiceNetwork.enable; inherit (cfg.sggServiceNetwork) network listenAddress; }
+        { on = cfg.enable && cfg.sggSandboxNetwork.enable; inherit (cfg.sggSandboxNetwork) network listenAddress; }
       ];
       netAnchorNetworks = map (n: n.network) anchored;
       netAnchorGateways = map (n: n.listenAddress) anchored;
       netAnchorAgent = network: "pi-durable-net-anchor-${network}";
       # Each network with its gateway and the gateways of the networks whose
       # anchors come before it, in this fixed order: the sandbox's, the
-      # planning network's, then planning's sandbox network's. An anchor that
+      # planning network's, planning's sandbox network's, SGG's service
+      # network's, then SGG's sandbox network's (the order the networks were
+      # made in, so a running Studio's existing anchors keep their arguments
+      # and the new ones come after them). An anchor that
       # has to start a VM waits for every earlier gateway first, so two
       # networks' first attaches never happen at the same moment (never
       # probed; at boot every agent would otherwise start together).
@@ -637,23 +738,9 @@
           };
           allowedDomains = lib.mkOption {
             type = lib.types.listOf lib.types.str;
-            # The application contract's allowlist. The last three
-            # (durable-pi-workspace#174) are read-only GitHub content hosts:
-            # raw files, Actions logs behind `gh run view --log`, and release
-            # downloads. The live sandbox gate re-attests the list after any
-            # change.
-            default = [
-              "github.com"
-              "api.github.com"
-              "codeload.github.com"
-              "objects.githubusercontent.com"
-              "registry.npmjs.org"
-              "pypi.org"
-              "files.pythonhosted.org"
-              "raw.githubusercontent.com"
-              "results-receiver.actions.githubusercontent.com"
-              "release-assets.githubusercontent.com"
-            ];
+            # The application contract's allowlist (`sggAllowedDomains`,
+            # above; SGG's sandbox network's sandbox proxy takes it too).
+            default = sggAllowedDomains;
             description = "Exact lowercase hostnames the VM may reach through the proxy; every other destination is refused.";
           };
         };
@@ -701,6 +788,28 @@
               in github-proxy.json (the application's
               workspaces/proxies/OPERATIONS.md §7). Without that `push` block
               the proxy opens no port, and pf passing it reaches nothing.
+            '';
+          };
+          serviceListener.port = lib.mkOption {
+            type = lib.types.port;
+            default = 8899;
+            description = ''
+              Port of the GitHub proxy's service listener (the grant, API and
+              read routes, durable-pi-workspace#555) on SGG's service network's
+              gateway, which only that network's pf anchor passes. Must equal
+              `service.listen.port` in github-proxy.json (its default, 8899).
+              Without that `service` block the proxy opens no such port.
+            '';
+          };
+          readListener.port = lib.mkOption {
+            type = lib.types.port;
+            default = 8900;
+            description = ''
+              Port of the GitHub proxy's read listener on SGG's sandbox
+              network's gateway, the upstream SGG's sandbox proxy forwards the
+              read hostname to. No pf anchor passes it: only the sandbox proxy,
+              on this host, connects. Must equal `service.read.tls.listen.port`
+              in github-proxy.json (its default, 8900).
             '';
           };
         };
@@ -950,6 +1059,174 @@
                 "files.pythonhosted.org"
               ];
               description = "Exact lowercase hostnames planning's sandbox VMs may reach through their sandbox proxy, never a GitHub host; every other destination is refused.";
+            };
+          };
+        };
+
+        sggServiceNetwork = {
+          enable = lib.mkEnableOption ''
+            SGG's service network (durable-pi-workspace#555): an internal VM
+            network of its own for SGG's service VM, apart from the sandbox
+            network the host SGG service's task VMs use. Adds its anchor VM
+            (with `network`) and a pf anchor that passes its clients to the
+            model proxy, the GitHub proxy's service listener, the Forgejo proxy
+            and `portForwarderPorts` on its gateway and refuses them everything
+            else. No sandbox proxy: a service VM reaches nothing outside the
+            host proxies. Requires `enable`, `modelProxy`, `githubProxy` and
+            `forgeBroker`; each binds this gateway only once its config's
+            `listen` names it'';
+          network = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            example = "pi-durable-sgg-service";
+            description = ''
+              Name of SGG's service network, whose gateway is
+              `listenAddress`. Set: an agent keeps an idle, detached anchor VM
+              (`net-anchor-<network>`, `netAnchor.image`) attached to it, after
+              the earlier networks' anchors, only with `enable`. Null: no
+              agent; a running VM is left running.
+            '';
+          };
+          listenAddress = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = ''
+              Gateway IPv4 address of SGG's service network (`container network
+              create --internal`), where the host proxies and the SSH port
+              forwarders listen for the service VM. Required with `enable`;
+              never another network's.
+            '';
+          };
+          allowedClients = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            description = ''
+              Addresses or CIDR ranges of SGG's service network: its subnet.
+              pf passes them to the listed ports and refuses them everything
+              else.
+            '';
+          };
+          ipv6Subnet = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = ''
+              The network's IPv6 prefix (`container network inspect`:
+              `ipv6Subnet`); pf refuses it everything. Required with `enable`.
+            '';
+          };
+          portForwarderPorts = lib.mkOption {
+            type = lib.types.listOf lib.types.port;
+            default = [ ];
+            example = [ 8896 8897 8898 ];
+            description = ''
+              Ports on SGG's service network's gateway where the SSH port
+              forwarders for SGG's sandbox VMs listen for the service VM, one
+              per sandbox VM. The anchor passes each after the host proxies'.
+              Never passed by SGG's sandbox network's anchor. Nothing listens
+              there from this module.
+            '';
+          };
+        };
+
+        sggSandboxNetwork = {
+          enable = lib.mkEnableOption ''
+            SGG's sandbox network (durable-pi-workspace#555): an internal VM
+            network of its own for SGG's sandbox VMs, apart from the sandbox
+            network the host SGG service's task VMs use. Adds its anchor VM
+            (with `network`), its sandbox proxy and a replay proxy on its
+            gateway, and a pf anchor that passes its clients to those two and
+            the Forgejo proxy (`forgeBroker.port`) and refuses them everything
+            else, the GitHub proxy's read listener included (only the sandbox
+            proxy reaches it, as its upstream). Requires `enable`,
+            `githubProxy` and `forgeBroker`'';
+          network = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            example = "pi-durable-sgg-sandbox";
+            description = ''
+              Name of SGG's sandbox network, whose gateway is `listenAddress`.
+              Set: an agent keeps an idle, detached anchor VM
+              (`net-anchor-<network>`, `netAnchor.image`) attached to it, last
+              of the anchors, only with `enable`. Null: no agent; a running VM
+              is left running.
+            '';
+          };
+          listenAddress = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = ''
+              Gateway IPv4 address of SGG's sandbox network (`container network
+              create --internal`), where its sandbox proxy, its replay proxy,
+              the Forgejo proxy and the GitHub proxy's read listener listen.
+              Required with `enable`; never another network's.
+            '';
+          };
+          allowedClients = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            description = ''
+              Addresses or CIDR ranges of SGG's sandbox network: its subnet.
+              Both proxies take them as clients; pf passes them to the passed
+              ports and refuses them everything else.
+            '';
+          };
+          ipv6Subnet = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = ''
+              The network's IPv6 prefix (`container network inspect`:
+              `ipv6Subnet`); pf refuses it everything. Required with `enable`.
+            '';
+          };
+          sandboxProxy = {
+            port = lib.mkOption {
+              type = lib.types.port;
+              default = 8888;
+              description = ''
+                Port of SGG's sandbox proxy (tinyproxy) on `listenAddress`; a
+                sandbox VM's proxy is http://<listenAddress>:<port>. The same
+                number as the other sandbox proxies, on another address.
+              '';
+            };
+            allowedDomains = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              # Today's allowlist for SGG's task VMs (`proxy.allowedDomains`'
+              # default): the package hosts and the GitHub hosts.
+              default = sggAllowedDomains;
+              description = "Exact lowercase hostnames SGG's sandbox VMs may reach through their sandbox proxy (besides `readHostname`); every other destination is refused.";
+            };
+            readHostname = lib.mkOption {
+              type = lib.types.str;
+              default = "github-read.sgg.internal";
+              description = ''
+                The GitHub proxy's read hostname: the sandbox proxy allows it
+                and forwards it, as an HTTP upstream, to the read listener on
+                `listenAddress` at `githubProxy.readListener.port`. It needs
+                no DNS entry. Must equal `service.read.tls.hostname` in
+                github-proxy.json.
+              '';
+            };
+          };
+          replayProxy = {
+            port = lib.mkOption {
+              type = lib.types.port;
+              default = 8889;
+              description = ''
+                Port of the replay proxy on `listenAddress`, for
+                `pi-sgg-replay` (a sandbox VM's egress rule passes one proxy
+                port, so the replay VM's is this one).
+              '';
+            };
+            allowedDomains = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              # The replay proxy's package hosts; never a GitHub host or the
+              # read hostname (assertions refuse them).
+              default = [
+                "registry.npmjs.org"
+                "pypi.org"
+                "files.pythonhosted.org"
+              ];
+              description = "Exact lowercase hostnames the replay VM may reach through this replay proxy, never a GitHub host or the read hostname; every other destination is refused.";
             };
           };
         };
@@ -1560,6 +1837,143 @@
             pfBootDaemon planningSandboxPfLoader "/var/log/pi-durable-planning-sandbox-pf.log";
         })
 
+        # SGG's service network (durable-pi-workspace#555): its pf anchor. Its
+        # anchor VM comes with the others, below. The model proxy, the GitHub
+        # proxy's service listener and the Forgejo proxy bind its gateway once
+        # their configs' `listen` name it; the SSH port forwarders are the VM
+        # supervisor's. Nothing here listens on it.
+        (lib.mkIf cfg.sggServiceNetwork.enable {
+          assertions = [
+            {
+              assertion = cfg.enable && cfg.modelProxy.enable && cfg.githubProxy.enable && cfg.forgeBroker.enable;
+              message = "services.pi-durable.sggServiceNetwork requires services.pi-durable.enable, modelProxy, githubProxy and forgeBroker: its service VM reaches the model proxy, the GitHub proxy's service listener and the Forgejo proxy on this network's gateway";
+            }
+            {
+              assertion = cfg.sggServiceNetwork.listenAddress != null && isAddress cfg.sggServiceNetwork.listenAddress;
+              message = "services.pi-durable.sggServiceNetwork.listenAddress must be SGG's service network's gateway as one canonical IPv4 address, not a wildcard, name or anything else";
+            }
+            {
+              assertion = cfg.sggServiceNetwork.allowedClients != [ ] && lib.all isClient cfg.sggServiceNetwork.allowedClients;
+              message = "services.pi-durable.sggServiceNetwork.allowedClients must name SGG's service network's subnet as canonical IPv4 addresses or CIDR ranges with a /1 to /32 prefix";
+            }
+            {
+              assertion = cfg.sggServiceNetwork.ipv6Subnet != null && isIpv6Subnet cfg.sggServiceNetwork.ipv6Subnet;
+              message = "services.pi-durable.sggServiceNetwork.ipv6Subnet must name SGG's service network's IPv6 prefix (`container network inspect`: ipv6Subnet) in lowercase hex with a /1 to /128 prefix, so pf can confine the network";
+            }
+            {
+              assertion = !lib.elem cfg.sggServiceNetwork.listenAddress [ cfg.proxy.listenAddress cfg.planning.listenAddress cfg.planningSandbox.listenAddress cfg.sggSandboxNetwork.listenAddress ]
+                && !lib.any (client: lib.elem client (cfg.proxy.allowedClients ++ cfg.planning.allowedClients ++ cfg.planningSandbox.allowedClients ++ cfg.sggSandboxNetwork.allowedClients)) cfg.sggServiceNetwork.allowedClients
+                && !lib.elem cfg.sggServiceNetwork.ipv6Subnet [ cfg.proxy.ipv6Subnet cfg.planning.ipv6Subnet cfg.planningSandbox.ipv6Subnet cfg.sggSandboxNetwork.ipv6Subnet ];
+              message = "services.pi-durable.sggServiceNetwork's listenAddress, allowedClients and ipv6Subnet must never equal another VM network's (proxy.*, planning.*, planningSandbox.*, sggSandboxNetwork.*): SGG's service network is its own";
+            }
+            {
+              # The anchor passes exactly these; one listed twice, or a
+              # port forwarder on a host proxy's port, is a mistake.
+              assertion = lib.allUnique sggServicePorts
+                && !lib.any (port: lib.elem port sggServicePorts) [ cfg.proxy.port cfg.githubProxy.port cfg.githubProxy.readListener.port cfg.vmBroker.port cfg.replayProxy.port ];
+              message = "services.pi-durable.sggServiceNetwork passes modelProxy.port, githubProxy.serviceListener.port, forgeBroker.port and portForwarderPorts, each once, and never a sandbox proxy's, the push route's (githubProxy.port), the read listener's, the VM broker's or the replay proxy's port";
+            }
+          ];
+
+          system.activationScripts.extraActivation.text = lib.mkAfter ''
+            # === pi-durable SGG service network isolation (pf) ===
+            if ! ${lib.escapeShellArgs sggServicePfLoader}; then
+              echo "Failed to load the Pi Durable SGG service network's pf anchor ${sggServicePfAnchor}" >&2
+              exit 1
+            fi
+          '';
+
+          launchd.daemons.pi-durable-sgg-service-pf.serviceConfig =
+            pfBootDaemon sggServicePfLoader "/var/log/pi-durable-sgg-service-pf.log";
+        })
+
+        # SGG's sandbox network (durable-pi-workspace#555): its sandbox proxy
+        # (with the read hostname's upstream), its replay proxy and its pf
+        # anchor. Its anchor VM comes with the others, below.
+        (lib.mkIf cfg.sggSandboxNetwork.enable {
+          assertions = [
+            {
+              assertion = cfg.enable && cfg.githubProxy.enable && cfg.forgeBroker.enable;
+              message = "services.pi-durable.sggSandboxNetwork requires services.pi-durable.enable, githubProxy and forgeBroker: its sandbox proxy forwards the read hostname to the GitHub proxy's read listener, and its sandbox VMs push through the Forgejo proxy on this network's gateway";
+            }
+            {
+              assertion = cfg.sggSandboxNetwork.listenAddress != null && isAddress cfg.sggSandboxNetwork.listenAddress;
+              message = "services.pi-durable.sggSandboxNetwork.listenAddress must be SGG's sandbox network's gateway as one canonical IPv4 address, not a wildcard, name or anything else";
+            }
+            {
+              assertion = cfg.sggSandboxNetwork.allowedClients != [ ] && lib.all isClient cfg.sggSandboxNetwork.allowedClients;
+              message = "services.pi-durable.sggSandboxNetwork.allowedClients must name SGG's sandbox network's subnet as canonical IPv4 addresses or CIDR ranges with a /1 to /32 prefix";
+            }
+            {
+              assertion = cfg.sggSandboxNetwork.ipv6Subnet != null && isIpv6Subnet cfg.sggSandboxNetwork.ipv6Subnet;
+              message = "services.pi-durable.sggSandboxNetwork.ipv6Subnet must name SGG's sandbox network's IPv6 prefix (`container network inspect`: ipv6Subnet) in lowercase hex with a /1 to /128 prefix, so pf can confine the network";
+            }
+            {
+              assertion = !lib.elem cfg.sggSandboxNetwork.listenAddress [ cfg.proxy.listenAddress cfg.planning.listenAddress cfg.planningSandbox.listenAddress cfg.sggServiceNetwork.listenAddress ]
+                && !lib.any (client: lib.elem client (cfg.proxy.allowedClients ++ cfg.planning.allowedClients ++ cfg.planningSandbox.allowedClients ++ cfg.sggServiceNetwork.allowedClients)) cfg.sggSandboxNetwork.allowedClients
+                && !lib.elem cfg.sggSandboxNetwork.ipv6Subnet [ cfg.proxy.ipv6Subnet cfg.planning.ipv6Subnet cfg.planningSandbox.ipv6Subnet cfg.sggServiceNetwork.ipv6Subnet ];
+              message = "services.pi-durable.sggSandboxNetwork's listenAddress, allowedClients and ipv6Subnet must never equal another VM network's (proxy.*, planning.*, planningSandbox.*, sggServiceNetwork.*): SGG's sandbox network is its own";
+            }
+            {
+              assertion = lib.all (domain: builtins.match "[a-z0-9.-]+" domain != null)
+                (cfg.sggSandboxNetwork.sandboxProxy.allowedDomains ++ [ cfg.sggSandboxNetwork.sandboxProxy.readHostname ]);
+              message = "services.pi-durable.sggSandboxNetwork.sandboxProxy.allowedDomains and readHostname take exact lowercase hostnames, no wildcards";
+            }
+            {
+              # The read hostname reaches the read listener alone; a GitHub
+              # host as the read hostname would send GitHub's own name there.
+              assertion = !isGithubHost cfg.sggSandboxNetwork.sandboxProxy.readHostname;
+              message = "services.pi-durable.sggSandboxNetwork.sandboxProxy.readHostname must not be a GitHub host: it names the GitHub proxy's read listener";
+            }
+            {
+              assertion = lib.all (domain: builtins.match "[a-z0-9.-]+" domain != null) cfg.sggSandboxNetwork.replayProxy.allowedDomains;
+              message = "services.pi-durable.sggSandboxNetwork.replayProxy.allowedDomains takes exact lowercase hostnames, no wildcards";
+            }
+            {
+              assertion = !lib.any (domain: isGithubHost domain || domain == cfg.sggSandboxNetwork.sandboxProxy.readHostname) cfg.sggSandboxNetwork.replayProxy.allowedDomains;
+              message = "services.pi-durable.sggSandboxNetwork.replayProxy.allowedDomains must hold no GitHub host (github.com, *.github.com, *githubusercontent.com) and not the read hostname: a replay's GitHub context comes only from its case's bundle";
+            }
+            {
+              # The anchor's passes, once each, and never a port this
+              # network must not reach (the read listener's included).
+              assertion = lib.allUnique sggSandboxPorts && !lib.any (port: lib.elem port sggSandboxNever) sggSandboxPorts;
+              message = "services.pi-durable.sggSandboxNetwork.sandboxProxy.port, replayProxy.port and forgeBroker.port must differ from each other and from modelProxy.port, githubProxy.port (the push route), githubProxy.serviceListener.port, githubProxy.readListener.port, vmBroker.port and sggServiceNetwork.portForwarderPorts: the network reaches its two proxies and the Forgejo proxy, and nothing else";
+            }
+          ];
+
+          launchd.user.agents.pi-durable-sgg-sandbox-proxy.serviceConfig = {
+            ProgramArguments = [ tinyproxy "-d" "-c" "${sggSandboxProxyConfig}" ];
+            RunAtLoad = true;
+            # As the sandbox proxy: until a VM brings the gateway up the bind
+            # fails, tinyproxy exits and launchd retries.
+            KeepAlive = true;
+            StandardOutPath = "/tmp/pi-durable-sgg-sandbox-proxy.log";
+            StandardErrorPath = "/tmp/pi-durable-sgg-sandbox-proxy.error.log";
+          };
+
+          launchd.user.agents.pi-durable-sgg-sandbox-replay-proxy.serviceConfig = {
+            ProgramArguments = [ tinyproxy "-d" "-c" "${sggSandboxReplayProxyConfig}" ];
+            RunAtLoad = true;
+            KeepAlive = true;
+            StandardOutPath = "/tmp/pi-durable-sgg-sandbox-replay-proxy.log";
+            StandardErrorPath = "/tmp/pi-durable-sgg-sandbox-replay-proxy.error.log";
+          };
+
+          # tinyproxy's firewall exception comes with the sandbox proxy's
+          # (`proxy.listenAddress`, which `forgeBroker` requires): per binary,
+          # so these listeners need nothing more.
+          system.activationScripts.extraActivation.text = lib.mkAfter ''
+            # === pi-durable SGG sandbox network isolation (pf) ===
+            if ! ${lib.escapeShellArgs sggSandboxPfLoader}; then
+              echo "Failed to load the Pi Durable SGG sandbox network's pf anchor ${sggSandboxPfAnchor}" >&2
+              exit 1
+            fi
+          '';
+
+          launchd.daemons.pi-durable-sgg-sandbox-pf.serviceConfig =
+            pfBootDaemon sggSandboxPfLoader "/var/log/pi-durable-sgg-sandbox-pf.log";
+        })
+
         # The planning service network's pass to the model proxy: only with
         # the proxy running and the planning anchor loaded.
         (lib.mkIf cfg.planning.modelProxy {
@@ -1683,11 +2097,11 @@
               }
               {
                 assertion = lib.all isNetworkName netAnchorNetworks;
-                message = "services.pi-durable.proxy.network, planning.network and planningSandbox.network must be container network names: lowercase letters, digits and inner hyphens";
+                message = "services.pi-durable.proxy.network, planning.network, planningSandbox.network, sggServiceNetwork.network and sggSandboxNetwork.network must be container network names: lowercase letters, digits and inner hyphens";
               }
               {
                 assertion = lib.length (lib.unique netAnchorNetworks) == lib.length netAnchorNetworks;
-                message = "services.pi-durable.planning.network and planningSandbox.network must differ from proxy.network and each other: each network has its own gateway and its own anchor";
+                message = "services.pi-durable.planning.network, planningSandbox.network, sggServiceNetwork.network and sggSandboxNetwork.network must differ from proxy.network and each other: each network has its own gateway and its own anchor";
               }
               {
                 assertion = cfg.netAnchor.image != null && isImageRef cfg.netAnchor.image;
