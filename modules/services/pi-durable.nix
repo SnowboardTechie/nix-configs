@@ -533,15 +533,18 @@
         {
           alert = "PiDurableWorkspaceHeld";
           # Kept as PiDurableWorkspaceHeld (durable-pi-workspace's vault names
-          # it). Set by a failed update and cleared only by `release`, so
-          # halted updates never resume by themselves; 5 minutes only lets a
-          # release just made land in the next reconcile's file.
+          # it). Set by a failed update. Since durable-pi-workspace#568 the
+          # next commit on main that the auto-deployer applies and that passes
+          # its post-deploy check clears it by itself (the failed commit is
+          # never applied again), and `release` still clears it by hand; 5
+          # minutes only lets a release just made land in the next
+          # reconcile's file.
           expr = "pi_durable_vm_supervisor_updates_halted == 1";
           "for" = "5m";
           labels = { severity = "warning"; };
           annotations = {
             summary = "Workspace {{ $labels.workspace }}'s updates are halted after a failed update";
-            description = "A build applied to workspace {{ $labels.workspace }} failed its post-deploy check or its VM couldn't be started, so the VM supervisor rolled it back and halted the workspace's updates: no apply is taken until `vm-supervisor-main.js release {{ $labels.workspace }}`. Its grants are still renewed and its health watched. `status` gives why and since when, and the events (post-deploy-check-failed, rolled-back, updates-halted) name the build; fix the cause, then release. If PiDurableWorkspaceUpdatesHaltedWorst fires too, no build was brought to pass. ${supervisorRunbook}";
+            description = "A build applied to workspace {{ $labels.workspace }} failed its post-deploy check or its VM couldn't be started, so the VM supervisor rolled it back and halted the workspace's updates. The commit that failed is never applied again. The halt ends when the auto-deployer applies the next commit on main and it passes its post-deploy check, or by hand with `vm-supervisor-main.js release {{ $labels.workspace }}`; until then a hand apply is refused. Its grants are still renewed and its health watched. `status` gives why and since when, and the events (post-deploy-check-failed, rolled-back, updates-halted, updates-resumed) name the builds. If PiDurableWorkspaceUpdatesHaltedWorst fires too, no build was brought to pass. ${supervisorRunbook}";
           };
         }
         {

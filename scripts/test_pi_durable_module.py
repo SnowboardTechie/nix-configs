@@ -184,9 +184,11 @@ class StudioAsCommissioned(unittest.TestCase):
         self.assertIn("pi-durable-model-proxy", s["agents"])
         self.assertIn("pi-durable-github-proxy", s["agents"])
         self.assertIn("pi-durable-replay-proxy", s["agents"])
-        for agent in ("pi-durable-forge-broker", "pi-durable-vm-broker", "pi-durable-planning-service", "pi-durable-planning-relay",
-                      "pi-durable-planning-sandbox-proxy"):
+        for agent in ("pi-durable-forge-broker", "pi-durable-vm-broker", "pi-durable-planning-sandbox-proxy"):
             self.assertIn(agent, s["agents"])
+        # The old launcher and the old port forwarder on 8792 are off since the cut-over (#535).
+        for agent in ("pi-durable-planning-service", "pi-durable-planning-relay"):
+            self.assertNotIn(agent, s["agents"])
         # The only root jobs: the boot-time pf loaders, one per anchor.
         self.assertEqual(["pi-durable-pf", "pi-durable-planning-pf", "pi-durable-planning-sandbox-pf", "pi-durable-sgg-sandbox-pf",
                           "pi-durable-sgg-service-pf"],
@@ -873,13 +875,14 @@ class VmBroker(unittest.TestCase):
 
 
 class Planning(unittest.TestCase):
-    """The planning service (durable-pi-workspace#48): its launcher, its relay, its pf anchor and its route."""
+    """The planning service (durable-pi-workspace#48): its launcher, its relay (off on Studio since the cut-over, so
+    pinned on here), its pf anchor and its route."""
 
     LAUNCHER = f"{AGENTS}.pi-durable-planning-service.serviceConfig"
     RELAY = f"{AGENTS}.pi-durable-planning-relay.serviceConfig"
 
     def test_launcher_runs_the_contract_command_with_only_the_system_path(self):
-        agent = studio("{ }", self.LAUNCHER)
+        agent = studio(PlanningLauncher.ON, self.LAUNCHER)
         node = studio("{ }", "builtins.head config.launchd.user.agents.pi-durable-model-proxy.serviceConfig.ProgramArguments")
         self.assertEqual(
             [node, f"{DEPLOYMENT}/dist/workspaces/planning/src/service-vm.js", "run", "--config", f"{HOME}/.config/pi-durable/planning-service-vm.json"],
@@ -894,7 +897,7 @@ class Planning(unittest.TestCase):
         self.assertEqual("/tmp/pi-durable-planning-service.error.log", agent["StandardErrorPath"])
 
     def test_relay_runs_the_contract_command_with_home_only(self):
-        agent = studio("{ }", self.RELAY)
+        agent = studio(PlanningLauncher.ON, self.RELAY)
         node = studio("{ }", "builtins.head config.launchd.user.agents.pi-durable-model-proxy.serviceConfig.ProgramArguments")
         self.assertEqual(
             [node, f"{DEPLOYMENT}/dist/workspaces/proxies/src/port-forwarder-main.js", "run", "--config", f"{HOME}/.config/pi-durable/planning-relay.json"],
@@ -970,7 +973,7 @@ class Planning(unittest.TestCase):
             activation.index("# === pi-durable planning service network isolation (pf) ==="),
             activation.index(" 8792 http://127.0.0.1:8792;"),
         )
-        unrouted = studio("{ planning.tailscaleHttpsPort = lib.mkForce null; }", SUMMARY)
+        unrouted = studio("{ planning = { tailscaleHttpsPort = lib.mkForce null; launcher = lib.mkForce true; }; }", SUMMARY)
         self.assertEqual([], unrouted["failed"])
         self.assertEqual(2, unrouted["activation"].count("pi-durable-page-route.sh"))
         self.assertNotIn("http://127.0.0.1:8792", unrouted["activation"])
@@ -1612,19 +1615,21 @@ class SggSandboxNetwork(SggNetworksCommon, unittest.TestCase):
 class PlanningLauncher(unittest.TestCase):
     """`planning.launcher`: the old launcher and the old port forwarder on 8792 go together (durable-pi-workspace#535)."""
 
+    ON = "{ planning.launcher = lib.mkForce true; }"
     OFF = "{ planning.launcher = lib.mkForce false; }"
     OLD = ("pi-durable-planning-service", "pi-durable-planning-relay")
     PROBE = 'config.services.monitoring.blackbox.contentProbes.Planning'
 
-    def test_on_by_default_and_on_studio_until_the_cut_over(self):
-        self.assertIs(True, studio("{ }", "config.services.pi-durable.planning.launcher"))
+    def test_on_by_default_and_off_on_studio_since_the_cut_over(self):
+        self.assertIs(False, studio("{ }", "config.services.pi-durable.planning.launcher"))
         self.assertIs(True, studio("{ }", '(builtins.getFlake "path:' + str(REPO) + '").darwinConfigurations.studio.options.services.pi-durable.planning.launcher.default'))
-        s = studio("{ }", SUMMARY)
+        self.assertEqual(studio(self.OFF, SUMMARY), studio("{ }", SUMMARY))
+        s = studio(self.ON, SUMMARY)
         for agent in self.OLD:
             self.assertIn(agent, s["agents"])
 
     def test_off_removes_both_and_keeps_the_network_brokers_route_and_probe(self):
-        on, off = studio("{ }", SUMMARY), studio(self.OFF, SUMMARY)
+        on, off = studio(self.ON, SUMMARY), studio(self.OFF, SUMMARY)
         self.assertEqual([], off["failed"])
         self.assertEqual(sorted(set(on["agents"]) - set(self.OLD)), sorted(off["agents"]))
         for agent in ("pi-durable-forge-broker", "pi-durable-vm-broker", NET_ANCHORS["pi-durable-planning"]):
@@ -1632,14 +1637,36 @@ class PlanningLauncher(unittest.TestCase):
         self.assertEqual(on["system"], off["system"])
         # Activation unchanged: the planning network's pf anchor and the Serve route to 8792 stay.
         extra = "config.system.activationScripts.extraActivation.text"
-        self.assertEqual(studio("{ }", extra), studio(self.OFF, extra))
+        self.assertEqual(studio(self.ON, extra), studio(self.OFF, extra))
         self.assertIn(" 8792 http://127.0.0.1:8792;", studio(self.OFF, extra))
         self.assertEqual(PLANNING_PF_RULES, studio(self.OFF, f"builtins.readFile {PLANNING_PF_RULES_FILE}"))
         self.assertEqual({"url": "http://127.0.0.1:8792/metrics", "bodyMatches": "(?m)^pi_planning_up 1$"}, studio(self.OFF, self.PROBE))
-        self.assertEqual(studio("{ }", self.PROBE), studio(self.OFF, self.PROBE))
+        self.assertEqual(studio(self.ON, self.PROBE), studio(self.OFF, self.PROBE))
         # Nothing of Nix's is left to bind 127.0.0.1:8792: no agent names the old port forwarder's config.
         programs = studio(self.OFF, f'lib.mapAttrsToList (_: a: toString (a.serviceConfig.ProgramArguments or [ ])) {AGENTS}')
         self.assertFalse([p for p in programs if "planning-relay.json" in p or "service-vm.js" in p], programs)
+
+    def test_probe_matches_the_new_services_metrics_after_the_service_series(self):
+        # The planning service in its VM opens /metrics with the two series every supervised service exports
+        # (durable-pi-workspace packages/foundation/src/service-metrics.ts), then its own (page/http.ts metricsText).
+        # Blackbox's regexp is RE2, where (?m) makes ^ and $ match at each line, as Python's re.M does.
+        pattern = studio(self.OFF, self.PROBE)["bodyMatches"]
+        body = (
+            "# HELP pi_durable_service_build_info The build this service runs.\n"
+            "# TYPE pi_durable_service_build_info gauge\n"
+            'pi_durable_service_build_info{commit="d73f8fd",build="verified"} 1\n'
+            "# HELP pi_durable_service_ready 1 once the service has done its work once since it started.\n"
+            "# TYPE pi_durable_service_ready gauge\n"
+            "pi_durable_service_ready 1\n"
+            "# HELP pi_planning_up The planning service is serving.\n"
+            "# TYPE pi_planning_up gauge\n"
+            "pi_planning_up 1\n"
+            "# HELP pi_planning_streams Open milestone streams.\n"
+            "# TYPE pi_planning_streams gauge\n"
+            "pi_planning_streams 0\n"
+        )
+        self.assertRegex(body, pattern)
+        self.assertNotRegex(body.replace("pi_planning_up 1", "pi_planning_up 0"), pattern)
 
     def test_off_is_inert_without_planning(self):
         s = studio(f"{{ {NO_PLANNING} planning.launcher = lib.mkForce false; }}", SUMMARY)
@@ -3281,7 +3308,13 @@ class SupervisorAlerts(unittest.TestCase):
                 self.assertIn("OPERATIONS.md §11", text)
                 self.assertIn("vm-supervisor-main.js status", text)
         self.assertIn("{{ $labels.vm }}", by_name["PiDurableWorkspaceVmDown"]["annotations"]["summary"])
-        self.assertIn("release", by_name["PiDurableWorkspaceHeld"]["annotations"]["description"])
+        # Since durable-pi-workspace#568 the next commit that passes its post-deploy check ends the halt by itself,
+        # and `release` still does: the text names both ways out, never fixing the cause as the only one.
+        held = by_name["PiDurableWorkspaceHeld"]["annotations"]["description"]
+        self.assertIn("vm-supervisor-main.js release {{ $labels.workspace }}", held)
+        self.assertIn("next commit on main", held)
+        self.assertIn("never applied again", held)
+        self.assertNotIn("fix the cause, then release", held)
         self.assertIn("release", by_name["PiDurableWorkspaceUpdatesHaltedWorst"]["annotations"]["description"])
         self.assertIn("{{ $value", by_name["PiDurableWorkspaceDiskHigh"]["annotations"]["summary"])
         # Every rule reading the supervisor's metrics is one of these.

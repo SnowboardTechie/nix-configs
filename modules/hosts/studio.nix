@@ -363,11 +363,12 @@
         # for the sampler's VM (durable-pi-workspace#443). The proxy binds it
         # once model-proxy.json's `listen` names 192.168.129.1.
         modelProxy = true;
-        # The old launcher and the old port forwarder on 8792 stay on until
-        # the cut-over (durable-pi-workspace#535), which sets this false so
-        # the VM supervisor's port forwarder can bind 8792. The network, its
-        # pf anchor, the brokers, the Serve route and the probe stay either way.
-        launcher = true;
+        # The old launcher and the old port forwarder on 8792 are off since
+        # the cut-over (durable-pi-workspace#535), so the VM supervisor's port
+        # forwarder for planning's page binds 8792. The network, its pf
+        # anchor, the brokers, the Serve route and the probe stay. Rollback:
+        # true, after the VM supervisor has let go of 8792.
+        launcher = false;
       };
       # Planning's sandbox network (durable-pi-workspace#535): `container
       # network create --internal --subnet 192.168.130.0/24
